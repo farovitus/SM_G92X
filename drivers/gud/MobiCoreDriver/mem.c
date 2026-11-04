@@ -62,9 +62,8 @@ struct mc_mem_context mem_ctx;
 
 static inline void release_page(struct page *page)
 {
-	set_bit(PG_dirty, &page->flags);
-
-	page_cache_release(page);
+	SetPageDirty(page);
+	put_page(page);
 }
 
 static int lock_pages(struct task_struct *task, void *virt_start_page_addr,
@@ -72,18 +71,16 @@ static int lock_pages(struct task_struct *task, void *virt_start_page_addr,
 {
 	int locked_pages;
 
-	/* lock user pages, must hold the mmap_sem to do this. */
-	down_read(&(task->mm->mmap_sem));
-	locked_pages = get_user_pages(
-				task,
-				task->mm,
+	/*
+	 * The secure world keeps the physical addresses. The page references
+	 * taken here make migration fail, so the pages stay in place while
+	 * they are registered.
+	 */
+	mmap_read_lock(task->mm);
+	locked_pages = get_user_pages_remote(task->mm,
 				(unsigned long)virt_start_page_addr,
-				pages_no,
-				1, /* write access */
-				0,
-				pages,
-				NULL);
-	up_read(&(task->mm->mmap_sem));
+				pages_no, FOLL_WRITE, pages, NULL);
+	mmap_read_unlock(task->mm);
 
 	/* check if we could lock all pages. */
 	if (locked_pages != pages_no) {
@@ -91,7 +88,7 @@ static int lock_pages(struct task_struct *task, void *virt_start_page_addr,
 				locked_pages);
 		if (locked_pages > 0) {
 			/* release all locked pages. */
-			release_pages(pages, locked_pages, 0);
+			release_pages(pages, locked_pages);
 		}
 		return -ENOMEM;
 	}
@@ -553,7 +550,8 @@ static void unmap_buffers(struct mc_mmu_table *table)
 	/* release all locked user space pages */
 	for (i = 0; i < table->pages; i++) {
 		/* convert physical entries from MMU table to page pointers */
-		struct page *page = pte_page(mmutable->table_entries[i]);
+		struct page *page = pfn_to_page(
+			(mmutable->table_entries[i] & MMU_PHYS_MASK) >> PAGE_SHIFT);
 		MCDRV_DBG_VERBOSE(mcd, "MMU entry %d:  0x%llx, virt %p", i,
 				  (u64)(mmutable->table_entries[i]), page);
 		BUG_ON(!page);

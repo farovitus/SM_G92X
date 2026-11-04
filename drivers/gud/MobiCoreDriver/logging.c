@@ -279,7 +279,6 @@ long mobicore_log_setup(void)
 {
 	phys_addr_t phys_log_buf;
 	union fc_generic fc_log;
-	struct sched_param param = { .sched_priority = 1 };
 
 	long ret;
 	log_pos = 0;
@@ -309,7 +308,7 @@ long mobicore_log_setup(void)
 		goto err_free_line;
 	}
 
-	sched_setscheduler(log_thread, SCHED_IDLE, &param);
+	sched_set_normal(log_thread, MAX_NICE);
 	/*
 	 * We are going to map this buffer into virtual address space in SWd.
 	 * To reduce complexity there, we use a contiguous buffer.
@@ -344,8 +343,6 @@ long mobicore_log_setup(void)
 		ret = -EIO;
 		goto err_stop_kthread;
 	}
-
-	set_task_state(log_thread, TASK_INTERRUPTIBLE);
 
 	MCDRV_DBG(mcd, "fc_log Logger version %u", log_buf->version);
 	return 0;

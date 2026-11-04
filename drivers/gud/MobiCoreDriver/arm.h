@@ -17,12 +17,12 @@
 #include "debug.h"
 
 #ifdef CONFIG_ARM64
-inline bool has_security_extensions(void)
+static inline bool has_security_extensions(void)
 {
 	return true;
 }
 
-inline bool is_secure_mode(void)
+static inline bool is_secure_mode(void)
 {
 	return false;
 }
@@ -38,7 +38,7 @@ inline bool is_secure_mode(void)
 #define ARM_SECURITY_EXTENSION_MASK	(0x30)
 
 /* check if CPU supports the ARM TrustZone Security Extensions */
-inline bool has_security_extensions(void)
+static inline bool has_security_extensions(void)
 {
 	u32 fea = 0;
 	asm volatile(
@@ -58,7 +58,7 @@ inline bool has_security_extensions(void)
 }
 
 /* check if running in secure mode */
-inline bool is_secure_mode(void)
+static inline bool is_secure_mode(void)
 {
 	u32 cpsr = 0;
 	u32 nsacr = 0;

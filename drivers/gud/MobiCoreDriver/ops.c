@@ -24,6 +24,7 @@
  * which has to be created by the fd = open(/dev/mobicore) command.
  */
 #include <linux/kthread.h>
+#include <linux/sched/clock.h>
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/workqueue.h>
@@ -44,31 +45,7 @@ uint8_t core_status = 0xff;
 
 /* MobiCore context data */
 static struct mc_context *ctx;
-static int disable_local_timer;
 
-#ifdef CONFIG_SECURE_OS_BOOSTER_API
-int mc_timer(void);
-#endif
-
-#ifdef TBASE_CORE_SWITCHER
-static uint32_t active_cpu;
-
-#ifdef TEST
-	/*
-	 * Normal world <t-base core info for testing.
-	 */
-
-	module_param(active_cpu, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-	MODULE_PARM_DESC(active_cpu, "Active <t-base Core");
-#endif
-
-
-static int mobicore_cpu_callback(struct notifier_block *nfb,
-				 unsigned long action, void *hcpu);
-static struct notifier_block mobicore_cpu_notifer = {
-	.notifier_call = mobicore_cpu_callback,
-};
-#endif
 
 static inline long smc(union fc_generic *fc)
 {
@@ -100,61 +77,46 @@ static void fastcall_work_func(struct work_struct *work);
 
 #ifdef MC_FASTCALL_WORKER_THREAD
 
-static struct task_struct *fastcall_thread;
-static DEFINE_KTHREAD_WORKER(fastcall_worker);
-
-void mc_set_schedule_policy(int core)
-{
-	if (core == DEFAULT_BIG_CORE)
-		disable_local_timer = 1;
-	else
-		disable_local_timer = 0;
-
-	return;
-}
+static struct kthread_worker *fastcall_worker;
 
 bool mc_fastcall(void *data)
 {
 	struct fastcall_work fc_work = {
-		KTHREAD_WORK_INIT(fc_work.work, fastcall_work_func),
 		.data = data,
 	};
 
-	if (!queue_kthread_work(&fastcall_worker, &fc_work.work))
+	kthread_init_work(&fc_work.work, fastcall_work_func);
+	if (!kthread_queue_work(fastcall_worker, &fc_work.work))
 		return false;
-	flush_kthread_work(&fc_work.work);
+	kthread_flush_work(&fc_work.work);
 	return true;
 }
 
 int mc_fastcall_init(struct mc_context *context)
 {
-	int ret = 0;
+	int ret;
+
 	ctx = context;
 
-	fastcall_thread = kthread_create(kthread_worker_fn, &fastcall_worker,
-					 "mc_fastcall");
-	if (IS_ERR(fastcall_thread)) {
-		ret = PTR_ERR(fastcall_thread);
-		fastcall_thread = NULL;
-		MCDRV_DBG_ERROR(mcd, "cannot create fastcall wq (%d)", ret);
+	/*
+	 * t-base runs on the core S-Boot started it on, the boot CPU
+	 * (MPIDR 0x100). Fast calls must come from that core.
+	 */
+	fastcall_worker = kthread_create_worker_on_cpu(0, 0, "mc_fastcall");
+	if (IS_ERR(fastcall_worker)) {
+		ret = PTR_ERR(fastcall_worker);
+		fastcall_worker = NULL;
+		MCDRV_DBG_ERROR(mcd, "cannot create fastcall worker (%d)", ret);
 		return ret;
 	}
-
-	wake_up_process(fastcall_thread);
-
-	/* this thread MUST run on CPU 0 at startup */
-	set_cpus_allowed(fastcall_thread, CPU_MASK_CPU0);
-#ifdef TBASE_CORE_SWITCHER
-	register_cpu_notifier(&mobicore_cpu_notifer);
-#endif
 	return 0;
 }
 
 void mc_fastcall_destroy(void)
 {
-	if (!IS_ERR_OR_NULL(fastcall_thread)) {
-		kthread_stop(fastcall_thread);
-		fastcall_thread = NULL;
+	if (fastcall_worker) {
+		kthread_destroy_worker(fastcall_worker);
+		fastcall_worker = NULL;
 	}
 }
 #else
@@ -202,38 +164,14 @@ static void fastcall_work_func(struct kthread_work *work)
 static void fastcall_work_func(struct work_struct *work)
 #endif
 {
-	int irq_check_cnt = 0;
 	struct fastcall_work *fc_work =
 		container_of(work, struct fastcall_work, work);
 	union fc_generic *fc_generic = fc_work->data;
-#ifdef TBASE_CORE_SWITCHER
-	uint32_t cpu_swap = 0, new_cpu;
-	uint32_t cpu_id[] = CPU_IDS;
-#endif
-	struct irq_desc *desc = irq_to_desc(MC_INTR_LOCAL_TIMER);
 
-#ifdef MC_CRYPTO_CLOCK_MANAGEMENT
-	mc_pm_clock_enable();
-#endif
 
 
 	if (fc_generic == NULL)
 		return;
-#ifdef TBASE_CORE_SWITCHER
-	if (fc_generic->as_in.cmd == MC_FC_SWITCH_CORE) {
-		cpu_swap = 1;
-		new_cpu = fc_generic->as_in.param[0];
-		fc_generic->as_in.param[0] = cpu_id[fc_generic->as_in.param[0]];
-	}
-
-	if (active_cpu == DEFAULT_BIG_CORE && disable_local_timer) {
-		irq_check_cnt++;
-		disable_irq(MC_INTR_LOCAL_TIMER);
-#ifdef CONFIG_SECURE_OS_BOOSTER_API
-		mc_timer();
-#endif
-	}
-#endif
 
 /* ExySp */
 #if TBASE_SMC_HISTORY
@@ -252,33 +190,6 @@ static void fastcall_work_func(struct work_struct *work)
 /* ExySp end */
 
 	smc(fc_work->data);
-#ifdef TBASE_CORE_SWITCHER
-	if (irq_check_cnt) {
-		if (desc->depth != 0)
-			enable_irq(MC_INTR_LOCAL_TIMER);
-	}
-
-	if (cpu_swap) {
-		if (fc_generic->as_out.ret == 0) {
-			cpumask_t cpu;
-			active_cpu = new_cpu;
-			dev_info(mcd, "CoreSwap ok %d -> %d\n",
-				  raw_smp_processor_id(), active_cpu);
-			cpumask_clear(&cpu);
-			cpumask_set_cpu(active_cpu, &cpu);
-#ifdef MC_FASTCALL_WORKER_THREAD
-			set_cpus_allowed(fastcall_thread, cpu);
-#endif
-		} else {
-			dev_info(mcd, "CoreSwap failed %d -> %d\n",
-				  raw_smp_processor_id(),
-				  fc_generic->as_in.param[0]);
-		}
-	}
-#endif
-#ifdef MC_CRYPTO_CLOCK_MANAGEMENT
-	mc_pm_clock_disable();
-#endif
 }
 
 #ifdef DUMP_TBASE_HALT_STATUS
@@ -451,120 +362,6 @@ int mc_info(uint32_t ext_info_id, uint32_t *state, uint32_t *ext_info)
 	return ret;
 }
 
-#ifdef TBASE_CORE_SWITCHER
-
-uint32_t mc_active_core(void)
-{
-	return active_cpu;
-}
-
-int __mc_switch_core(uint32_t core_num)
-{
-	int32_t ret = 0;
-	union mc_fc_swich_core fc_switch_core;
-
-	if (!cpu_online(core_num))
-		return 1;
-
-	MCDRV_DBG_VERBOSE(mcd, "enter\n");
-
-	memset(&fc_switch_core, 0, sizeof(fc_switch_core));
-	fc_switch_core.as_in.cmd = MC_FC_SWITCH_CORE;
-
-	if (core_num < COUNT_OF_CPUS)
-		fc_switch_core.as_in.core_id = core_num;
-	else
-		fc_switch_core.as_in.core_id = 0;
-
-	MCDRV_DBG(mcd,
-		  "<- cmd=0x%08x, core_id=0x%08x\n",
-		 fc_switch_core.as_in.cmd,
-		 fc_switch_core.as_in.core_id);
-	dev_info(mcd,
-		  "<- core_num=0x%08x, active_cpu=0x%08x\n",
-		 core_num, active_cpu);
-	mc_fastcall(&(fc_switch_core.as_generic));
-
-	ret = convert_fc_ret(fc_switch_core.as_out.ret);
-
-	MCDRV_DBG_VERBOSE(mcd, "exit with %d/0x%08X\n", ret, ret);
-
-	return ret;
-}
-
-int mc_switch_core(uint32_t core_num)
-{
-	int ret;
-	mutex_lock(&ctx->core_switch_lock);
-	if (!(core_status & (0x1 << core_num))){
-		MCDRV_DBG(mcd, "Core status... core #%d is off line\n",core_num);
-		mutex_unlock(&ctx->core_switch_lock);
-		return 1;
-	}
-	ret = __mc_switch_core(core_num);
-	mutex_unlock(&ctx->core_switch_lock);
-	return ret;
-}
-
-void mc_cpu_offfline(int cpu)
-{
-	mutex_lock(&ctx->core_switch_lock);
-	core_status &= ~(0x1 << cpu);
-	if (active_cpu == cpu) {
-		int i;
-		/* Chose the first online CPU and switch! */
-		for_each_online_cpu(i) {
-			if (i == cpu) {
-				MCDRV_DBG(mcd, "Skipping CPU %d\n", cpu);
-				continue;
-			}
-			MCDRV_DBG(mcd, "CPU %d is dying, switching to %d\n",
-				  cpu, i);
-			mc_set_schedule_policy(DEFAULT_LITTLE_CORE);
-			__mc_switch_core(i);
-			break;
-		}
-	} else {
-		MCDRV_DBG(mcd, "not active CPU, no action taken\n");
-	}
-
-	mutex_unlock(&ctx->core_switch_lock);
-}
-
-/* ExySp: for sos performance */
-void mc_cpu_online(int cpu)
-{
-	mutex_lock(&ctx->core_switch_lock);
-	core_status |= (0x1 << cpu);
-
-	if (cpu == NONBOOT_LITTLE_CORE)
-		__mc_switch_core(NONBOOT_LITTLE_CORE);
-	mutex_unlock(&ctx->core_switch_lock);
-}
-
-static int mobicore_cpu_callback(struct notifier_block *nfb,
-				unsigned long action, void *hcpu)
-{
-	unsigned int cpu = (unsigned long)hcpu;
-
-	switch (action) {
-/* ExySp: for sos performance */
-	case CPU_ONLINE:
-	case CPU_ONLINE_FROZEN:
-		mc_cpu_online(cpu);
-		break;
-/* ExySp: end */
-	case CPU_DOWN_PREPARE:
-	case CPU_DOWN_PREPARE_FROZEN:
-		mc_cpu_offfline(cpu);
-		break;
-	case CPU_DEAD:
-	case CPU_DEAD_FROZEN:
-		break;
-	}
-	return NOTIFY_OK;
-}
-#endif
 
 /* Yield to MobiCore */
 int mc_yield(void)

@@ -655,3 +655,14 @@
 		};
 	};
 };
+
+/*
+ * Trustonic t-base, loaded by S-Boot. Its notification interrupt (SSIQ)
+ * is GIC SPI 214, as in the 3.10 platform header.
+ */
+/ {
+	mobicore {
+		compatible = "trustonic,mobicore";
+		interrupts = <GIC_SPI 214 IRQ_TYPE_EDGE_RISING>;
+	};
+};

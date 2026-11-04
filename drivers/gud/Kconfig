@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config TRUSTONIC_MOBICORE
+	tristate "Trustonic t-base (MobiCore) normal-world driver"
+	depends on ARM64 && OF
+	help
+	  Driver for the Trustonic t-base 302A secure OS on Exynos 7420.
+	  It provides /dev/mobicore and /dev/mobicore-user for McDaemon,
+	  which Samsung's keymaster and gatekeeper HALs depend on.

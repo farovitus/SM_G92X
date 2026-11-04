@@ -46,19 +46,12 @@
 #define MC_FC_INFO			(MC_FC_STD64_BASE+2)
 /**< Enable SWd tracing via memory */
 #define MC_FC_NWD_TRACE			(MC_FC_STD64_BASE+10)
-#ifdef TBASE_CORE_SWITCHER
-/**< Core switching fastcall */
-#define MC_FC_SWITCH_CORE		(MC_FC_STD64_BASE+54)
-#endif
 
 #else
 
 #define MC_FC_INIT			-1
 #define MC_FC_INFO			-2
 #define MC_FC_NWD_TRACE			-31
-#ifdef TBASE_CORE_SWITCHER
-#define MC_FC_SWITCH_CORE   0x84000005
-#endif
 #endif
 
 /*
@@ -116,23 +109,6 @@ union mc_fc_info {
 	} as_out;
 };
 
-#ifdef TBASE_CORE_SWITCHER
-/* fast call switch Core parameters */
-union mc_fc_swich_core {
-	union fc_generic as_generic;
-	struct {
-		uint32_t cmd;
-		uint32_t core_id;
-		uint32_t rfu[2];
-	} as_in;
-	struct {
-		uint32_t resp;
-		uint32_t ret;
-		uint32_t state;
-		uint32_t ext_info;
-	} as_out;
-};
-#endif
 /*
  * _smc() - fast call to MobiCore
  *

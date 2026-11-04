@@ -36,10 +36,13 @@
 #include <linux/completion.h>
 #include <linux/fdtable.h>
 #include <linux/cdev.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 #include <net/net_namespace.h>
 #include <net/sock.h>
 #include <net/tcp_states.h>
 #include <net/af_unix.h>
+#include <linux/netlink.h>
 
 #include "main.h"
 #include "fastcall.h"
@@ -224,7 +227,7 @@ bool mc_check_owner_fd(struct mc_instance *instance, int32_t fd)
 		return true;
 
 	rcu_read_lock();
-	fp = fcheck_files(current->files, fd);
+	fp = files_lookup_fd_rcu(current->files, fd);
 	if (fp == NULL)
 		goto out;
 	s = __get_socket(fp);
@@ -237,7 +240,7 @@ bool mc_check_owner_fd(struct mc_instance *instance, int32_t fd)
 		if (!files)
 			goto out;
 		for (fd = 0; fd < files_fdtable(files)->max_fds; fd++) {
-			fp = fcheck_files(files, fd);
+			fp = files_lookup_fd_rcu(files, fd);
 			if (!fp)
 				continue;
 			if (fp->private_data == instance) {
@@ -826,7 +829,7 @@ static int mc_fd_mmap(struct file *file, struct vm_area_struct *vmarea)
 
 found:
 		buffer->uaddr = (void *)vmarea->vm_start;
-		vmarea->vm_flags |= VM_IO;
+		vm_flags_set(vmarea, VM_IO);
 		/*
 		 * Convert kernel address to user address. Kernel address begins
 		 * at PAGE_OFFSET, user address range is below PAGE_OFFSET.
@@ -852,7 +855,7 @@ found:
 		if (len != ctx.mci_base.len)
 			return -EINVAL;
 
-		vmarea->vm_flags |= VM_IO;
+		vm_flags_set(vmarea, VM_IO);
 		/* Convert kernel address to user address. Kernel address begins
 		 * at PAGE_OFFSET, user address range is below PAGE_OFFSET.
 		 * Remapping the area is always done, so multiple mappings
@@ -872,9 +875,9 @@ static inline int ioctl_check_pointer(unsigned int cmd, int __user *uarg)
 {
 	int err = 0;
 	if (_IOC_DIR(cmd) & _IOC_READ)
-		err = !access_ok(VERIFY_WRITE, uarg, _IOC_SIZE(cmd));
+		err = !access_ok(uarg, _IOC_SIZE(cmd));
 	else if (_IOC_DIR(cmd) & _IOC_WRITE)
-		err = !access_ok(VERIFY_READ, uarg, _IOC_SIZE(cmd));
+		err = !access_ok(uarg, _IOC_SIZE(cmd));
 	if (err)
 		return -EFAULT;
 
@@ -1234,42 +1237,6 @@ struct mc_instance *mc_alloc_instance(void)
 	return instance;
 }
 
-#if defined(TBASE_CORE_SWITCHER) && defined(DEBUG)
-static ssize_t mc_fd_write(struct file *file, const char __user *buffer,
-			size_t buffer_len, loff_t *x)
-{
-	uint32_t cpu_new;
-	/* we only consider one digit */
-	char buf[2];
-	struct mc_instance *instance = get_instance(file);
-
-	if (WARN(!instance, "No instance data available"))
-		return -EFAULT;
-
-	/* Invalid data, nothing to do */
-	if (buffer_len < 1)
-		return -EINVAL;
-
-	/* Invalid data, nothing to do */
-	if (copy_from_user(buf, buffer, min(sizeof(buf), buffer_len)))
-		return -EFAULT;
-
-	if (buf[0] == 'n') {
-		mc_nsiq();
-	/* If it's a digit then switch cores */
-	} else if ((buf[0] >= '0') && (buf[0] <= '9')) {
-		cpu_new = buf[0] - '0';
-		if (cpu_new <= 8) {
-			MCDRV_DBG_VERBOSE(mcd, "Set Active Cpu: %d\n", cpu_new);
-			mc_switch_core(cpu_new);
-		}
-	} else {
-		return -EINVAL;
-	}
-
-	return buffer_len;
-}
-#endif
 
 /*
  * Release a mobicore instance object and all objects related to it
@@ -1444,9 +1411,6 @@ static const struct file_operations mc_user_fops = {
 	.compat_ioctl   = mc_fd_user_ioctl,
 #endif
 	.mmap		= mc_fd_mmap,
-#if defined(TBASE_CORE_SWITCHER) && defined(DEBUG)
-	.write          = mc_fd_write,
-#endif
 };
 
 static int create_devices(void)
@@ -1456,7 +1420,7 @@ static int create_devices(void)
 	cdev_init(&mc_admin_cdev, &mc_admin_fops);
 	cdev_init(&mc_user_cdev, &mc_user_fops);
 
-	mc_device_class = class_create(THIS_MODULE, "mobicore");
+	mc_device_class = class_create("mobicore");
 	if (IS_ERR(mc_device_class)) {
 		MCDRV_DBG_ERROR(mcd, "failed to create device class");
 		ret = PTR_ERR(mc_device_class);
@@ -1512,7 +1476,23 @@ out:
  * This device is installed and registered as cdev, then interrupt and
  * queue handling is set up
  */
-static int __init mobicore_init(void)
+static int mc_ssiq_irq;
+
+/*
+ * McDaemon opens a netlink socket on protocol 17 to serve in-kernel t-base
+ * clients (the 3.10 MobiCoreKernelApi), and exits when the protocol does
+ * not exist. No in-kernel client is ported, so the kernel end only has to
+ * exist; it drops whatever reaches it.
+ */
+#define MC_DAEMON_NETLINK	17
+
+static struct sock *mc_nl_sock;
+
+static void mc_nl_input(struct sk_buff *skb)
+{
+}
+
+static int mobicore_probe(struct platform_device *pdev)
 {
 	int ret = 0;
 	dev_set_name(mcd, "mcd");
@@ -1520,7 +1500,7 @@ static int __init mobicore_init(void)
 	/* Do not remove or change the following trace.
 	 * The string "MobiCore" is used to detect if <t-base is in of the image
 	 */
-	dev_info(mcd, "MobiCore Driver, Build: " __TIMESTAMP__ "\n");
+	dev_info(mcd, "MobiCore Driver\n");
 	dev_info(mcd, "MobiCore mcDrvModuleApi version is %i.%i\n",
 		 MCDRVMODULEAPI_VERSION_MAJOR,
 		 MCDRVMODULEAPI_VERSION_MINOR);
@@ -1550,30 +1530,33 @@ static int __init mobicore_init(void)
 	atomic_set(&ctx.isr_counter, 0);
 
 	/* set up S-SIQ interrupt handler ************************/
-	ret = request_irq(MC_INTR_SSIQ, mc_ssiq_isr, IRQF_TRIGGER_RISING,
-			MC_ADMIN_DEVNODE, &ctx);
+	ret = platform_get_irq(pdev, 0);
+	if (ret < 0)
+		goto err_req_irq;
+	mc_ssiq_irq = ret;
+	ret = request_irq(mc_ssiq_irq, mc_ssiq_isr, 0, MC_ADMIN_DEVNODE, &ctx);
 	if (ret != 0) {
 		MCDRV_DBG_ERROR(mcd, "interrupt request failed");
 		goto err_req_irq;
 	}
 
-#ifdef MC_PM_RUNTIME
-	ret = mc_pm_initialize(&ctx);
-	if (ret != 0) {
-		MCDRV_DBG_ERROR(mcd, "Power Management init failed!");
-		goto free_isr;
-	}
-#endif
 
 	ret = create_devices();
 	if (ret != 0)
 		goto free_pm;
 
+	{
+		struct netlink_kernel_cfg cfg = { .input = mc_nl_input };
+
+		mc_nl_sock = netlink_kernel_create(&init_net,
+						   MC_DAEMON_NETLINK, &cfg);
+		if (!mc_nl_sock)
+			dev_warn(mcd, "netlink %d unavailable\n",
+				 MC_DAEMON_NETLINK);
+	}
+
 	ret = mc_init_mmu_tables();
 
-#ifdef MC_CRYPTO_CLOCK_MANAGEMENT
-	ret = mc_pm_clock_initialize();
-#endif
 
 	/*
 	 * initialize unique number counters which we can use for
@@ -1588,25 +1571,12 @@ static int __init mobicore_init(void)
 	/* init lock for the buffers list */
 	mutex_init(&ctx.cont_bufs_lock);
 
-	/* init lock for core switch processing */
-	mutex_init(&ctx.core_switch_lock);
-	
-	/*
-	 * ExySp: for sos performance
-	 * migrate secure OS to a non-booting little core
-	 */
-	mc_switch_core(NONBOOT_LITTLE_CORE);
-
 	memset(&ctx.mci_base, 0, sizeof(ctx.mci_base));
 	MCDRV_DBG(mcd, "initialized");
 	return 0;
 
 free_pm:
-#ifdef MC_PM_RUNTIME
-	mc_pm_free();
-free_isr:
-#endif
-	free_irq(MC_INTR_SSIQ, &ctx);
+	free_irq(mc_ssiq_irq, &ctx);
 err_req_irq:
 	mc_fastcall_destroy();
 error:
@@ -1616,7 +1586,7 @@ error:
 /*
  * This function removes this device driver from the Linux device manager .
  */
-static void __exit mobicore_exit(void)
+static void mobicore_remove(struct platform_device *pdev)
 {
 	MCDRV_DBG_VERBOSE(mcd, "enter");
 #ifdef MC_MEM_TRACES
@@ -1625,38 +1595,42 @@ static void __exit mobicore_exit(void)
 
 	mc_release_mmu_tables();
 
-#ifdef MC_PM_RUNTIME
-	mc_pm_free();
-#endif
+	netlink_kernel_release(mc_nl_sock);
+
 
 	device_destroy(mc_device_class, mc_dev_admin);
 	device_destroy(mc_device_class, mc_dev_user);
 	class_destroy(mc_device_class);
 	unregister_chrdev_region(mc_dev_admin, MC_DEV_MAX);
 
-	free_irq(MC_INTR_SSIQ, &ctx);
+	free_irq(mc_ssiq_irq, &ctx);
 
 	mc_fastcall_destroy();
 
-#ifdef MC_CRYPTO_CLOCK_MANAGEMENT
-	mc_pm_clock_finalize();
-#endif
 
 	MCDRV_DBG_VERBOSE(mcd, "exit");
 }
 
 bool mc_sleep_ready(void)
 {
-#ifdef MC_PM_RUNTIME
-	return mc_pm_sleep_ready();
-#else
 	return true;
-#endif
 }
 
-/* Linux Driver Module Macros */
-module_init(mobicore_init);
-module_exit(mobicore_exit);
+static const struct of_device_id mobicore_of_match[] = {
+	{ .compatible = "trustonic,mobicore" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, mobicore_of_match);
+
+static struct platform_driver mobicore_driver = {
+	.probe = mobicore_probe,
+	.remove_new = mobicore_remove,
+	.driver = {
+		.name = "mobicore",
+		.of_match_table = mobicore_of_match,
+	},
+};
+module_platform_driver(mobicore_driver);
 MODULE_AUTHOR("Trustonic Limited");
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("MobiCore driver");
