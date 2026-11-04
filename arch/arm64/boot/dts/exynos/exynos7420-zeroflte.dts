@@ -614,6 +614,13 @@
 	};
 };
 
+/*
+ * USB device mode for adb. S-Boot, unlike the uniLoader this port started
+ * from, leaves the USB DRD PHY uninitialised, so the controller's first
+ * endpoint command timed out ("failed to enable ep0out") and the host never
+ * saw the phone. The mainline Exynos7 PHY driver now brings the PHY up.
+ * The micro-USB port is USB 2.0 only.
+ */
 &usbdrd {
 	usb@0 {
 		dr_mode = "peripheral";
