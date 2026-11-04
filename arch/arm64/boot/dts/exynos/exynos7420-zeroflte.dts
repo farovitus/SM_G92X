@@ -666,3 +666,10 @@
 		interrupts = <GIC_SPI 214 IRQ_TYPE_EDGE_RISING>;
 	};
 };
+
+/ {
+	/* "battery" and "ac" for the ROM's thermal and health HALs. */
+	sec-battery-compat {
+		compatible = "samsung,sec-battery-compat";
+	};
+};

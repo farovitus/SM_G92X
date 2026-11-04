@@ -1,0 +1,184 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * "battery" and "ac" power supplies for Samsung's Android userspace.
+ *
+ * On the 3.10 kernel, Samsung's sec-battery driver registered the power
+ * supplies "battery" and "ac", and the ROM's thermal and health HALs look
+ * for those names. The thermal HAL aborts when it cannot find their thermal
+ * zones, and system_server then blocks waiting for it. This driver
+ * registers both names and forwards them to the MAX77843 fuel gauge and
+ * charger. Each has a temperature, so the power-supply core also registers
+ * the thermal zones the HAL needs.
+ *
+ * The "ac" temperature is the fuel gauge's battery temperature: this
+ * kernel has no driver for the charger thermistor that 3.10 reported.
+ *
+ * Lineage's health HAL only starts when battery/charging_enabled exists
+ * (added to the 3.10 sec_battery driver for Lineage), and system_server
+ * waits for that HAL. Charging stays as S-Boot set it up: the attribute
+ * reads 1, and writing 0 fails until the charger driver can stop charging.
+ */
+
+#include <linux/kstrtox.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/power_supply.h>
+
+struct sec_compat {
+	struct power_supply *fg;
+	struct power_supply *chg;
+};
+
+static void sec_compat_put(void *data)
+{
+	power_supply_put(data);
+}
+
+static int sec_compat_battery_get(struct power_supply *psy,
+				  enum power_supply_property psp,
+				  union power_supply_propval *val)
+{
+	struct sec_compat *sc = power_supply_get_drvdata(psy);
+
+	if (psp == POWER_SUPPLY_PROP_HEALTH) {
+		val->intval = POWER_SUPPLY_HEALTH_GOOD;
+		return 0;
+	}
+	return power_supply_get_property(sc->fg, psp, val);
+}
+
+static int sec_compat_ac_get(struct power_supply *psy,
+			     enum power_supply_property psp,
+			     union power_supply_propval *val)
+{
+	struct sec_compat *sc = power_supply_get_drvdata(psy);
+
+	if (psp == POWER_SUPPLY_PROP_TEMP)
+		return power_supply_get_property(sc->fg, psp, val);
+	return power_supply_get_property(sc->chg, psp, val);
+}
+
+static ssize_t charging_enabled_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "1\n");
+}
+
+static ssize_t charging_enabled_store(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
+{
+	bool enable;
+	int ret;
+
+	ret = kstrtobool(buf, &enable);
+	if (ret)
+		return ret;
+	return enable ? count : -EOPNOTSUPP;
+}
+static DEVICE_ATTR_RW(charging_enabled);
+
+static struct attribute *sec_compat_battery_attrs[] = {
+	&dev_attr_charging_enabled.attr,
+	NULL
+};
+ATTRIBUTE_GROUPS(sec_compat_battery);
+
+static enum power_supply_property sec_compat_battery_props[] = {
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_HEALTH,
+	POWER_SUPPLY_PROP_PRESENT,
+	POWER_SUPPLY_PROP_TECHNOLOGY,
+	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_CURRENT_AVG,
+	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+};
+
+static enum power_supply_property sec_compat_ac_props[] = {
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_TEMP,
+};
+
+static const struct power_supply_desc sec_compat_battery_desc = {
+	.name = "battery",
+	.type = POWER_SUPPLY_TYPE_BATTERY,
+	.properties = sec_compat_battery_props,
+	.num_properties = ARRAY_SIZE(sec_compat_battery_props),
+	.get_property = sec_compat_battery_get,
+};
+
+static const struct power_supply_desc sec_compat_ac_desc = {
+	.name = "ac",
+	.type = POWER_SUPPLY_TYPE_MAINS,
+	.properties = sec_compat_ac_props,
+	.num_properties = ARRAY_SIZE(sec_compat_ac_props),
+	.get_property = sec_compat_ac_get,
+};
+
+static struct power_supply *sec_compat_get(struct device *dev,
+					   const char *name)
+{
+	struct power_supply *psy = power_supply_get_by_name(name);
+	int ret;
+
+	if (!psy)
+		return ERR_PTR(dev_err_probe(dev, -EPROBE_DEFER,
+					     "waiting for %s\n", name));
+	ret = devm_add_action_or_reset(dev, sec_compat_put, psy);
+	return ret ? ERR_PTR(ret) : psy;
+}
+
+static int sec_compat_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct power_supply_config cfg = {};
+	struct power_supply *psy;
+	struct sec_compat *sc;
+
+	sc = devm_kzalloc(dev, sizeof(*sc), GFP_KERNEL);
+	if (!sc)
+		return -ENOMEM;
+
+	sc->fg = sec_compat_get(dev, "max77843-fuelgauge");
+	if (IS_ERR(sc->fg))
+		return PTR_ERR(sc->fg);
+	sc->chg = sec_compat_get(dev, "max77843-charger");
+	if (IS_ERR(sc->chg))
+		return PTR_ERR(sc->chg);
+
+	cfg.drv_data = sc;
+	cfg.attr_grp = sec_compat_battery_groups;
+	psy = devm_power_supply_register(dev, &sec_compat_battery_desc, &cfg);
+	if (IS_ERR(psy))
+		return dev_err_probe(dev, PTR_ERR(psy), "battery\n");
+	cfg.attr_grp = NULL;
+	psy = devm_power_supply_register(dev, &sec_compat_ac_desc, &cfg);
+	if (IS_ERR(psy))
+		return dev_err_probe(dev, PTR_ERR(psy), "ac\n");
+
+	dev_info(dev, "registered battery and ac\n");
+	return 0;
+}
+
+static const struct of_device_id sec_compat_of_match[] = {
+	{ .compatible = "samsung,sec-battery-compat" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, sec_compat_of_match);
+
+static struct platform_driver sec_compat_driver = {
+	.probe = sec_compat_probe,
+	.driver = {
+		.name = "sec-battery-compat",
+		.of_match_table = sec_compat_of_match,
+	},
+};
+module_platform_driver(sec_compat_driver);
+
+MODULE_DESCRIPTION("Samsung battery/ac power-supply names for Android");
+MODULE_LICENSE("GPL");

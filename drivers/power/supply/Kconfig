@@ -568,6 +568,14 @@ config FUEL_GAUGE_MAX77843
 	  Maxim MAX77843 PMIC. The gauge is read only; its configuration
 	  is left as the bootloader programmed it.
 
+config BATTERY_SAMSUNG_COMPAT
+	tristate "Samsung battery and ac power-supply names"
+	depends on FUEL_GAUGE_MAX77843 && CHARGER_MAX77843
+	help
+	  Registers the "battery" and "ac" power supplies that Samsung's
+	  Android thermal and health HALs expect, forwarding to the MAX77843
+	  fuel gauge and charger.
+
 config CHARGER_MAX77976
 	tristate "Maxim MAX77976 battery charger driver"
 	depends on I2C
