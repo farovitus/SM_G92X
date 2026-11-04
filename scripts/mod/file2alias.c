@@ -40,6 +40,11 @@ typedef struct {
 	__u8 b[16];
 } guid_t;
 
+/* The macOS SDK already defines uuid_t as an array. */
+#ifdef __APPLE__
+#define uuid_t compat_uuid_t
+#endif
+
 typedef struct {
 	__u8 b[16];
 } uuid_t;
