@@ -81,9 +81,18 @@ CONFIG_TRUSTONIC_MOBICORE=y
 # PCIe (BCM4358 Wi-Fi)
 CONFIG_PCI_EXYNOS7420=y
 
-# The Lineage 20 ramdisk in BOOT is xz-compressed; GKI only unpacks gzip,
-# LZ4 and zstd.
+# Initramfs decompressors: xz, which the Lineage 20 ramdisk in BOOT uses
+# because it is the smallest, and LZ4, the fastest, whose code zram and
+# crypto already pull in. GKI's gzip and zstd unpackers are not needed,
+# nor are XZ's branch filters for other architectures.
 CONFIG_RD_XZ=y
+CONFIG_RD_LZ4=y
+# CONFIG_RD_GZIP is not set
+# CONFIG_RD_ZSTD is not set
+# CONFIG_XZ_DEC_X86 is not set
+# CONFIG_XZ_DEC_POWERPC is not set
+# CONFIG_XZ_DEC_IA64 is not set
+# CONFIG_XZ_DEC_SPARC is not set
 
 # Bring-up: faster builds without LTO (kCFI does not need it).
 CONFIG_LTO_NONE=y
