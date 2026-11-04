@@ -4979,11 +4979,20 @@ static int ext4_load_and_init_journal(struct super_block *sb,
 		break;
 	}
 
+	/*
+	 * Kernels before 3.18 accepted this pair, and Samsung fstabs still
+	 * pass it. Keep the journal checksum and drop the async commit.
+	 */
 	if (test_opt(sb, DATA_FLAGS) == EXT4_MOUNT_ORDERED_DATA &&
 	    test_opt(sb, JOURNAL_ASYNC_COMMIT)) {
-		ext4_msg(sb, KERN_ERR, "can't mount with "
+		ext4_msg(sb, KERN_WARNING, "ignoring "
 			"journal_async_commit in data=ordered mode");
-		goto out;
+		clear_opt(sb, JOURNAL_ASYNC_COMMIT);
+		if (!set_journal_csum_feature_set(sb)) {
+			ext4_msg(sb, KERN_ERR, "Failed to set journal checksum "
+				 "feature set");
+			goto out;
+		}
 	}
 
 	set_task_ioprio(sbi->s_journal->j_task, ctx->journal_ioprio);
@@ -6569,10 +6578,9 @@ static int __ext4_remount(struct fs_context *fc, struct super_block *sb)
 		}
 	} else if (test_opt(sb, DATA_FLAGS) == EXT4_MOUNT_ORDERED_DATA) {
 		if (test_opt(sb, JOURNAL_ASYNC_COMMIT)) {
-			ext4_msg(sb, KERN_ERR, "can't mount with "
+			ext4_msg(sb, KERN_WARNING, "ignoring "
 				"journal_async_commit in data=ordered mode");
-			err = -EINVAL;
-			goto restore_opts;
+			clear_opt(sb, JOURNAL_ASYNC_COMMIT);
 		}
 	}
 
