@@ -228,7 +228,7 @@ cp "$kernel_out/System.map" "$stage/System.map"
 cp "$dt_image" "$stage/boot.img-dtb"
 cp -R "$mod_dir" "$stage/modules"
 rm -f -- "$product_out/$zip_name"
-(cd "$stage" && zip -qX "$product_out/$zip_name" Image "$(basename "$dtb_name")" boot.img-dtb config System.map modules)
+(cd "$stage" && zip -qrX "$product_out/$zip_name" Image "$(basename "$dtb_name")" boot.img-dtb config System.map modules)
 (cd "$product_out" && shasum -a 256 "$zip_name" > "$zip_name.sha256")
 rm -rf -- "$stage"
 
