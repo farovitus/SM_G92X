@@ -273,6 +273,12 @@ static void exynos5433_set_safe_div(void __iomem *base, unsigned long div,
 	wait_until_divider_stable(base + E5433_DIV_STAT_CPU0, mask);
 }
 
+/* value the mux status field reports once input @index is selected */
+static u32 exynos5433_mux_stat(const struct exynos_cpuclk *cpuclk, u32 index)
+{
+	return cpuclk->flags & CLK_CPU_MUX_STAT_IS_INDEX ? index : index + 1;
+}
+
 /* handler for pre-rate change notification from parent clock */
 static int exynos5433_cpuclk_pre_rate_change(struct clk_notifier_data *ndata,
 			struct exynos_cpuclk *cpuclk, void __iomem *base)
@@ -320,7 +326,8 @@ static int exynos5433_cpuclk_pre_rate_change(struct clk_notifier_data *ndata,
 	/* select the alternate parent */
 	mux_reg = readl(base + E5433_MUX_SEL2);
 	writel(mux_reg | 1, base + E5433_MUX_SEL2);
-	wait_until_mux_stable(base + E5433_MUX_STAT2, 0, 2);
+	wait_until_mux_stable(base + E5433_MUX_STAT2, 0,
+			      exynos5433_mux_stat(cpuclk, 1));
 
 	/* alternate parent is active now. set the dividers */
 	writel(div0, base + E5433_DIV_CPU0);
@@ -346,7 +353,8 @@ static int exynos5433_cpuclk_post_rate_change(struct clk_notifier_data *ndata,
 	/* select apll as the alternate parent */
 	mux_reg = readl(base + E5433_MUX_SEL2);
 	writel(mux_reg & ~1, base + E5433_MUX_SEL2);
-	wait_until_mux_stable(base + E5433_MUX_STAT2, 0, 1);
+	wait_until_mux_stable(base + E5433_MUX_STAT2, 0,
+			      exynos5433_mux_stat(cpuclk, 0));
 
 	exynos5433_set_safe_div(base, div, div_mask);
 	spin_unlock_irqrestore(cpuclk->lock, flags);

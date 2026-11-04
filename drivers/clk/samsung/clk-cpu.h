@@ -60,6 +60,11 @@ struct exynos_cpuclk {
 #define CLK_CPU_NEEDS_DEBUG_ALT_DIV	(1 << 1)
 /* The CPU clock registers have Exynos5433-compatible layout */
 #define CLK_CPU_HAS_E5433_REGS_LAYOUT	(1 << 2)
+/*
+ * The mux status register reports the selected input index (Exynos7420),
+ * not the index plus one (Exynos5433).
+ */
+#define CLK_CPU_MUX_STAT_IS_INDEX	(1 << 3)
 };
 
 #endif /* __SAMSUNG_CLK_CPU_H */
