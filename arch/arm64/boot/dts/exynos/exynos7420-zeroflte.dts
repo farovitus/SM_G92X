@@ -329,6 +329,54 @@
 	};
 };
 
+/*
+ * The clusters run from the alternate input while their PLL relocks. Its
+ * BUS0_PLL side comes through CMU_TOPC, which this board cannot read, so
+ * the alternate input is the 24 MHz oscillator: a known rate, for the few
+ * tens of microseconds a relock takes.
+ */
+&clock_atlas {
+	assigned-clocks = <&clock_atlas CLK_MOUT_BUS0_PLL_ATLAS_USER>;
+	assigned-clock-parents = <&fin_pll>;
+};
+
+&clock_apollo {
+	assigned-clocks = <&clock_apollo CLK_MOUT_BUS0_PLL_APOLLO_USER>;
+	assigned-clock-parents = <&fin_pll>;
+};
+
+&cpu_atlas0 {
+	cpu-supply = <&vdd_atlas>;
+};
+
+&cpu_atlas1 {
+	cpu-supply = <&vdd_atlas>;
+};
+
+&cpu_atlas2 {
+	cpu-supply = <&vdd_atlas>;
+};
+
+&cpu_atlas3 {
+	cpu-supply = <&vdd_atlas>;
+};
+
+&cpu_apollo0 {
+	cpu-supply = <&vdd_apollo>;
+};
+
+&cpu_apollo1 {
+	cpu-supply = <&vdd_apollo>;
+};
+
+&cpu_apollo2 {
+	cpu-supply = <&vdd_apollo>;
+};
+
+&cpu_apollo3 {
+	cpu-supply = <&vdd_apollo>;
+};
+
 /* Leave the S-Boot root clock setup alone; see the stand-ins above. */
 &clock_topc {
 	status = "disabled";

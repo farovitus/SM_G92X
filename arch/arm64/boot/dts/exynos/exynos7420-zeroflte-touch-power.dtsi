@@ -21,6 +21,26 @@
 			reg = <0x66>;
 
 			regulators {
+				/*
+				 * CPU cluster rails, scaled by cpufreq-dt. The
+				 * limits are the stock board's.
+				 */
+				vdd_atlas: BUCK2 {
+					regulator-name = "vdd_atlas";
+					regulator-min-microvolt = <500000>;
+					regulator-max-microvolt = <1300000>;
+					regulator-always-on;
+					regulator-boot-on;
+				};
+
+				vdd_apollo: BUCK3 {
+					regulator-name = "vdd_apollo";
+					regulator-min-microvolt = <500000>;
+					regulator-max-microvolt = <1200000>;
+					regulator-always-on;
+					regulator-boot-on;
+				};
+
 				tsp_io_ldo15: LDO15 {
 					regulator-name = "tsp_io";
 					regulator-min-microvolt = <1850000>;
