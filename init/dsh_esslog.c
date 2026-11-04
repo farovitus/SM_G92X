@@ -10,9 +10,13 @@
 #include <linux/console.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/kmsg_dump.h>
+#include <linux/kstrtox.h>
 #include <linux/minmax.h>
 #include <linux/pid_namespace.h>
+#include <linux/reboot.h>
 #include <linux/sched/debug.h>
+#include <linux/syscalls.h>
 #include <linux/timekeeping.h>
 #include <linux/workqueue.h>
 
@@ -68,7 +72,47 @@ console_initcall(ess_console_init);
  * stack and every blocked task. A log that keeps beating after userspace
  * goes quiet means init is waiting on something; a log that stops means
  * the kernel itself hung.
+ *
+ * dsh_autorecovery=<seconds> restarts into recovery at the first beat after
+ * that uptime, so a test boot returns to TWRP with its log without anyone
+ * holding the keys.
  */
+static unsigned int ess_autorecovery;
+
+static int __init ess_autorecovery_setup(char *s)
+{
+	return !kstrtouint(s, 0, &ess_autorecovery);
+}
+__setup("dsh_autorecovery=", ess_autorecovery_setup);
+
+/*
+ * Android writes so much through /dev/kmsg that the kernel's own boot
+ * messages leave the 512 KiB TWRP shows. Before the restart, copy every
+ * kernel-facility line (syslog prefix 0-7) from the printk buffer to the
+ * end of the ring again.
+ */
+static void ess_replay_kernel_log(void)
+{
+	static char line[1024];
+	static const char head[] = "\n==== dsh: kernel messages since boot ====\n";
+	static const char tail[] = "==== dsh: end of kernel messages ====\n";
+	struct kmsg_dump_iter iter;
+	size_t len;
+
+	/* Hold the console so printk does not write the ring meanwhile. */
+	console_lock();
+	ess_console_write(NULL, head, sizeof(head) - 1);
+	kmsg_dump_rewind(&iter);
+	while (kmsg_dump_get_line(&iter, true, line, sizeof(line), &len)) {
+		if (len < 3 || line[0] != '<' || line[1] < '0' ||
+		    line[1] > '7' || line[2] != '>')
+			continue;
+		ess_console_write(NULL, line + 3, len - 3);
+	}
+	ess_console_write(NULL, tail, sizeof(tail) - 1);
+	console_unlock();
+}
+
 static void ess_beat(struct work_struct *work);
 static DECLARE_DELAYED_WORK(ess_beat_work, ess_beat);
 
@@ -83,6 +127,13 @@ static void ess_beat(struct work_struct *work)
 		sched_show_task(init_task_p);
 	rcu_read_unlock();
 	show_state_filter(TASK_UNINTERRUPTIBLE);
+	if (ess_autorecovery &&
+	    ktime_get_boottime_seconds() >= ess_autorecovery) {
+		ksys_sync();
+		ess_replay_kernel_log();
+		pr_emerg("dsh: restarting to recovery\n");
+		kernel_restart("recovery");
+	}
 	schedule_delayed_work(&ess_beat_work, 30 * HZ);
 }
 
