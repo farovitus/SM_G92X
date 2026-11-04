@@ -695,3 +695,10 @@
 		compatible = "samsung,sec-cooling-compat";
 	};
 };
+
+/ {
+	/* mDNIe and panel nodes for Lineage's LiveDisplay HAL (inert). */
+	mdnie-compat {
+		compatible = "samsung,mdnie-compat";
+	};
+};
