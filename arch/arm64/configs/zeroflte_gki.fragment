@@ -42,6 +42,8 @@ CONFIG_REGULATOR_S2MPB02=y
 CONFIG_MFD_MAX77843=y
 CONFIG_CHARGER_MAX77843=y
 CONFIG_FUEL_GAUGE_MAX77843=y
+# MUIC: routes the micro-USB data lines to the USB PHY for adb.
+CONFIG_MAX77843_MUIC_USB=y
 # "battery" and "ac", the names the ROM's thermal and health HALs use.
 CONFIG_BATTERY_SAMSUNG_COMPAT=y
 

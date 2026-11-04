@@ -287,6 +287,12 @@
 		i2c-gpio,delay-us = <2>;
 		#address-cells = <1>;
 		#size-cells = <0>;
+
+		/* MUIC: routes the micro-USB data lines to the USB PHY. */
+		muic@25 {
+			compatible = "maxim,max77843-muic-usb";
+			reg = <0x25>;
+		};
 	};
 
 	/* PCIe channel 1, BCM4358 Wi-Fi */
