@@ -34,6 +34,9 @@ struct brcmf_fwvid_entry {
 
 static DEFINE_MUTEX(fwvid_list_lock);
 
+/* How long attach waits for a vendor module loaded by userspace. */
+#define BRCMF_FWVID_REG_TIMEOUT_MS	5000
+
 #if IS_MODULE(CONFIG_BRCMFMAC)
 #define FWVID_ENTRY_INIT(_vid, _name) \
 	[BRCMF_FWVENDOR_ ## _vid] = { \
@@ -66,13 +69,22 @@ static int brcmf_fwvid_request_module(enum brcmf_fwvendor fwvid)
 
 		mutex_unlock(&fwvid_list_lock);
 
+		/*
+		 * Without a usermode helper, as on Android, request_module()
+		 * fails and userspace loads the vendor module from its module
+		 * list right after brcmfmac. Wait for it to register either way.
+		 */
 		ret = request_module("brcmfmac-%s", fwvid_list[fwvid].name);
 		if (ret)
-			goto fail;
+			brcmf_dbg(INFO, "mod=%s: request_module failed %d, waiting\n",
+				  fwvid_list[fwvid].name, ret);
 
-		ret = wait_for_completion_interruptible(reg_done);
-		if (ret)
+		ret = wait_for_completion_interruptible_timeout(reg_done,
+				msecs_to_jiffies(BRCMF_FWVID_REG_TIMEOUT_MS));
+		if (ret <= 0) {
+			ret = ret ?: -ETIMEDOUT;
 			goto fail;
+		}
 
 		mutex_lock(&fwvid_list_lock);
 	}
