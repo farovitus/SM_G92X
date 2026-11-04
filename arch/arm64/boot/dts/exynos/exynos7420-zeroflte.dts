@@ -468,9 +468,21 @@
 	status = "okay";
 
 	/*
-	 * Keep the GPU off pd_g3d. The generic power-on sequence cannot
-	 * bring the G3D domain back once genpd has turned it off, so the
-	 * domain must stay on and the GPU must not be its consumer.
+	 * The GPU is not attached to pd_g3d. pd_g3d stays powered on its
+	 * own: its samsung,exynos7420-g3d-pd compatible makes
+	 * exynos-pm-domains set GENPD_FLAG_ALWAYS_ON, and pd_ignore_unused
+	 * on the cmdline keeps unused domains on as well. The generic 5433
+	 * power-on sequence cannot bring G3D back (the vendor sequence also
+	 * writes CMU_TOP registers that hang this board), so the domain
+	 * must never power off.
+	 *
+	 * History: with power-domains attached and no always-on flag,
+	 * panfrost's 50 ms autosuspend let genpd power pd_g3d off; the next
+	 * runtime resume read 0x14AC0000 and took an asynchronous SError
+	 * (p207). With the always-on flag, keeping the property should be
+	 * safe too (the p211 plan), but the board runs without it (the p210
+	 * fallback) and no p211 boot is recorded. Panfrost runtime PM only
+	 * powers the GPU cores on and off.
 	 */
 	/delete-property/ power-domains;
 
