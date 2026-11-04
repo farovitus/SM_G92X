@@ -93,6 +93,9 @@
 			reg = <0x100>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <677>;
+			clocks = <&clock_apollo CLK_SCLK_APOLLO>;
+			operating-points-v2 = <&cpu_apollo_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu_apollo1: cpu@101 {
@@ -101,6 +104,9 @@
 			reg = <0x101>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <677>;
+			clocks = <&clock_apollo CLK_SCLK_APOLLO>;
+			operating-points-v2 = <&cpu_apollo_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu_apollo2: cpu@102 {
@@ -109,6 +115,9 @@
 			reg = <0x102>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <677>;
+			clocks = <&clock_apollo CLK_SCLK_APOLLO>;
+			operating-points-v2 = <&cpu_apollo_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu_apollo3: cpu@103 {
@@ -117,6 +126,9 @@
 			reg = <0x103>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <677>;
+			clocks = <&clock_apollo CLK_SCLK_APOLLO>;
+			operating-points-v2 = <&cpu_apollo_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu_atlas0: cpu@0 {
@@ -125,6 +137,9 @@
 			reg = <0x0>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <1000>;
+			clocks = <&clock_atlas CLK_SCLK_ATLAS>;
+			operating-points-v2 = <&cpu_atlas_opp_table>;
+			#cooling-cells = <2>;
 			i-cache-size = <0xc000>;
 			i-cache-line-size = <64>;
 			i-cache-sets = <256>;
@@ -140,6 +155,9 @@
 			reg = <0x1>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <1000>;
+			clocks = <&clock_atlas CLK_SCLK_ATLAS>;
+			operating-points-v2 = <&cpu_atlas_opp_table>;
+			#cooling-cells = <2>;
 			i-cache-size = <0xc000>;
 			i-cache-line-size = <64>;
 			i-cache-sets = <256>;
@@ -155,6 +173,9 @@
 			reg = <0x2>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <1000>;
+			clocks = <&clock_atlas CLK_SCLK_ATLAS>;
+			operating-points-v2 = <&cpu_atlas_opp_table>;
+			#cooling-cells = <2>;
 			i-cache-size = <0xc000>;
 			i-cache-line-size = <64>;
 			i-cache-sets = <256>;
@@ -170,6 +191,9 @@
 			reg = <0x3>;
 			enable-method = "psci";
 			capacity-dmips-mhz = <1000>;
+			clocks = <&clock_atlas CLK_SCLK_ATLAS>;
+			operating-points-v2 = <&cpu_atlas_opp_table>;
+			#cooling-cells = <2>;
 			i-cache-size = <0xc000>;
 			i-cache-line-size = <64>;
 			i-cache-sets = <256>;
@@ -186,6 +210,160 @@
 			cache-size = <0x200000>;
 			cache-line-size = <64>;
 			cache-sets = <2048>;
+		};
+	};
+
+	/*
+	 * Cluster DVFS: the stock enabled ranges with the stock fallback
+	 * voltages, which are at or above every fused ASV group. Atlas stops
+	 * at 1.8 GHz while the PMIC's SRAM-rail tracking is left as S-Boot
+	 * programmed it; above 1.125 V it must be switched.
+	 */
+	cpu_atlas_opp_table: opp-table-atlas {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
+			opp-microvolt = <825000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-900000000 {
+			opp-hz = /bits/ 64 <900000000>;
+			opp-microvolt = <850000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+			opp-microvolt = <875000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1100000000 {
+			opp-hz = /bits/ 64 <1100000000>;
+			opp-microvolt = <900000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1200000000 {
+			opp-hz = /bits/ 64 <1200000000>;
+			opp-microvolt = <925000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1300000000 {
+			opp-hz = /bits/ 64 <1300000000>;
+			opp-microvolt = <950000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1400000000 {
+			opp-hz = /bits/ 64 <1400000000>;
+			opp-microvolt = <981250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1500000000 {
+			opp-hz = /bits/ 64 <1500000000>;
+			opp-microvolt = <1012500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1600000000 {
+			opp-hz = /bits/ 64 <1600000000>;
+			opp-microvolt = <1043750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1704000000 {
+			opp-hz = /bits/ 64 <1704000000>;
+			opp-microvolt = <1081250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1800000000 {
+			opp-hz = /bits/ 64 <1800000000>;
+			opp-microvolt = <1118750>;
+			clock-latency-ns = <500000>;
+		};
+	};
+
+	cpu_apollo_opp_table: opp-table-apollo {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-400000000 {
+			opp-hz = /bits/ 64 <400000000>;
+			opp-microvolt = <675000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-500000000 {
+			opp-hz = /bits/ 64 <500000000>;
+			opp-microvolt = <712500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-600000000 {
+			opp-hz = /bits/ 64 <600000000>;
+			opp-microvolt = <750000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-700000000 {
+			opp-hz = /bits/ 64 <700000000>;
+			opp-microvolt = <787500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
+			opp-microvolt = <825000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-900000000 {
+			opp-hz = /bits/ 64 <900000000>;
+			opp-microvolt = <862500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+			opp-microvolt = <900000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1104000000 {
+			opp-hz = /bits/ 64 <1104000000>;
+			opp-microvolt = <943750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1200000000 {
+			opp-hz = /bits/ 64 <1200000000>;
+			opp-microvolt = <981250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1296000000 {
+			opp-hz = /bits/ 64 <1296000000>;
+			opp-microvolt = <1018750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1400000000 {
+			opp-hz = /bits/ 64 <1400000000>;
+			opp-microvolt = <1068750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1500000000 {
+			opp-hz = /bits/ 64 <1500000000>;
+			opp-microvolt = <1118750>;
+			clock-latency-ns = <500000>;
 		};
 	};
 
@@ -244,6 +422,22 @@
 			clock-names = "apb_pclk";
 			#dma-cells = <1>;
 			status = "disabled";
+		};
+
+		clock_atlas: clock-controller@11800000 {
+			compatible = "samsung,exynos7-clock-atlas";
+			reg = <0x11800000 0x2000>;
+			#clock-cells = <1>;
+			clocks = <&fin_pll>;
+			clock-names = "fin_pll";
+		};
+
+		clock_apollo: clock-controller@11900000 {
+			compatible = "samsung,exynos7-clock-apollo";
+			reg = <0x11900000 0x2000>;
+			#clock-cells = <1>;
+			clocks = <&fin_pll>;
+			clock-names = "fin_pll";
 		};
 
 		clock_topc: clock-controller@10570000 {
@@ -957,10 +1151,62 @@
 		 * HAL looks for the 3.10 name "exynos-therm".
 		 */
 		atlas_thermal: exynos-therm {
-			polling-delay-passive = <0>; /* milliseconds */
-			polling-delay = <0>; /* milliseconds */
+			/* The stock trips and caps; the states index the OPP tables. */
+			polling-delay-passive = <100>; /* milliseconds */
+			polling-delay = <1000>; /* milliseconds */
 			thermal-sensors = <&tmuctrl_0>;
 			#include "exynos7-trip-points.dtsi"
+
+			cooling-maps {
+				map0 {
+					/* 75 C: A57 1704 MHz */
+					trip = <&cpu_alert0>;
+					cooling-device = <&cpu_atlas0 1 1>,
+						 <&cpu_atlas1 1 1>,
+						 <&cpu_atlas2 1 1>,
+						 <&cpu_atlas3 1 1>;
+				};
+				map1 {
+					/* 80 C: A57 1300 MHz, A53 1400 MHz */
+					trip = <&cpu_alert1>;
+					cooling-device = <&cpu_atlas0 5 5>,
+						 <&cpu_atlas1 5 5>,
+						 <&cpu_atlas2 5 5>,
+						 <&cpu_atlas3 5 5>,
+						 <&cpu_apollo0 1 1>,
+						 <&cpu_apollo1 1 1>,
+						 <&cpu_apollo2 1 1>,
+						 <&cpu_apollo3 1 1>;
+				};
+				map2 {
+					/* 85 C: A57 800 MHz, A53 1200 MHz */
+					trip = <&cpu_alert2>;
+					cooling-device = <&cpu_atlas0 10 10>,
+						 <&cpu_atlas1 10 10>,
+						 <&cpu_atlas2 10 10>,
+						 <&cpu_atlas3 10 10>,
+						 <&cpu_apollo0 3 3>,
+						 <&cpu_apollo1 3 3>,
+						 <&cpu_apollo2 3 3>,
+						 <&cpu_apollo3 3 3>;
+				};
+				map3 {
+					/* 90 C: A53 1000 MHz */
+					trip = <&cpu_alert3>;
+					cooling-device = <&cpu_apollo0 5 5>,
+						 <&cpu_apollo1 5 5>,
+						 <&cpu_apollo2 5 5>,
+						 <&cpu_apollo3 5 5>;
+				};
+				map4 {
+					/* 95 C: A53 400 MHz */
+					trip = <&cpu_alert4>;
+					cooling-device = <&cpu_apollo0 11 11>,
+						 <&cpu_apollo1 11 11>,
+						 <&cpu_apollo2 11 11>,
+						 <&cpu_apollo3 11 11>;
+				};
+			};
 		};
 	};
 
