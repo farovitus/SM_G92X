@@ -131,6 +131,31 @@ static bool s2mps11_volatile(struct device *dev, unsigned int reg)
 	}
 }
 
+/*
+ * Only the interrupt, status and power-on/off source registers change
+ * outside the kernel (the reserved ones are left uncached too); the
+ * regulator controls can be served from the cache.
+ * That matters when the PMIC sits on a slow bus and its bucks are scaled
+ * on every CPU frequency change.
+ */
+static bool s2mps15_volatile(struct device *dev, unsigned int reg)
+{
+	switch (reg) {
+	case S2MPS15_REG_INT1:
+	case S2MPS15_REG_INT2:
+	case S2MPS15_REG_INT3:
+	case S2MPS15_REG_ST1:
+	case S2MPS15_REG_ST2:
+	case S2MPS15_REG_PWRONSRC:
+	case S2MPS15_REG_OFFSRC:
+	case S2MPS15_REG_RSVD1 ... S2MPS15_REG_RSVD6:
+	case S2MPS15_REG_RSVD7 ... S2MPS15_REG_RSVD9:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static bool s2mpu02_volatile(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
@@ -189,8 +214,9 @@ static const struct regmap_config s2mps15_regmap_config = {
 	.val_bits = 8,
 
 	.max_register = S2MPS15_REG_LDODSCH4,
-	.volatile_reg = s2mps11_volatile,
-	.cache_type = REGCACHE_FLAT,
+	.volatile_reg = s2mps15_volatile,
+	/* Sparse: a register is read from the PMIC once, then cached. */
+	.cache_type = REGCACHE_MAPLE,
 };
 
 static const struct regmap_config s2mpu02_regmap_config = {
