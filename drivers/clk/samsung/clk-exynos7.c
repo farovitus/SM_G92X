@@ -8,6 +8,7 @@
 #include <linux/of.h>
 
 #include "clk.h"
+#include "clk-cpu.h"
 #include <dt-bindings/clock/exynos7-clk.h>
 
 /* Register Offset definitions for CMU_TOPC (0x10570000) */
@@ -1552,3 +1553,247 @@ static void __init exynos7_clk_disp_init(struct device_node *np)
 
 CLK_OF_DECLARE(exynos7_clk_disp, "samsung,exynos7-clock-disp",
 	exynos7_clk_disp_init);
+
+/*
+ * CPU cluster clocks. Both CMUs follow the Exynos5433 register layout with
+ * the CPU clock registers at 0x200; the mux status reports the selected input
+ * index. While a PLL relocks, the cluster runs from the alternate input, the
+ * BUS0 user mux. Its BUS0_PLL side comes through CMU_TOPC, so a board that
+ * cannot use CMU_TOPC points the user mux at the oscillator instead.
+ */
+#define ATLAS_PLL_LOCK		0x0000
+#define ATLAS_PLL_CON0		0x0100
+#define ATLAS_PLL_CON1		0x0104
+#define MUX_SEL_ATLAS0		0x0200
+#define MUX_SEL_ATLAS1		0x0204
+#define MUX_SEL_ATLAS2		0x0208
+#define DIV_ATLAS0		0x0600
+#define DIV_ATLAS1		0x0604
+
+#define APOLLO_PLL_LOCK		0x0000
+#define APOLLO_PLL_CON0		0x0100
+#define APOLLO_PLL_CON1		0x0104
+#define MUX_SEL_APOLLO0		0x0200
+#define MUX_SEL_APOLLO1		0x0204
+#define MUX_SEL_APOLLO2		0x0208
+#define DIV_APOLLO0		0x0600
+#define DIV_APOLLO1		0x0604
+
+static const struct samsung_pll_rate_table exynos7_atlas_pll_rates[] __initconst = {
+	PLL_35XX_RATE(24 * MHZ, 2100000000U, 175, 2, 0),
+	PLL_35XX_RATE(24 * MHZ, 2000000000U, 250, 3, 0),
+	PLL_35XX_RATE(24 * MHZ, 1896000000U, 158, 2, 0),
+	PLL_35XX_RATE(24 * MHZ, 1800000000U, 150, 2, 0),
+	PLL_35XX_RATE(24 * MHZ, 1704000000U, 142, 2, 0),
+	PLL_35XX_RATE(24 * MHZ, 1600000000U, 200, 3, 0),
+	PLL_35XX_RATE(24 * MHZ, 1500000000U, 250, 2, 1),
+	PLL_35XX_RATE(24 * MHZ, 1400000000U, 350, 3, 1),
+	PLL_35XX_RATE(24 * MHZ, 1300000000U, 325, 3, 1),
+	PLL_35XX_RATE(24 * MHZ, 1200000000U, 200, 2, 1),
+	PLL_35XX_RATE(24 * MHZ, 1100000000U, 275, 3, 1),
+	PLL_35XX_RATE(24 * MHZ, 1000000000U, 250, 3, 1),
+	PLL_35XX_RATE(24 * MHZ,  900000000U, 150, 2, 1),
+	PLL_35XX_RATE(24 * MHZ,  800000000U, 200, 3, 1),
+	PLL_35XX_RATE(24 * MHZ,  700000000U, 350, 3, 2),
+	PLL_35XX_RATE(24 * MHZ,  600000000U, 200, 2, 2),
+	PLL_35XX_RATE(24 * MHZ,  500000000U, 250, 3, 2),
+	PLL_35XX_RATE(24 * MHZ,  400000000U, 200, 3, 2),
+	PLL_35XX_RATE(24 * MHZ,  300000000U, 200, 2, 3),
+	PLL_35XX_RATE(24 * MHZ,  200000000U, 200, 3, 3),
+	{ /* sentinel */ }
+};
+
+static const struct samsung_pll_rate_table exynos7_apollo_pll_rates[] __initconst = {
+	PLL_35XX_RATE(24 * MHZ, 1500000000U, 250, 4, 0),
+	PLL_35XX_RATE(24 * MHZ, 1400000000U, 175, 3, 0),
+	PLL_35XX_RATE(24 * MHZ, 1296000000U, 108, 2, 0),
+	PLL_35XX_RATE(24 * MHZ, 1200000000U, 100, 2, 0),
+	PLL_35XX_RATE(24 * MHZ, 1104000000U,  92, 2, 0),
+	PLL_35XX_RATE(24 * MHZ, 1000000000U, 125, 3, 0),
+	PLL_35XX_RATE(24 * MHZ,  900000000U, 150, 2, 1),
+	PLL_35XX_RATE(24 * MHZ,  800000000U, 200, 3, 1),
+	PLL_35XX_RATE(24 * MHZ,  700000000U, 175, 3, 1),
+	PLL_35XX_RATE(24 * MHZ,  600000000U, 100, 2, 1),
+	PLL_35XX_RATE(24 * MHZ,  500000000U, 125, 3, 1),
+	PLL_35XX_RATE(24 * MHZ,  400000000U, 200, 3, 2),
+	PLL_35XX_RATE(24 * MHZ,  300000000U, 100, 2, 2),
+	PLL_35XX_RATE(24 * MHZ,  200000000U, 200, 3, 3),
+	{ /* sentinel */ }
+};
+
+/*
+ * DIV_ATLAS0: ATLAS1 [2:0] (the alternate-parent safe divider), ATLAS2 [6:4],
+ * ACLK [10:8], PCLK [14:12], ATCLK [22:20], PCLK_DBG [28:26].
+ * DIV_ATLAS1: ATLAS_PLL [2:0], HPM [6:4], CNTCLK [10:8].
+ */
+#define E7_ATLAS_DIV0(aclk, pclk, atclk, pclk_dbg) \
+	(((pclk_dbg) << 26) | ((atclk) << 20) | ((pclk) << 12) | ((aclk) << 8))
+#define E7_ATLAS_DIV1(cntclk, hpm, pll) \
+	(((cntclk) << 8) | ((hpm) << 4) | (pll))
+
+static const struct exynos_cpuclk_cfg_data exynos7_atlasclk_d[] __initconst = {
+	{ 2100000, E7_ATLAS_DIV0(2, 6, 6, 6), E7_ATLAS_DIV1(6, 5, 1) },
+	{ 2000000, E7_ATLAS_DIV0(2, 6, 6, 6), E7_ATLAS_DIV1(6, 5, 1) },
+	{ 1896000, E7_ATLAS_DIV0(2, 6, 6, 6), E7_ATLAS_DIV1(6, 4, 1) },
+	{ 1800000, E7_ATLAS_DIV0(2, 6, 6, 6), E7_ATLAS_DIV1(6, 4, 1) },
+	{ 1704000, E7_ATLAS_DIV0(2, 6, 6, 6), E7_ATLAS_DIV1(6, 4, 1) },
+	{ 1600000, E7_ATLAS_DIV0(2, 6, 6, 6), E7_ATLAS_DIV1(6, 4, 1) },
+	{ 1500000, E7_ATLAS_DIV0(2, 6, 6, 6), E7_ATLAS_DIV1(6, 4, 1) },
+	{ 1400000, E7_ATLAS_DIV0(2, 6, 6, 6), E7_ATLAS_DIV1(6, 4, 1) },
+	{ 1300000, E7_ATLAS_DIV0(2, 6, 6, 6), E7_ATLAS_DIV1(6, 4, 1) },
+	{ 1200000, E7_ATLAS_DIV0(1, 6, 6, 6), E7_ATLAS_DIV1(6, 3, 1) },
+	{ 1100000, E7_ATLAS_DIV0(1, 6, 6, 6), E7_ATLAS_DIV1(6, 3, 1) },
+	{ 1000000, E7_ATLAS_DIV0(1, 6, 6, 6), E7_ATLAS_DIV1(6, 3, 1) },
+	{  900000, E7_ATLAS_DIV0(1, 6, 6, 6), E7_ATLAS_DIV1(6, 3, 1) },
+	{  800000, E7_ATLAS_DIV0(1, 5, 5, 5), E7_ATLAS_DIV1(5, 3, 1) },
+	{  700000, E7_ATLAS_DIV0(1, 5, 5, 5), E7_ATLAS_DIV1(5, 3, 1) },
+	{  600000, E7_ATLAS_DIV0(1, 4, 4, 4), E7_ATLAS_DIV1(4, 3, 1) },
+	{  500000, E7_ATLAS_DIV0(1, 3, 3, 3), E7_ATLAS_DIV1(3, 2, 1) },
+	{  400000, E7_ATLAS_DIV0(1, 3, 3, 3), E7_ATLAS_DIV1(3, 2, 1) },
+	{  300000, E7_ATLAS_DIV0(1, 3, 3, 3), E7_ATLAS_DIV1(3, 2, 1) },
+	{  200000, E7_ATLAS_DIV0(1, 3, 3, 3), E7_ATLAS_DIV1(3, 1, 1) },
+	{ 0 },
+};
+
+/*
+ * DIV_APOLLO0: APOLLO1 [2:0] (the alternate-parent safe divider),
+ * APOLLO2 [6:4], ACLK [10:8], PCLK [14:12], ATCLK [18:16], PCLK_DBG [22:20],
+ * CNTCLK [26:24]. DIV_APOLLO1: APOLLO_PLL [2:0], HPM [6:4].
+ */
+#define E7_APOLLO_DIV0(aclk, pclk, atclk, pclk_dbg, cntclk) \
+	(((cntclk) << 24) | ((pclk_dbg) << 20) | ((atclk) << 16) | \
+	 ((pclk) << 12) | ((aclk) << 8))
+#define E7_APOLLO_DIV1(hpm, pll) \
+	(((hpm) << 4) | (pll))
+
+static const struct exynos_cpuclk_cfg_data exynos7_apolloclk_d[] __initconst = {
+	{ 1500000, E7_APOLLO_DIV0(2, 5, 5, 5, 5), E7_APOLLO_DIV1(3, 1) },
+	{ 1400000, E7_APOLLO_DIV0(2, 5, 5, 5, 5), E7_APOLLO_DIV1(3, 1) },
+	{ 1296000, E7_APOLLO_DIV0(2, 5, 5, 5, 5), E7_APOLLO_DIV1(3, 1) },
+	{ 1200000, E7_APOLLO_DIV0(2, 5, 5, 5, 5), E7_APOLLO_DIV1(3, 1) },
+	{ 1104000, E7_APOLLO_DIV0(2, 5, 5, 5, 5), E7_APOLLO_DIV1(3, 1) },
+	{ 1000000, E7_APOLLO_DIV0(2, 5, 5, 5, 5), E7_APOLLO_DIV1(3, 1) },
+	{  900000, E7_APOLLO_DIV0(1, 5, 5, 5, 5), E7_APOLLO_DIV1(2, 1) },
+	{  800000, E7_APOLLO_DIV0(1, 5, 5, 5, 5), E7_APOLLO_DIV1(2, 1) },
+	{  700000, E7_APOLLO_DIV0(1, 4, 4, 4, 4), E7_APOLLO_DIV1(2, 1) },
+	{  600000, E7_APOLLO_DIV0(1, 4, 4, 4, 4), E7_APOLLO_DIV1(2, 1) },
+	{  500000, E7_APOLLO_DIV0(1, 4, 4, 4, 4), E7_APOLLO_DIV1(2, 1) },
+	{  400000, E7_APOLLO_DIV0(1, 3, 3, 3, 3), E7_APOLLO_DIV1(2, 1) },
+	{  300000, E7_APOLLO_DIV0(1, 3, 3, 3, 3), E7_APOLLO_DIV1(2, 1) },
+	{  200000, E7_APOLLO_DIV0(1, 3, 3, 3, 3), E7_APOLLO_DIV1(1, 1) },
+	{ 0 },
+};
+
+static const unsigned long atlas_clk_regs[] __initconst = {
+	ATLAS_PLL_LOCK,
+	ATLAS_PLL_CON0,
+	ATLAS_PLL_CON1,
+	MUX_SEL_ATLAS0,
+	MUX_SEL_ATLAS1,
+	MUX_SEL_ATLAS2,
+	DIV_ATLAS0,
+	DIV_ATLAS1,
+};
+
+PNAME(mout_atlas_pll_p)		= { "fin_pll", "fout_atlas_pll" };
+PNAME(mout_bus0_pll_atlas_user_p) = { "fin_pll", "mout_sclk_bus0_pll_atlas" };
+PNAME(mout_atlas_p)		= { "mout_atlas_pll", "mout_bus0_pll_atlas_user" };
+
+static const struct samsung_pll_clock atlas_pll_clks[] __initconst = {
+	PLL(pll_1450x, CLK_FOUT_ATLAS_PLL, "fout_atlas_pll", "fin_pll",
+		ATLAS_PLL_LOCK, ATLAS_PLL_CON0, exynos7_atlas_pll_rates),
+};
+
+static const struct samsung_mux_clock atlas_mux_clks[] __initconst = {
+	MUX_F(CLK_MOUT_ATLAS_PLL, "mout_atlas_pll", mout_atlas_pll_p,
+		MUX_SEL_ATLAS0, 0, 1, CLK_SET_RATE_PARENT |
+		CLK_RECALC_NEW_RATES, 0),
+	MUX(CLK_MOUT_BUS0_PLL_ATLAS_USER, "mout_bus0_pll_atlas_user",
+		mout_bus0_pll_atlas_user_p, MUX_SEL_ATLAS1, 0, 1),
+	MUX_F(CLK_MOUT_ATLAS, "mout_atlas", mout_atlas_p, MUX_SEL_ATLAS2,
+		0, 1, CLK_SET_RATE_PARENT, 0),
+};
+
+static const struct samsung_cpu_clock atlas_cpu_clks[] __initconst = {
+	CPU_CLK(CLK_SCLK_ATLAS, "atlasclk", CLK_MOUT_ATLAS_PLL,
+		CLK_MOUT_BUS0_PLL_ATLAS_USER,
+		CLK_CPU_HAS_E5433_REGS_LAYOUT | CLK_CPU_MUX_STAT_IS_INDEX,
+		0x200, exynos7_atlasclk_d),
+};
+
+static const struct samsung_cmu_info atlas_cmu_info __initconst = {
+	.pll_clks		= atlas_pll_clks,
+	.nr_pll_clks		= ARRAY_SIZE(atlas_pll_clks),
+	.mux_clks		= atlas_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(atlas_mux_clks),
+	.cpu_clks		= atlas_cpu_clks,
+	.nr_cpu_clks		= ARRAY_SIZE(atlas_cpu_clks),
+	.nr_clk_ids		= ATLAS_NR_CLK,
+	.clk_regs		= atlas_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(atlas_clk_regs),
+};
+
+static void __init exynos7_clk_atlas_init(struct device_node *np)
+{
+	samsung_cmu_register_one(np, &atlas_cmu_info);
+}
+
+CLK_OF_DECLARE(exynos7_clk_atlas, "samsung,exynos7-clock-atlas",
+		exynos7_clk_atlas_init);
+
+static const unsigned long apollo_clk_regs[] __initconst = {
+	APOLLO_PLL_LOCK,
+	APOLLO_PLL_CON0,
+	APOLLO_PLL_CON1,
+	MUX_SEL_APOLLO0,
+	MUX_SEL_APOLLO1,
+	MUX_SEL_APOLLO2,
+	DIV_APOLLO0,
+	DIV_APOLLO1,
+};
+
+PNAME(mout_apollo_pll_p)	= { "fin_pll", "fout_apollo_pll" };
+PNAME(mout_bus0_pll_apollo_user_p) = { "fin_pll", "mout_sclk_bus0_pll_apollo" };
+PNAME(mout_apollo_p)		= { "mout_apollo_pll", "mout_bus0_pll_apollo_user" };
+
+static const struct samsung_pll_clock apollo_pll_clks[] __initconst = {
+	PLL(pll_1451x, CLK_FOUT_APOLLO_PLL, "fout_apollo_pll", "fin_pll",
+		APOLLO_PLL_LOCK, APOLLO_PLL_CON0, exynos7_apollo_pll_rates),
+};
+
+static const struct samsung_mux_clock apollo_mux_clks[] __initconst = {
+	MUX_F(CLK_MOUT_APOLLO_PLL, "mout_apollo_pll", mout_apollo_pll_p,
+		MUX_SEL_APOLLO0, 0, 1, CLK_SET_RATE_PARENT |
+		CLK_RECALC_NEW_RATES, 0),
+	MUX(CLK_MOUT_BUS0_PLL_APOLLO_USER, "mout_bus0_pll_apollo_user",
+		mout_bus0_pll_apollo_user_p, MUX_SEL_APOLLO1, 0, 1),
+	MUX_F(CLK_MOUT_APOLLO, "mout_apollo", mout_apollo_p, MUX_SEL_APOLLO2,
+		0, 1, CLK_SET_RATE_PARENT, 0),
+};
+
+static const struct samsung_cpu_clock apollo_cpu_clks[] __initconst = {
+	CPU_CLK(CLK_SCLK_APOLLO, "apolloclk", CLK_MOUT_APOLLO_PLL,
+		CLK_MOUT_BUS0_PLL_APOLLO_USER,
+		CLK_CPU_HAS_E5433_REGS_LAYOUT | CLK_CPU_MUX_STAT_IS_INDEX,
+		0x200, exynos7_apolloclk_d),
+};
+
+static const struct samsung_cmu_info apollo_cmu_info __initconst = {
+	.pll_clks		= apollo_pll_clks,
+	.nr_pll_clks		= ARRAY_SIZE(apollo_pll_clks),
+	.mux_clks		= apollo_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(apollo_mux_clks),
+	.cpu_clks		= apollo_cpu_clks,
+	.nr_cpu_clks		= ARRAY_SIZE(apollo_cpu_clks),
+	.nr_clk_ids		= APOLLO_NR_CLK,
+	.clk_regs		= apollo_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(apollo_clk_regs),
+};
+
+static void __init exynos7_clk_apollo_init(struct device_node *np)
+{
+	samsung_cmu_register_one(np, &apollo_cmu_info);
+}
+
+CLK_OF_DECLARE(exynos7_clk_apollo, "samsung,exynos7-clock-apollo",
+		exynos7_clk_apollo_init);
