@@ -921,7 +921,11 @@
 	};
 
 	thermal-zones {
-		atlas_thermal: cluster0-thermal {
+		/*
+		 * The zone type is the node name; Samsung's Android thermal
+		 * HAL looks for the 3.10 name "exynos-therm".
+		 */
+		atlas_thermal: exynos-therm {
 			polling-delay-passive = <0>; /* milliseconds */
 			polling-delay = <0>; /* milliseconds */
 			thermal-sensors = <&tmuctrl_0>;
