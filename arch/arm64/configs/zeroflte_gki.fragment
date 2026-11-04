@@ -23,6 +23,9 @@ CONFIG_RTC_DRV_S3C=y
 # S-Boot's restart targets (recovery, download) through PMU INFORM3.
 CONFIG_SYSCON_REBOOT_MODE=y
 
+# Cluster DVFS: cpufreq-dt on the DT OPP tables, schedutil (GKI default).
+CONFIG_CPUFREQ_DT=y
+
 # Console
 CONFIG_SERIAL_SAMSUNG=y
 CONFIG_SERIAL_SAMSUNG_CONSOLE=y
