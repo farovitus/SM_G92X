@@ -223,7 +223,8 @@
 #define CLK_ACLK_G3D			5
 #define CLK_PCLK_SYSREG_G3D		6
 #define CLK_PCLK_PMU_G3D		7
-#define G3D_NR_CLK			8
+#define CLK_MOUT_G3D_PLL		8
+#define G3D_NR_CLK			9
 
 /* DISP */
 #define CLK_FOUT_DISP_PLL		1

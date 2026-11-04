@@ -1368,7 +1368,8 @@ CLK_OF_DECLARE(exynos7_clk_aud, "samsung,exynos7-clock-aud",
 #define ENABLE_IP_G3D			0x0B00
 
 /* List of parent clocks for Muxes in CMU_G3D */
-PNAME(mout_aclk_g3d_400_p)	= { "fout_g3d_pll", "fin_pll" };
+PNAME(mout_g3d_pll_p)		= { "fin_pll", "fout_g3d_pll" };
+PNAME(mout_aclk_g3d_400_p)	= { "mout_g3d_pll", "fin_pll" };
 
 static const unsigned long g3d_clk_regs[] __initconst = {
 	G3D_PLL_CON0,
@@ -1380,12 +1381,29 @@ static const unsigned long g3d_clk_regs[] __initconst = {
 	ENABLE_IP_G3D,
 };
 
-/* The G3D PLL is left running by the bootloader; model it at its rate. */
-static const struct samsung_fixed_rate_clock g3d_fixed_clks[] __initconst = {
-	FRATE(CLK_FOUT_G3D_PLL, "fout_g3d_pll", "fin_pll", 0, 700000000),
+/*
+ * G3D_PLL rates used by the 3.10 vendor GPU DVFS (clk-exynos7420.c
+ * table_g3d). The PLL is a PLL1452X with the PLL35XX register layout.
+ */
+static const struct samsung_pll_rate_table g3d_pll_rates[] __initconst = {
+	PLL_35XX_RATE(24 * MHZ, 772000000, 193, 6, 0),
+	PLL_35XX_RATE(24 * MHZ, 700000000, 175, 6, 0),
+	PLL_35XX_RATE(24 * MHZ, 600000000, 75, 3, 0),
+	PLL_35XX_RATE(24 * MHZ, 544000000, 68, 3, 0),
+	PLL_35XX_RATE(24 * MHZ, 420000000, 105, 3, 1),
+	PLL_35XX_RATE(24 * MHZ, 350000000, 175, 6, 1),
+	PLL_35XX_RATE(24 * MHZ, 266000000, 133, 6, 1),
+	{ /* sentinel */ }
+};
+
+static const struct samsung_pll_clock g3d_pll_clks[] __initconst = {
+	PLL(pll_1452x, CLK_FOUT_G3D_PLL, "fout_g3d_pll", "fin_pll",
+		G3D_PLL_LOCK, G3D_PLL_CON0, g3d_pll_rates),
 };
 
 static const struct samsung_mux_clock g3d_mux_clks[] __initconst = {
+	MUX(CLK_MOUT_G3D_PLL, "mout_g3d_pll", mout_g3d_pll_p,
+		MUX_SEL_G3D, 0, 1),
 	MUX_F(CLK_MOUT_ACLK_G3D_400, "mout_aclk_g3d_400", mout_aclk_g3d_400_p,
 		MUX_SEL_G3D, 8, 1,
 		CLK_SET_RATE_PARENT | CLK_SET_RATE_NO_REPARENT, 0),
@@ -1407,8 +1425,8 @@ static const struct samsung_gate_clock g3d_gate_clks[] __initconst = {
 };
 
 static const struct samsung_cmu_info g3d_cmu_info __initconst = {
-	.fixed_clks		= g3d_fixed_clks,
-	.nr_fixed_clks		= ARRAY_SIZE(g3d_fixed_clks),
+	.pll_clks		= g3d_pll_clks,
+	.nr_pll_clks		= ARRAY_SIZE(g3d_pll_clks),
 	.mux_clks		= g3d_mux_clks,
 	.nr_mux_clks		= ARRAY_SIZE(g3d_mux_clks),
 	.div_clks		= g3d_div_clks,
