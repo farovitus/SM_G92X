@@ -173,6 +173,17 @@ kmake Image "$dtb_name"
 
 image="$kernel_out/arch/arm64/boot/Image"
 dtb="$kernel_out/arch/arm64/boot/dts/$dtb_name"
+
+# S-Boot loads the DTB from a DTBH table and picks it by the model_info-*
+# properties. Build the table from this one DTB only.
+dt_image="$product_out/boot.img-dtb"
+dt_stage="$product_out/dt-stage"
+rm -rf -- "$dt_stage"
+mkdir -p "$dt_stage"
+cp "$dtb" "$dt_stage/"
+"$tools_dir/dtbTool" -s 2048 -d "$dt_stage/" -o "$dt_image" >/dev/null
+rm -rf -- "$dt_stage"
+cp "$image" "$product_out/boot.img-zImage"
 release=$(<"$kernel_out/include/config/kernel.release")
 zip_name="SM-$device_model-$release-artifacts.zip"
 stage="$product_out/stage"
@@ -183,8 +194,9 @@ cp "$image" "$stage/Image"
 cp "$dtb" "$stage/$(basename "$dtb_name")"
 cp "$kernel_out/.config" "$stage/config"
 cp "$kernel_out/System.map" "$stage/System.map"
+cp "$dt_image" "$stage/boot.img-dtb"
 rm -f -- "$product_out/$zip_name"
-(cd "$stage" && zip -qX "$product_out/$zip_name" Image "$(basename "$dtb_name")" config System.map)
+(cd "$stage" && zip -qX "$product_out/$zip_name" Image "$(basename "$dtb_name")" boot.img-dtb config System.map)
 (cd "$product_out" && shasum -a 256 "$zip_name" > "$zip_name.sha256")
 rm -rf -- "$stage"
 
