@@ -70,6 +70,19 @@
 			no-map;
 		};
 
+		/* Exynos-snapshot header and kernel log ring, shared with the
+		 * 3.10 kernels: init/dsh_esslog.c writes this boot's log there
+		 * for TWRP's /proc/last_kmsg. */
+		ess-header@46000000 {
+			reg = <0x0 0x46000000 0x0 0x1000>;
+			no-map;
+		};
+
+		ess-klog@46800000 {
+			reg = <0x0 0x46800000 0x0 0x200000>;
+			no-map;
+		};
+
 		ramoops@46d80000 {
 			compatible = "ramoops";
 			reg = <0x0 0x46d80000 0x0 0x80000>;
