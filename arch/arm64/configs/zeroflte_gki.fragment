@@ -87,8 +87,9 @@ CONFIG_LTO_NONE=y
 # The kernel keeps the last loglevel, S-Boot's 4, so ignore_loglevel keeps
 # every message in the RAM log. log_buf_len keeps the kernel's boot
 # messages through Android's /dev/kmsg traffic, and dsh_autorecovery
-# returns a test boot to TWRP after 180 s with them replayed into the log.
-CONFIG_CMDLINE="stack_depot_disable=on cgroup_disable=pressure kasan.stacktrace=off bootconfig clk_ignore_unused pd_ignore_unused deferred_probe_timeout=0 rodata=off nohz=off loglevel=8 printk.devkmsg=on androidboot.selinux=permissive ignore_loglevel log_buf_len=4M dsh_autorecovery=180"
+# returns a test boot to TWRP after 150 s with them replayed into the log,
+# unless userspace cancels it once the boot completes.
+CONFIG_CMDLINE="stack_depot_disable=on cgroup_disable=pressure kasan.stacktrace=off bootconfig clk_ignore_unused pd_ignore_unused deferred_probe_timeout=0 rodata=off nohz=off loglevel=8 printk.devkmsg=on androidboot.selinux=permissive ignore_loglevel log_buf_len=4M dsh_autorecovery=150"
 
 # Size: the Image must fit the 28 MiB BOOT partition with the ROM ramdisk.
 # The A57/A53 have no pointer authentication, so the PAC-to-SCS patching

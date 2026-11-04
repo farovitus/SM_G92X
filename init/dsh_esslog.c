@@ -13,6 +13,7 @@
 #include <linux/kmsg_dump.h>
 #include <linux/kstrtox.h>
 #include <linux/minmax.h>
+#include <linux/moduleparam.h>
 #include <linux/pid_namespace.h>
 #include <linux/reboot.h>
 #include <linux/sched/debug.h>
@@ -75,9 +76,12 @@ console_initcall(ess_console_init);
  *
  * dsh_autorecovery=<seconds> restarts into recovery at the first beat after
  * that uptime, so a test boot returns to TWRP with its log without anyone
- * holding the keys.
+ * holding the keys. Writing 0 to
+ * /sys/module/dsh_esslog/parameters/autorecovery cancels it, so a boot
+ * that completes stays up.
  */
 static unsigned int ess_autorecovery;
+module_param_named(autorecovery, ess_autorecovery, uint, 0644);
 
 static int __init ess_autorecovery_setup(char *s)
 {
