@@ -473,6 +473,50 @@
 	 * domain must stay on and the GPU must not be its consumer.
 	 */
 	/delete-property/ power-domains;
+
+	/*
+	 * GPU DVFS through panfrost devfreq (simple_ondemand). Levels are
+	 * the 3.10 G3D_PLL table up to its 700 MHz limit
+	 * (GPU_MAX_CLOCK_LIMIT); 772 MHz is left out until 700 MHz has run
+	 * stable. Voltages are the ASV group 0 (worst chip) column of the
+	 * 3.10 G3D ASV tables v12/v15, so they hold for any ASV group.
+	 */
+	mali-supply = <&vdd_g3d>;
+	operating-points-v2 = <&gpu_opp_table>;
+
+	gpu_opp_table: opp-table {
+		compatible = "operating-points-v2";
+
+		opp-266000000 {
+			opp-hz = /bits/ 64 <266000000>;
+			opp-microvolt = <762500>;
+		};
+
+		opp-350000000 {
+			opp-hz = /bits/ 64 <350000000>;
+			opp-microvolt = <768750>;
+		};
+
+		opp-420000000 {
+			opp-hz = /bits/ 64 <420000000>;
+			opp-microvolt = <775000>;
+		};
+
+		opp-544000000 {
+			opp-hz = /bits/ 64 <544000000>;
+			opp-microvolt = <812500>;
+		};
+
+		opp-600000000 {
+			opp-hz = /bits/ 64 <600000000>;
+			opp-microvolt = <850000>;
+		};
+
+		opp-700000000 {
+			opp-hz = /bits/ 64 <700000000>;
+			opp-microvolt = <893750>;
+		};
+	};
 };
 
 &hsi2c_7 {

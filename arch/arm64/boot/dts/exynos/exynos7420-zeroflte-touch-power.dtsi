@@ -55,6 +55,25 @@
 					regulator-min-microvolt = <3300000>;
 					regulator-max-microvolt = <3300000>;
 				};
+
+				/*
+				 * GPU supply (3.10 vdd_g3d). 3.10 hands BUCK6 enable
+				 * to the G3D power GPIO (gpb0-4) and clears the
+				 * B6CTRL1 enable bits, so it reads "disabled" here
+				 * while the GPU runs. always-on sets those bits and
+				 * keeps the rail up; pd_g3d never powers off anyway.
+				 * The limits are 3.10's (G3D_MAX_VOLT 1018750). The
+				 * ramp is the slowest BUCK_RAMP1 setting, 6 mV/us,
+				 * because nothing here programs that register.
+				 */
+				vdd_g3d: BUCK6 {
+					regulator-name = "vdd_g3d";
+					regulator-min-microvolt = <600000>;
+					regulator-max-microvolt = <1018750>;
+					regulator-ramp-delay = <6000>;
+					regulator-always-on;
+					regulator-boot-on;
+				};
 			};
 		};
 	};
