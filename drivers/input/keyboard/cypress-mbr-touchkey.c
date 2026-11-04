@@ -29,6 +29,9 @@
 
 #define MBR_REG_KEY_STATUS	0x03
 #define MBR_REG_FW_VER		0x04
+#define MBR_REG_CMD		0x00
+#define MBR_CMD_LED_ON		0x10
+#define MBR_CMD_LED_OFF		0x20
 
 #define MBR_MAX_KEYS		4
 #define MBR_KEY_FIELD_BITS	2
@@ -42,6 +45,7 @@ struct mbr_touchkey {
 	unsigned int num_keys;
 	u32 keycodes[MBR_MAX_KEYS];
 	bool disabled;
+	bool led_on;
 };
 
 static const u32 mbr_default_keycodes[] = {
@@ -117,6 +121,47 @@ static ssize_t enabled_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(enabled);
 
+static ssize_t brightness_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct mbr_touchkey *tk = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", READ_ONCE(tk->led_on));
+}
+
+/* The key backlight: any non-zero value turns it on. */
+static ssize_t brightness_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct mbr_touchkey *tk = dev_get_drvdata(dev);
+	unsigned int val;
+	int error;
+
+	error = kstrtouint(buf, 0, &val);
+	if (error)
+		return error;
+
+	error = i2c_smbus_write_byte_data(tk->client, MBR_REG_CMD,
+					  val ? MBR_CMD_LED_ON :
+						MBR_CMD_LED_OFF);
+	if (error)
+		return error;
+
+	WRITE_ONCE(tk->led_on, !!val);
+	return count;
+}
+static DEVICE_ATTR_RW(brightness);
+
+static struct attribute *mbr_touchkey_sec_attrs[] = {
+	&dev_attr_brightness.attr,
+	NULL
+};
+
+static const struct attribute_group mbr_touchkey_sec_group = {
+	.attrs = mbr_touchkey_sec_attrs,
+};
+
 static struct attribute *mbr_touchkey_input_attrs[] = {
 	&dev_attr_enabled.attr,
 	NULL
@@ -128,6 +173,7 @@ static const struct attribute_group mbr_touchkey_input_group = {
 };
 
 static const struct attribute_group *mbr_touchkey_sec_groups[] = {
+	&mbr_touchkey_sec_group,
 	&mbr_touchkey_input_group,
 	NULL
 };
