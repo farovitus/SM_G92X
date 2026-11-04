@@ -198,6 +198,7 @@ struct exynos5_usbdrd_phy_drvdata {
 	u32 pmu_offset_usbdrd0_phy;
 	u32 pmu_offset_usbdrd1_phy;
 	bool has_common_clk_gate;
+	bool keep_powered;
 };
 
 /**
@@ -479,6 +480,10 @@ static int exynos5_usbdrd_phy_exit(struct phy *phy)
 	struct phy_usb_instance *inst = phy_get_drvdata(phy);
 	struct exynos5_usbdrd_phy *phy_drd = to_usbdrd_phy(inst);
 
+	/* See exynos5_usbdrd_phy_power_off(). */
+	if (phy_drd->drv_data->keep_powered)
+		return 0;
+
 	ret = clk_prepare_enable(phy_drd->clk);
 	if (ret)
 		return ret;
@@ -565,6 +570,17 @@ static int exynos5_usbdrd_phy_power_off(struct phy *phy)
 	struct exynos5_usbdrd_phy *phy_drd = to_usbdrd_phy(inst);
 
 	dev_dbg(phy_drd->dev, "Request to power_off usbdrd_phy phy\n");
+
+	/*
+	 * Exynos7: once the PHY is isolated with its clocks gated, PHY and
+	 * dwc3 register reads raise an asynchronous SError. dwc3 powers the
+	 * PHY off on system suspend, then touches PHY registers in phy_exit
+	 * and its own registers on resume before it powers the PHY on, so
+	 * the first screen-off panicked. Keep the PHY powered as probe left
+	 * it, at the cost of its suspend current.
+	 */
+	if (phy_drd->drv_data->keep_powered)
+		return 0;
 
 	/* Power-off the PHY */
 	inst->phy_cfg->phy_isol(inst, 1);
@@ -969,6 +985,7 @@ static const struct exynos5_usbdrd_phy_drvdata exynos7_usbdrd_phy = {
 	.phy_ops		= &exynos5_usbdrd_phy_ops,
 	.pmu_offset_usbdrd0_phy	= EXYNOS5_USBDRD_PHY_CONTROL,
 	.has_common_clk_gate	= false,
+	.keep_powered		= true,
 };
 
 static const struct exynos5_usbdrd_phy_drvdata exynos850_usbdrd_phy = {
