@@ -169,7 +169,38 @@ if [[ ! -f "$build_id_h" || "$(<"$build_id_h")" != "$build_id" ]]; then
 	printf '%s\n' "$build_id" > "$build_id_h"
 fi
 
-kmake Image "$dtb_name"
+kmake Image "$dtb_name" modules
+
+# Modules are signed with this build's key and carry its release string,
+# so they only load on the Image built with them. Install them signed and
+# stripped, flatten them for /vendor/lib/modules, and write the
+# modules.dep that Android's modprobe reads (macOS has no depmod).
+mod_stage="$product_out/modules-install"
+mod_dir="$product_out/modules"
+rm -rf -- "$mod_stage" "$mod_dir"
+mkdir -p "$mod_dir"
+kmake modules_install INSTALL_MOD_PATH="$mod_stage" INSTALL_MOD_STRIP=1 >/dev/null
+find "$mod_stage" -name '*.ko' -exec cp {} "$mod_dir/" \;
+rm -rf -- "$mod_stage"
+mod_deps() {
+	"$llvm_bin/llvm-objcopy" --dump-section .modinfo="$mod_dir/.modinfo" "$mod_dir/$1.ko" /dev/null
+	tr '\0' '\n' < "$mod_dir/.modinfo" | sed -n 's/^depends=//p' | tr ',' '\n' | sed '/^$/d'
+	rm -f -- "$mod_dir/.modinfo"
+}
+# Each line lists every module the first needs, nearest dependency first.
+mod_closure() {
+	local d
+	for d in $(mod_deps "$1"); do
+		mod_closure "$d"
+		echo "$d"
+	done
+}
+: > "$mod_dir/modules.dep"
+for ko in "$mod_dir"/*.ko; do
+	m=$(basename "$ko" .ko)
+	deps=$(mod_closure "$m" | awk '!seen[$0]++' | tail -r | sed 's/$/.ko/' | tr '\n' ' ')
+	echo "$m.ko: ${deps% }" >> "$mod_dir/modules.dep"
+done
 
 image="$kernel_out/arch/arm64/boot/Image"
 dtb="$kernel_out/arch/arm64/boot/dts/$dtb_name"
@@ -195,12 +226,14 @@ cp "$dtb" "$stage/$(basename "$dtb_name")"
 cp "$kernel_out/.config" "$stage/config"
 cp "$kernel_out/System.map" "$stage/System.map"
 cp "$dt_image" "$stage/boot.img-dtb"
+cp -R "$mod_dir" "$stage/modules"
 rm -f -- "$product_out/$zip_name"
-(cd "$stage" && zip -qX "$product_out/$zip_name" Image "$(basename "$dtb_name")" boot.img-dtb config System.map)
+(cd "$stage" && zip -qX "$product_out/$zip_name" Image "$(basename "$dtb_name")" boot.img-dtb config System.map modules)
 (cd "$product_out" && shasum -a 256 "$zip_name" > "$zip_name.sha256")
 rm -rf -- "$stage"
 
 echo "Kernel: $release"
 echo "Image:  $image"
 echo "DTB:    $dtb"
+echo "Modules: $mod_dir"
 echo "ZIP:    $product_out/$zip_name (artifacts only, not flashable)"

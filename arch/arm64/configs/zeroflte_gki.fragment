@@ -97,6 +97,10 @@ CONFIG_RD_LZ4=y
 # Bring-up: faster builds without LTO (kCFI does not need it).
 CONFIG_LTO_NONE=y
 
+# kheaders.ko packs the kernel headers for BPF tools with GNU tar options
+# macOS tar lacks, and nothing on the phone reads them.
+# CONFIG_IKHEADERS is not set
+
 # S-Boot enters the kernel at EL1, so KVM can never run.
 # CONFIG_KVM is not set
 
