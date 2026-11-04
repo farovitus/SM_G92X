@@ -55,6 +55,7 @@ struct decon_context {
 	void __iomem			*regs;
 	unsigned long			irq_flags;
 	bool				i80_if;
+	bool				bootloader_display;
 	wait_queue_head_t		wait_vsync_queue;
 	atomic_t			wait_vsync_event;
 
@@ -811,6 +812,8 @@ static int decon_probe(struct platform_device *pdev)
 	if (i80_if_timings)
 		ctx->i80_if = true;
 	of_node_put(i80_if_timings);
+	ctx->bootloader_display = of_property_read_bool(dev->of_node,
+						"samsung,bootloader-display");
 
 	if (ctx->i80_if)
 		decon_get_boot_fb(ctx);
@@ -955,8 +958,29 @@ err_pclk_enable:
 	return ret;
 }
 
-static DEFINE_RUNTIME_DEV_PM_OPS(exynos7_decon_pm_ops, exynos7_decon_suspend,
-				 exynos7_decon_resume, NULL);
+/*
+ * With "samsung,bootloader-display" the DSI link and panel are only set up
+ * by the bootloader. Gating DECON's clocks through system sleep stalled the
+ * panel after resume (one frame, then no frame-done), so keep them running.
+ */
+static int exynos7_decon_sys_suspend(struct device *dev)
+{
+	struct decon_context *ctx = dev_get_drvdata(dev);
+
+	return ctx->bootloader_display ? 0 : pm_runtime_force_suspend(dev);
+}
+
+static int exynos7_decon_sys_resume(struct device *dev)
+{
+	struct decon_context *ctx = dev_get_drvdata(dev);
+
+	return ctx->bootloader_display ? 0 : pm_runtime_force_resume(dev);
+}
+
+static const struct dev_pm_ops exynos7_decon_pm_ops = {
+	SYSTEM_SLEEP_PM_OPS(exynos7_decon_sys_suspend, exynos7_decon_sys_resume)
+	RUNTIME_PM_OPS(exynos7_decon_suspend, exynos7_decon_resume, NULL)
+};
 
 struct platform_driver decon_driver = {
 	.probe		= decon_probe,

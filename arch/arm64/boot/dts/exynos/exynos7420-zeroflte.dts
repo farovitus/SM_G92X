@@ -381,6 +381,11 @@
 
 &decon {
 	status = "okay";
+	/*
+	 * Only S-Boot sets up the DSI link and panel; keep the display
+	 * running through system sleep.
+	 */
+	samsung,bootloader-display;
 
 	/* Command-mode (i80) MIPI panel, S6E3HA2 */
 	i80-if-timings {

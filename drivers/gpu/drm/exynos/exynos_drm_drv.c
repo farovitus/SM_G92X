@@ -9,6 +9,7 @@
 
 #include <linux/component.h>
 #include <linux/dma-mapping.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/uaccess.h>
@@ -122,10 +123,29 @@ static const struct drm_driver exynos_drm_driver = {
 	.minor	= DRIVER_MINOR,
 };
 
+/*
+ * A display that only the bootloader can initialise (see the DECON
+ * "samsung,bootloader-display" property) must stay running through system
+ * sleep: once its CRTC is disabled, nothing in the kernel can bring the
+ * DSI link and panel back.
+ */
+static bool exynos_drm_keep_display(void)
+{
+	struct device_node *np;
+	bool keep;
+
+	np = of_find_compatible_node(NULL, NULL, "samsung,exynos7-decon");
+	keep = of_property_read_bool(np, "samsung,bootloader-display");
+	of_node_put(np);
+	return keep;
+}
+
 static int exynos_drm_suspend(struct device *dev)
 {
 	struct drm_device *drm_dev = dev_get_drvdata(dev);
 
+	if (exynos_drm_keep_display())
+		return 0;
 	return  drm_mode_config_helper_suspend(drm_dev);
 }
 
@@ -133,6 +153,8 @@ static void exynos_drm_resume(struct device *dev)
 {
 	struct drm_device *drm_dev = dev_get_drvdata(dev);
 
+	if (exynos_drm_keep_display())
+		return;
 	drm_mode_config_helper_resume(drm_dev);
 }
 
