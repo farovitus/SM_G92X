@@ -9,3 +9,11 @@ config EXYNOS_THERMAL
 	  the TMU, reports temperature and handles cooling action if defined.
 	  This driver uses the Exynos core thermal APIs and TMU configuration
 	  data from the supported SoCs.
+
+config SEC_COOLING_COMPAT
+	tristate "Placeholder cooling devices for Samsung's Android thermal HAL"
+	depends on OF
+	help
+	  Registers inert "thermal-cpufreq-0", "thermal-cpufreq-1" and
+	  "battery" cooling devices, the 3.10 names Samsung's thermal HAL
+	  requires. They have one state and throttle nothing.

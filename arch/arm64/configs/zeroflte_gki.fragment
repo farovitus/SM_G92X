@@ -16,6 +16,8 @@ CONFIG_PL330_DMA=y
 CONFIG_PWM_SAMSUNG=y
 CONFIG_S3C2410_WATCHDOG=y
 CONFIG_EXYNOS_THERMAL=y
+# Cooling-device names the ROM's thermal HAL requires (placeholders).
+CONFIG_SEC_COOLING_COMPAT=y
 CONFIG_EXYNOS_ADC=y
 CONFIG_RTC_DRV_S3C=y
 # S-Boot's restart targets (recovery, download) through PMU INFORM3.
