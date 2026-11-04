@@ -437,6 +437,7 @@
 		avdd-supply = <&tsp_avdd_ldo17>;
 		touchscreen-size-x = <4096>;
 		touchscreen-size-y = <4096>;
+		st,int-enable-reg;
 	};
 };
 

@@ -101,6 +101,7 @@ struct stmfts_data {
 	struct completion cmd_done;
 
 	bool use_key;
+	bool int_enable_reg;
 	bool led_status;
 	bool hover_enabled;
 	bool running;
@@ -333,6 +334,22 @@ static int stmfts_command(struct stmfts_data *sdata, const u8 cmd)
 	return 0;
 }
 
+/*
+ * FTS5 controllers (Galaxy S6) keep touch events off the interrupt line
+ * until the host sets the interrupt-enable register (0x001c) to 0x41.
+ */
+static int stmfts_enable_int_reg(struct stmfts_data *sdata)
+{
+	static const u8 cmd[] = { 0xb6, 0x00, 0x1c, 0x41 };
+	int ret;
+
+	if (!sdata->int_enable_reg)
+		return 0;
+
+	ret = i2c_master_send(sdata->client, cmd, sizeof(cmd));
+	return ret < 0 ? ret : 0;
+}
+
 static int stmfts_input_open(struct input_dev *dev)
 {
 	struct stmfts_data *sdata = input_get_drvdata(dev);
@@ -347,6 +364,11 @@ static int stmfts_input_open(struct input_dev *dev)
 		pm_runtime_put_sync(&sdata->client->dev);
 		return err;
 	}
+
+	err = stmfts_enable_int_reg(sdata);
+	if (err)
+		dev_warn(&sdata->client->dev,
+			 "failed to enable the interrupt: %d\n", err);
 
 	mutex_lock(&sdata->mutex);
 	sdata->running = true;
@@ -693,6 +715,8 @@ static int stmfts_probe(struct i2c_client *client)
 
 	sdata->use_key = device_property_read_bool(&client->dev,
 						   "touch-key-connected");
+	sdata->int_enable_reg = device_property_read_bool(&client->dev,
+						"st,int-enable-reg");
 	if (sdata->use_key) {
 		input_set_capability(sdata->input, EV_KEY, KEY_MENU);
 		input_set_capability(sdata->input, EV_KEY, KEY_BACK);
