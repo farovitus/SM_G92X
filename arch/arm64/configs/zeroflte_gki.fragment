@@ -46,6 +46,9 @@ CONFIG_DRM_EXYNOS7_DECON=y
 # S-Boot has already brought up DSI and the panel.
 CONFIG_DRM_EXYNOS_DPI=y
 CONFIG_DRM_SIMPLEDRM=y
+# Mali-T760 MP8 for Mesa's panfrost driver. The Samsung Mali blobs in the
+# ROM need the 3.10 kbase driver and cannot run on this kernel.
+CONFIG_DRM_PANFROST=y
 
 # Input
 CONFIG_TOUCHSCREEN_STMFTS=y
