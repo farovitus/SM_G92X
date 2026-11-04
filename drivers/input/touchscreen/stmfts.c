@@ -190,8 +190,6 @@ static void stmfts_report_contact_event(struct stmfts_data *sdata,
 	input_report_abs(sdata->input, ABS_MT_TOUCH_MINOR, min);
 	input_report_abs(sdata->input, ABS_MT_PRESSURE, area);
 	input_report_abs(sdata->input, ABS_MT_ORIENTATION, orientation);
-
-	input_sync(sdata->input);
 }
 
 static void stmfts_report_contact_release(struct stmfts_data *sdata,
@@ -201,8 +199,6 @@ static void stmfts_report_contact_release(struct stmfts_data *sdata,
 
 	input_mt_slot(sdata->input, slot_id);
 	input_mt_report_slot_inactive(sdata->input);
-
-	input_sync(sdata->input);
 }
 
 static void stmfts_report_hover_event(struct stmfts_data *sdata,
@@ -312,6 +308,13 @@ static irqreturn_t stmfts_irq_handler(int irq, void *dev)
 			"failed to read events: %d\n", err);
 	else
 		stmfts_parse_events(sdata);
+
+	/*
+	 * One frame per interrupt. input_mt_sync_frame() also reports
+	 * BTN_TOUCH; without it Android sees every contact as hovering.
+	 */
+	input_mt_sync_frame(sdata->input);
+	input_sync(sdata->input);
 
 	mutex_unlock(&sdata->mutex);
 	return IRQ_HANDLED;
