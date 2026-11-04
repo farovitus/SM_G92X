@@ -60,6 +60,9 @@ CONFIG_DRM_SIMPLEDRM=y
 # Mali-T760 MP8 for Mesa's panfrost driver. The Samsung Mali blobs in the
 # ROM need the 3.10 kbase driver and cannot run on this kernel.
 CONFIG_DRM_PANFROST=y
+# /dev/dma_heap/system, the cached allocator minigbm gralloc4 and the
+# AIDL allocator use for buffers that are not scanned out.
+CONFIG_DMABUF_HEAPS_SYSTEM=y
 
 # Input
 CONFIG_TOUCHSCREEN_STMFTS=y
