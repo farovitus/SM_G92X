@@ -115,6 +115,12 @@ CONFIG_LTO_NONE=y
 
 # S-Boot enters the kernel at EL1, so KVM can never run.
 # CONFIG_KVM is not set
+# Nor can any other guest or hypervisor: drop Qualcomm's Gunyah, the vhost
+# backends, vsock and virtio-fs.
+# CONFIG_GUNYAH is not set
+# CONFIG_VHOST_MENU is not set
+# CONFIG_VSOCKETS is not set
+# CONFIG_VIRTIO_FS is not set
 
 # S-Boot's arguments follow this string (CMDLINE_EXTEND). GKI's defaults
 # without the pKVM ones, plus what the port needs: S-Boot's display clocks
