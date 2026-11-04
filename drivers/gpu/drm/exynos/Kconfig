@@ -49,7 +49,7 @@ comment "Encoders and Bridges"
 
 config DRM_EXYNOS_DPI
 	bool "Parallel output"
-	depends on DRM_EXYNOS_FIMD
+	depends on DRM_EXYNOS_FIMD || DRM_EXYNOS7_DECON
 	select DRM_PANEL
 	default n
 	help

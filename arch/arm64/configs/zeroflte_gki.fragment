@@ -42,6 +42,9 @@ CONFIG_FUEL_GAUGE_MAX77843=y
 # Display
 CONFIG_DRM_EXYNOS=y
 CONFIG_DRM_EXYNOS7_DECON=y
+# DECON takes its connector and fixed mode from the DPI display-timings;
+# S-Boot has already brought up DSI and the panel.
+CONFIG_DRM_EXYNOS_DPI=y
 CONFIG_DRM_SIMPLEDRM=y
 
 # Input
