@@ -483,6 +483,10 @@
 		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
 	};
 
+	/*
+	 * The touchkey INT output is open-drain. Without the pull-up the
+	 * line stays low after the first event and no later edge fires.
+	 */
 	touchkey_irq_pins: touchkey-irq-pins {
 		samsung,pins = "gpa0-0";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
