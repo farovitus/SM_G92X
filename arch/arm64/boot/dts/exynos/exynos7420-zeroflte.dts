@@ -537,6 +537,32 @@
 };
 
 /* Bluetooth UART (BCM4358) */
+/*
+ * Tell S-Boot the restart target the way Samsung's 3.10 sec_reboot does:
+ * it reads the target from PMU INFORM3 (0x12345670 | mode) and skips the
+ * charger screen when INFORM2 holds 0x12345678. exynos-syscon-restart.dtsi
+ * already resets through PMU SWRESET.
+ */
+&pmu_system_controller {
+	reboot-mode-target {
+		compatible = "syscon-reboot-mode";
+		offset = <0x80c>;
+		mode-normal = <0x12345670>;
+		mode-bootloader = <0x12345671>;
+		mode-download = <0x12345671>;
+		mode-recovery = <0x12345674>;
+	};
+
+	reboot-mode-no-lpm {
+		compatible = "syscon-reboot-mode";
+		offset = <0x808>;
+		mode-normal = <0x12345678>;
+		mode-bootloader = <0x12345678>;
+		mode-download = <0x12345678>;
+		mode-recovery = <0x12345678>;
+	};
+};
+
 &serial_4 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&bt_uart_bus &bt_host_wake &bt_en_pin &bt_wake_pin>;
