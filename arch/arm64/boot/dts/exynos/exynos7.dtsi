@@ -65,8 +65,7 @@
 		 * parameter asks for a power-down state, so the kernel saves
 		 * the core's context; the PMU notifier in exynos-pmu clears
 		 * the core's LOCAL_PWR_CFG for it. Residencies are the stock
-		 * kernel's; the A53 one is set out of reach while the A57
-		 * state is proven first (suspend-to-idle still uses it).
+		 * kernel's.
 		 */
 		idle-states {
 			entry-method = "psci";
@@ -84,7 +83,7 @@
 				arm,psci-suspend-param = <0x00010000>;
 				entry-latency-us = <30>;
 				exit-latency-us = <70>;
-				min-residency-us = <1000000>;
+				min-residency-us = <750>;
 			};
 		};
 
