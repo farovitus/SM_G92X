@@ -541,6 +541,10 @@
 &{/timer} {
 	/* S-Boot enters every CPU at EL1 and never programs CNTVOFF_EL2. */
 	arm,cpu-registers-not-fw-configured;
+	/* S-Boot leaves CNTFRQ_EL0 at zero, so the rate must come from the
+	 * DT, as in Samsung's own exynos7420.dtsi. Without it time_init()
+	 * panics: "Unable to initialise architected timer." */
+	clock-frequency = <24000000>;
 };
 
 &ufs {
