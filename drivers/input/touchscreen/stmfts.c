@@ -822,8 +822,33 @@ static int stmfts_suspend(struct device *dev)
 static int stmfts_resume(struct device *dev)
 {
 	struct stmfts_data *sdata = dev_get_drvdata(dev);
+	int err;
 
-	return stmfts_power_on(sdata);
+	err = stmfts_power_on(sdata);
+	if (err || !sdata->running)
+		return err;
+
+	/*
+	 * Power-on leaves the controller asleep with sensing off. An open
+	 * input device holds its runtime-PM reference, so runtime resume
+	 * will not wake it: restore what input_open set up.
+	 */
+	err = i2c_smbus_write_byte(sdata->client, STMFTS_SLEEP_OUT);
+	if (!err)
+		err = i2c_smbus_write_byte(sdata->client,
+					   STMFTS_MS_MT_SENSE_ON);
+	if (!err && sdata->hover_enabled)
+		err = i2c_smbus_write_byte(sdata->client,
+					   STMFTS_SS_HOVER_SENSE_ON);
+	if (!err && sdata->use_key)
+		err = i2c_smbus_write_byte(sdata->client,
+					   STMFTS_MS_KEY_SENSE_ON);
+	if (!err)
+		err = stmfts_enable_int_reg(sdata);
+	if (err)
+		dev_err(dev, "failed to restart sensing: %d\n", err);
+
+	return err;
 }
 
 static const struct dev_pm_ops stmfts_pm_ops = {
