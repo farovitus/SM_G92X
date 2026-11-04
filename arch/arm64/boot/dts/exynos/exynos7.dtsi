@@ -218,6 +218,13 @@
 	 * voltages, which are at or above every fused ASV group. Atlas stops
 	 * at 1.8 GHz while the PMIC's SRAM-rail tracking is left as S-Boot
 	 * programmed it; above 1.125 V it must be switched.
+	 *
+	 * opp-microwatt is the energy model: per-core power measured on a
+	 * G920F (calibration run 20260809T115944Z), plus a quarter of the
+	 * measured shared-cluster power, since the energy model has no
+	 * cluster term. It was measured at that phone's fused ASV voltages,
+	 * so absolute power here is somewhat low; the ratio between the
+	 * clusters, which energy-aware scheduling uses, is what matters.
 	 */
 	cpu_atlas_opp_table: opp-table-atlas {
 		compatible = "operating-points-v2";
@@ -226,66 +233,77 @@
 		opp-800000000 {
 			opp-hz = /bits/ 64 <800000000>;
 			opp-microvolt = <825000>;
+			opp-microwatt = <261750>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-900000000 {
 			opp-hz = /bits/ 64 <900000000>;
 			opp-microvolt = <850000>;
+			opp-microwatt = <304500>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1000000000 {
 			opp-hz = /bits/ 64 <1000000000>;
 			opp-microvolt = <875000>;
+			opp-microwatt = <359500>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1100000000 {
 			opp-hz = /bits/ 64 <1100000000>;
 			opp-microvolt = <900000>;
+			opp-microwatt = <428250>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1200000000 {
 			opp-hz = /bits/ 64 <1200000000>;
 			opp-microvolt = <925000>;
+			opp-microwatt = <493250>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1300000000 {
 			opp-hz = /bits/ 64 <1300000000>;
 			opp-microvolt = <950000>;
+			opp-microwatt = <563250>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1400000000 {
 			opp-hz = /bits/ 64 <1400000000>;
 			opp-microvolt = <981250>;
+			opp-microwatt = <654000>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1500000000 {
 			opp-hz = /bits/ 64 <1500000000>;
 			opp-microvolt = <1012500>;
+			opp-microwatt = <737000>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1600000000 {
 			opp-hz = /bits/ 64 <1600000000>;
 			opp-microvolt = <1043750>;
+			opp-microwatt = <855000>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1704000000 {
 			opp-hz = /bits/ 64 <1704000000>;
 			opp-microvolt = <1081250>;
+			opp-microwatt = <989750>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1800000000 {
 			opp-hz = /bits/ 64 <1800000000>;
 			opp-microvolt = <1118750>;
+			opp-microwatt = <1156750>;
 			clock-latency-ns = <500000>;
 		};
 	};
@@ -297,72 +315,84 @@
 		opp-400000000 {
 			opp-hz = /bits/ 64 <400000000>;
 			opp-microvolt = <675000>;
+			opp-microwatt = <25000>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-500000000 {
 			opp-hz = /bits/ 64 <500000000>;
 			opp-microvolt = <712500>;
+			opp-microwatt = <35000>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-600000000 {
 			opp-hz = /bits/ 64 <600000000>;
 			opp-microvolt = <750000>;
+			opp-microwatt = <43000>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-700000000 {
 			opp-hz = /bits/ 64 <700000000>;
 			opp-microvolt = <787500>;
+			opp-microwatt = <54000>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-800000000 {
 			opp-hz = /bits/ 64 <800000000>;
 			opp-microvolt = <825000>;
+			opp-microwatt = <66000>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-900000000 {
 			opp-hz = /bits/ 64 <900000000>;
 			opp-microvolt = <862500>;
+			opp-microwatt = <81000>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1000000000 {
 			opp-hz = /bits/ 64 <1000000000>;
 			opp-microvolt = <900000>;
+			opp-microwatt = <96000>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1104000000 {
 			opp-hz = /bits/ 64 <1104000000>;
 			opp-microvolt = <943750>;
+			opp-microwatt = <117000>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1200000000 {
 			opp-hz = /bits/ 64 <1200000000>;
 			opp-microvolt = <981250>;
+			opp-microwatt = <140250>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1296000000 {
 			opp-hz = /bits/ 64 <1296000000>;
 			opp-microvolt = <1018750>;
+			opp-microwatt = <166250>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1400000000 {
 			opp-hz = /bits/ 64 <1400000000>;
 			opp-microvolt = <1068750>;
+			opp-microwatt = <200250>;
 			clock-latency-ns = <500000>;
 		};
 
 		opp-1500000000 {
 			opp-hz = /bits/ 64 <1500000000>;
 			opp-microvolt = <1118750>;
+			opp-microwatt = <237250>;
 			clock-latency-ns = <500000>;
 		};
 	};
