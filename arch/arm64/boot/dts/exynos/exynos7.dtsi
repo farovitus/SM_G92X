@@ -61,6 +61,29 @@
 		#size-cells = <0>;
 
 		/*
+		 * Two clusters. Without the map and the per-MHz capacities the
+		 * scheduler treats the eight cores as equal one-core clusters.
+		 * The A53's efficiency, 677 per MHz to the A57's 1000, is the
+		 * CoreMark value measured on a G920F (nk7420 calibration); at
+		 * 1.5 and 2.1 GHz it gives capacities of 495 and 1024.
+		 */
+		cpu-map {
+			cluster0 {
+				core0 { cpu = <&cpu_atlas0>; };
+				core1 { cpu = <&cpu_atlas1>; };
+				core2 { cpu = <&cpu_atlas2>; };
+				core3 { cpu = <&cpu_atlas3>; };
+			};
+
+			cluster1 {
+				core0 { cpu = <&cpu_apollo0>; };
+				core1 { cpu = <&cpu_apollo1>; };
+				core2 { cpu = <&cpu_apollo2>; };
+				core3 { cpu = <&cpu_apollo3>; };
+			};
+		};
+
+		/*
 		 * The boot CPU is the first Cortex-A53 (MPIDR 0x100), so the
 		 * A53 cluster is listed first and becomes CPUs 0-3.
 		 */
@@ -69,6 +92,7 @@
 			compatible = "arm,cortex-a53";
 			reg = <0x100>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <677>;
 		};
 
 		cpu_apollo1: cpu@101 {
@@ -76,6 +100,7 @@
 			compatible = "arm,cortex-a53";
 			reg = <0x101>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <677>;
 		};
 
 		cpu_apollo2: cpu@102 {
@@ -83,6 +108,7 @@
 			compatible = "arm,cortex-a53";
 			reg = <0x102>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <677>;
 		};
 
 		cpu_apollo3: cpu@103 {
@@ -90,6 +116,7 @@
 			compatible = "arm,cortex-a53";
 			reg = <0x103>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <677>;
 		};
 
 		cpu_atlas0: cpu@0 {
@@ -97,6 +124,7 @@
 			compatible = "arm,cortex-a57";
 			reg = <0x0>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <1000>;
 			i-cache-size = <0xc000>;
 			i-cache-line-size = <64>;
 			i-cache-sets = <256>;
@@ -111,6 +139,7 @@
 			compatible = "arm,cortex-a57";
 			reg = <0x1>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <1000>;
 			i-cache-size = <0xc000>;
 			i-cache-line-size = <64>;
 			i-cache-sets = <256>;
@@ -125,6 +154,7 @@
 			compatible = "arm,cortex-a57";
 			reg = <0x2>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <1000>;
 			i-cache-size = <0xc000>;
 			i-cache-line-size = <64>;
 			i-cache-sets = <256>;
@@ -139,6 +169,7 @@
 			compatible = "arm,cortex-a57";
 			reg = <0x3>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <1000>;
 			i-cache-size = <0xc000>;
 			i-cache-line-size = <64>;
 			i-cache-sets = <256>;
