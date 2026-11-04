@@ -976,6 +976,7 @@
 				 <&cmu_g3d CLK_PCLK_SYSREG_G3D>;
 			clock-names = "core", "bus";
 			power-domains = <&pd_g3d>;
+			#cooling-cells = <2>;
 			status = "disabled";
 			/* TODO: operating points for DVFS, cooling device */
 		};
@@ -1197,7 +1198,7 @@
 						 <&cpu_atlas3 1 1>;
 				};
 				map1 {
-					/* 80 C: A57 1300 MHz, A53 1400 MHz */
+					/* 80 C: A57 1300 MHz, A53 1400 MHz, GPU 544 MHz */
 					trip = <&cpu_alert1>;
 					cooling-device = <&cpu_atlas0 5 5>,
 						 <&cpu_atlas1 5 5>,
@@ -1206,10 +1207,11 @@
 						 <&cpu_apollo0 1 1>,
 						 <&cpu_apollo1 1 1>,
 						 <&cpu_apollo2 1 1>,
-						 <&cpu_apollo3 1 1>;
+						 <&cpu_apollo3 1 1>,
+						 <&gpu 2 2>;
 				};
 				map2 {
-					/* 85 C: A57 800 MHz, A53 1200 MHz */
+					/* 85 C: A57 800 MHz, A53 1200 MHz, GPU 420 MHz */
 					trip = <&cpu_alert2>;
 					cooling-device = <&cpu_atlas0 10 10>,
 						 <&cpu_atlas1 10 10>,
@@ -1218,15 +1220,17 @@
 						 <&cpu_apollo0 3 3>,
 						 <&cpu_apollo1 3 3>,
 						 <&cpu_apollo2 3 3>,
-						 <&cpu_apollo3 3 3>;
+						 <&cpu_apollo3 3 3>,
+						 <&gpu 3 3>;
 				};
 				map3 {
-					/* 90 C: A53 1000 MHz */
+					/* 90 C: A53 1000 MHz, GPU 266 MHz */
 					trip = <&cpu_alert3>;
 					cooling-device = <&cpu_apollo0 5 5>,
 						 <&cpu_apollo1 5 5>,
 						 <&cpu_apollo2 5 5>,
-						 <&cpu_apollo3 5 5>;
+						 <&cpu_apollo3 5 5>,
+						 <&gpu 5 5>;
 				};
 				map4 {
 					/* 95 C: A53 400 MHz */
