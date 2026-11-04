@@ -90,7 +90,6 @@ CONFIG_CFG80211=m
 CONFIG_WLAN_VENDOR_BROADCOM=y
 CONFIG_BRCMFMAC=m
 CONFIG_BRCMFMAC_PCIE=y
-# CONFIG_BRCMFMAC_SDIO is not set
 # CONFIG_BRCMFMAC_USB is not set
 
 # Initramfs decompressors: xz, which the Lineage 20 ramdisk in BOOT uses
@@ -112,6 +111,30 @@ CONFIG_LTO_NONE=y
 # kheaders.ko packs the kernel headers for BPF tools with GNU tar options
 # macOS tar lacks, and nothing on the phone reads them.
 # CONFIG_IKHEADERS is not set
+
+# gki_defconfig builds in support for every GKI vendor. Drop what the
+# Exynos 7420 board can never use: other SoC families, firmware interfaces
+# S-Boot does not provide (SCMI, SCPI, EFI; GPT parsing stays), and buses
+# and hardware the phone lacks (NVMe, NVDIMM, EDAC, USB-C, SD/MMC, I3C,
+# remote processors, HDMI CEC).
+# CONFIG_ARCH_SUNXI is not set
+# CONFIG_ARCH_HISI is not set
+# CONFIG_ARCH_QCOM is not set
+# CONFIG_ARCH_TEGRA is not set
+# CONFIG_ARM_SCMI_PROTOCOL is not set
+# CONFIG_ARM_SCPI_PROTOCOL is not set
+# CONFIG_EFI is not set
+# CONFIG_BLK_DEV_NVME is not set
+# CONFIG_LIBNVDIMM is not set
+# CONFIG_EDAC is not set
+# CONFIG_TYPEC is not set
+# CONFIG_MMC is not set
+# CONFIG_I3C is not set
+# CONFIG_REMOTEPROC is not set
+# CONFIG_MEDIA_CEC_SUPPORT is not set
+# Every module is built from this tree, so nothing attaches to GKI's
+# vendor hooks.
+# CONFIG_ANDROID_VENDOR_HOOKS is not set
 
 # S-Boot enters the kernel at EL1, so KVM can never run.
 # CONFIG_KVM is not set
