@@ -226,18 +226,21 @@
 		};
 	};
 
+	/*
+	 * Interrupt-driven: the alive-block EINTs work on this kernel (the
+	 * touchkey IRQ on gpa0 fires). Power and Home wake the system.
+	 */
 	gpio-keys {
-		compatible = "gpio-keys-polled";
-		poll-interval = <20>;
+		compatible = "gpio-keys";
 		pinctrl-names = "default";
 		pinctrl-0 = <&key_power_pins &key_volup_pins &key_voldown_pins
 			     &key_home_pins>;
-		status = "disabled";
 
 		key-power {
 			label = "Power";
 			gpios = <&gpa2 2 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_POWER>;
+			wakeup-source;
 		};
 
 		key-volume-up {
@@ -256,6 +259,7 @@
 			label = "Home";
 			gpios = <&gpa0 5 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_HOMEPAGE>;
+			wakeup-source;
 		};
 	};
 
