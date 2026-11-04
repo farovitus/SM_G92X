@@ -12,6 +12,9 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
+#include <linux/cpu_pm.h>
+#include <linux/notifier.h>
+#include <asm/cputype.h>
 
 #include <linux/soc/samsung/exynos-regs-pmu.h>
 #include <linux/soc/samsung/exynos-pmu.h>
@@ -65,6 +68,60 @@ void exynos_sys_powerdown_conf(enum sys_powerdown mode)
 	}
 }
 
+#ifdef CONFIG_ARM64
+/*
+ * Exynos7 core power-down for cpuidle.
+ *
+ * The PMU powers a core down when it enters WFI only if that core's
+ * LOCAL_PWR_CFG field is clear; the PSCI firmware does not touch the
+ * field. Clear it right before a power-down idle state is entered (the
+ * PSCI suspend call follows cpu_pm_enter()) and set it again on exit,
+ * so a plain WFI never powers a core down without its context saved.
+ * Each core only writes its own configuration register, indexed by
+ * physical core: Aff0 + 4 * Aff1.
+ */
+#define EXYNOS7_CPU_CONFIGURATION(n)	(0x2000 + (n) * 0x80)
+#define EXYNOS7_LOCAL_PWR_CFG		0xf
+
+static int exynos7_cpu_pm_notify(struct notifier_block *nb,
+				 unsigned long action, void *data)
+{
+	u64 mpidr = read_cpuid_mpidr();
+	u32 core = MPIDR_AFFINITY_LEVEL(mpidr, 0) +
+		   4 * MPIDR_AFFINITY_LEVEL(mpidr, 1);
+	u32 offset = EXYNOS7_CPU_CONFIGURATION(core);
+	u32 val = pmu_raw_readl(offset);
+
+	switch (action) {
+	case CPU_PM_ENTER:
+		pmu_raw_writel(val & ~EXYNOS7_LOCAL_PWR_CFG, offset);
+		break;
+	case CPU_PM_ENTER_FAILED:
+	case CPU_PM_EXIT:
+		pmu_raw_writel(val | EXYNOS7_LOCAL_PWR_CFG, offset);
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block exynos7_cpu_pm_nb = {
+	.notifier_call = exynos7_cpu_pm_notify,
+};
+
+static void exynos7_pmu_init(void)
+{
+	cpu_pm_register_notifier(&exynos7_cpu_pm_nb);
+}
+
+static const struct exynos_pmu_data exynos7_pmu_data = {
+	.pmu_init = exynos7_pmu_init,
+};
+#define exynos7_pmu_data_ptr	(&exynos7_pmu_data)
+#else
+#define exynos7_pmu_data_ptr	NULL
+#endif
+
 /*
  * Split the data between ARM architectures because it is relatively big
  * and useless on other arch.
@@ -103,6 +160,7 @@ static const struct of_device_id exynos_pmu_of_device_ids[] = {
 		.compatible = "samsung,exynos5433-pmu",
 	}, {
 		.compatible = "samsung,exynos7-pmu",
+		.data = exynos7_pmu_data_ptr,
 	}, {
 		.compatible = "samsung,exynos850-pmu",
 	},
