@@ -20,6 +20,8 @@ CONFIG_EXYNOS_THERMAL=y
 CONFIG_SEC_COOLING_COMPAT=y
 CONFIG_EXYNOS_ADC=y
 CONFIG_RTC_DRV_S3C=y
+# The S2MPS15 RTC keeps time and raises the alarms that wake the phone.
+CONFIG_RTC_DRV_S5M=y
 # S-Boot's restart targets (recovery, download) through PMU INFORM3.
 CONFIG_SYSCON_REBOOT_MODE=y
 

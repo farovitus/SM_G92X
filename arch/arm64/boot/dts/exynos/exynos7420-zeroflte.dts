@@ -609,6 +609,12 @@
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
 
+	pmic_irq: pmic-irq {
+		samsung,pins = "gpa3-7";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+	};
+
 	wlan_host_wake: wlan-host-wake-pins {
 		samsung,pins = "gpa2-3";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;

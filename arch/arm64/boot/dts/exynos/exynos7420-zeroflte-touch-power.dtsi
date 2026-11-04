@@ -19,6 +19,16 @@
 		pmic@66 {
 			compatible = "samsung,s2mps15-pmic";
 			reg = <0x66>;
+			/*
+			 * The PMIC interrupt (active low, gpa3-7) carries the
+			 * RTC alarm, so it is also the wakeup that ends a
+			 * suspend for Android's alarms.
+			 */
+			interrupt-parent = <&gpa3>;
+			interrupts = <7 IRQ_TYPE_LEVEL_LOW>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&pmic_irq>;
+			wakeup-source;
 
 			regulators {
 				/*
