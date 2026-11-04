@@ -39,6 +39,11 @@
 		};
 	};
 
+	/*
+	 * S2MPB02: on 3.10 it sits on hsi2c@14E60000, whose pins are
+	 * gpd0-2 (SDA) and gpd0-3 (SCL). On gpg3-2/3 it never answered
+	 * (chip-ID read -ENXIO), so the touchscreen had no AVDD.
+	 */
 	i2c-tsp-analog-pmic {
 		compatible = "i2c-gpio";
 		sda-gpios = <&gpd0 2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
