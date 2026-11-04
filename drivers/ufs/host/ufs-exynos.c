@@ -193,6 +193,16 @@ static inline void exynos_ufs_ungate_clks(struct exynos_ufs *ufs)
 
 static int exynos7_ufs_drv_init(struct device *dev, struct exynos_ufs *ufs)
 {
+	/*
+	 * Exynos7420 cannot be relied on to put the link in Hibern8 for
+	 * system suspend: after a resume the next DME_HIBER_ENTER can time
+	 * out and force a host reset. Power the device down and turn the
+	 * link off instead, as the stock kernel does (its default system
+	 * PM level), and bring the link up again on resume.
+	 */
+	if (of_device_is_compatible(dev->of_node, "samsung,exynos7420-ufs"))
+		ufs->hba->spm_lvl = UFS_PM_LVL_5;
+
 	return 0;
 }
 
