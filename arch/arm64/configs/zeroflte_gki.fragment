@@ -122,8 +122,9 @@ CONFIG_LTO_NONE=y
 # every message in the RAM log. log_buf_len keeps the kernel's boot
 # messages through Android's /dev/kmsg traffic, and dsh_autorecovery
 # returns a test boot to TWRP after 150 s with them replayed into the log,
-# unless userspace cancels it once the boot completes.
-CONFIG_CMDLINE="stack_depot_disable=on cgroup_disable=pressure kasan.stacktrace=off bootconfig clk_ignore_unused pd_ignore_unused deferred_probe_timeout=0 rodata=off nohz=off loglevel=8 printk.devkmsg=on androidboot.selinux=permissive ignore_loglevel log_buf_len=4M dsh_autorecovery=150"
+# unless userspace cancels it once the boot completes. firmware_class.path
+# lets drivers such as brcmfmac load firmware straight from /vendor/firmware.
+CONFIG_CMDLINE="stack_depot_disable=on cgroup_disable=pressure kasan.stacktrace=off bootconfig clk_ignore_unused pd_ignore_unused deferred_probe_timeout=0 rodata=off nohz=off loglevel=8 printk.devkmsg=on androidboot.selinux=permissive ignore_loglevel log_buf_len=4M dsh_autorecovery=150 firmware_class.path=/vendor/firmware"
 
 # Size: the Image must fit the 28 MiB BOOT partition with the ROM ramdisk.
 # The A57/A53 have no pointer authentication, so the PAC-to-SCS patching
