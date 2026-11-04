@@ -19,11 +19,26 @@
 	compatible = "samsung,zeroflte", "samsung,exynos7420",
 		     "samsung,exynos7";
 
+	/*
+	 * S-Boot picks the DTB from the DTBH table by these values. 10-11 is
+	 * the EUR rev06 board range (androidboot.hw_rev=11), as in the 3.10
+	 * exynos7420-zeroflte_eur_open_06.dts.
+	 */
+	model_info-chip = <7420>;
+	model_info-platform = "android";
+	model_info-subtype = "samsung";
+	model_info-hw_rev = <10>;
+	model_info-hw_rev_end = <11>;
+
 	aliases {
 		serial0 = &serial_4;
 	};
 
 	chosen {
+		/*
+		 * S-Boot writes bootargs and the initrd range here when it loads
+		 * the boot image; the kernel's own arguments are in CONFIG_CMDLINE.
+		 */
 		#address-cells = <2>;
 		#size-cells = <2>;
 		ranges;
