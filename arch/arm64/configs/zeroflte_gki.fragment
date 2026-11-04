@@ -74,11 +74,10 @@ CONFIG_KEYBOARD_GPIO_POLLED=y
 # USB
 CONFIG_USB_DWC3=y
 CONFIG_PHY_EXYNOS5_USBDRD=y
-# Lineage's zeroflte USB scripts drive the 3.10 android_usb gadget and only
-# mount functionfs for adb. The g_ffs gadget registers functionfs at boot
-# and binds the UDC once adbd has written its descriptors.
-CONFIG_USB_FUNCTIONFS=y
-CONFIG_USB_FUNCTIONFS_GENERIC=y
+# The ROM builds its gadget through configfs (adb, MTP and PTP over
+# FunctionFS) and gets USB state uevents from android_usb. The legacy
+# g_ffs gadget (USB_FUNCTIONFS_GENERIC) must stay out: it would claim the
+# UDC first. GKI leaves it off, so nothing is set here.
 
 # mDNIe/panel nodes Lineage's LiveDisplay HAL needs before it registers.
 CONFIG_SAMSUNG_MDNIE_COMPAT=y
