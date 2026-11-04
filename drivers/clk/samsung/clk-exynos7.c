@@ -5,6 +5,9 @@
 */
 
 #include <linux/clk-provider.h>
+#include <linux/clk.h>
+#include <linux/delay.h>
+#include <linux/iopoll.h>
 #include <linux/of.h>
 
 #include "clk.h"
@@ -1401,9 +1404,17 @@ static const struct samsung_pll_clock g3d_pll_clks[] __initconst = {
 		G3D_PLL_LOCK, G3D_PLL_CON0, g3d_pll_rates),
 };
 
+/*
+ * A GPU rate request goes aclk_g3d -> div_aclk_g3d -> mout_aclk_g3d_400
+ * -> mout_g3d_pll -> fout_g3d_pll. The ACLK divider is read-only so the
+ * request always lands on the PLL and the divider never changes behind
+ * the GPU. mout_g3d_pll may move from fin_pll to the PLL; the clk core
+ * enables and locks the PLL before it switches. mout_aclk_g3d_400 is
+ * only switched by the G3D_PLL notifier below.
+ */
 static const struct samsung_mux_clock g3d_mux_clks[] __initconst = {
-	MUX(CLK_MOUT_G3D_PLL, "mout_g3d_pll", mout_g3d_pll_p,
-		MUX_SEL_G3D, 0, 1),
+	MUX_F(CLK_MOUT_G3D_PLL, "mout_g3d_pll", mout_g3d_pll_p,
+		MUX_SEL_G3D, 0, 1, CLK_SET_RATE_PARENT, 0),
 	MUX_F(CLK_MOUT_ACLK_G3D_400, "mout_aclk_g3d_400", mout_aclk_g3d_400_p,
 		MUX_SEL_G3D, 8, 1,
 		CLK_SET_RATE_PARENT | CLK_SET_RATE_NO_REPARENT, 0),
@@ -1438,9 +1449,139 @@ static const struct samsung_cmu_info g3d_cmu_info __initconst = {
 	.nr_clk_regs		= ARRAY_SIZE(g3d_clk_regs),
 };
 
+/*
+ * G3D_PLL feeds the GPU directly, and its output is not usable while it
+ * relocks after a P/M change. As the 3.10 GPU driver did, move the GPU
+ * to the oscillator (mout_aclk_g3d_400 = fin_pll) for every PLL rate
+ * change and set the HPM divider for the new rate before moving back:
+ * aclk/3 from 544 MHz up, aclk/2 below (3.10 hpm_freq_table).
+ */
+#define G3D_PLL_ENABLE			BIT(31)
+#define G3D_PLL_LOCKED			BIT(29)
+#define G3D_ACLK_MUX_SHIFT		8
+#define G3D_ACLK_MUX_FIN_PLL		1
+#define G3D_MUX_STAT_MASK		0x7
+#define G3D_HPM_DIV_SHIFT		8
+#define G3D_HPM_DIV_MASK		(0x3 << G3D_HPM_DIV_SHIFT)
+#define G3D_HPM_DIV_BUSY		BIT(8)
+
+struct exynos7_g3d_pll_nb {
+	struct notifier_block nb;
+	void __iomem *base;
+	spinlock_t *lock;
+	struct clk_hw *aclk_mux;
+};
+
+static void exynos7_g3d_set_aclk_mux(struct exynos7_g3d_pll_nb *g3d, u32 sel)
+{
+	unsigned long flags;
+	u32 val;
+
+	spin_lock_irqsave(g3d->lock, flags);
+	val = readl(g3d->base + MUX_SEL_G3D);
+	val &= ~BIT(G3D_ACLK_MUX_SHIFT);
+	val |= sel << G3D_ACLK_MUX_SHIFT;
+	writel(val, g3d->base + MUX_SEL_G3D);
+	spin_unlock_irqrestore(g3d->lock, flags);
+
+	if (readl_poll_timeout_atomic(g3d->base + MUX_STAT_G3D, val,
+			((val >> G3D_ACLK_MUX_SHIFT) & G3D_MUX_STAT_MASK) == sel,
+			1, 1000))
+		pr_warn("G3D: mout_aclk_g3d_400 did not switch to %u\n", sel);
+}
+
+static void exynos7_g3d_set_hpm_div(struct exynos7_g3d_pll_nb *g3d,
+				    unsigned long rate)
+{
+	u32 div = rate >= 544000000 ? 3 : 2;
+	unsigned long flags;
+	u32 val;
+
+	spin_lock_irqsave(g3d->lock, flags);
+	val = readl(g3d->base + DIV_G3D);
+	val &= ~G3D_HPM_DIV_MASK;
+	val |= (div - 1) << G3D_HPM_DIV_SHIFT;
+	writel(val, g3d->base + DIV_G3D);
+	spin_unlock_irqrestore(g3d->lock, flags);
+
+	if (readl_poll_timeout_atomic(g3d->base + DIV_STAT_G3D, val,
+			!(val & G3D_HPM_DIV_BUSY), 1, 1000))
+		pr_warn("G3D: HPM divider did not settle\n");
+}
+
+static void exynos7_g3d_wait_pll(struct exynos7_g3d_pll_nb *g3d)
+{
+	u32 val = readl(g3d->base + G3D_PLL_CON0);
+
+	if (!(val & G3D_PLL_ENABLE))
+		return;
+
+	/*
+	 * Do not rely on a lock bit left over from the old setting: wait
+	 * for the programmed lock time (fin_pll cycles at 24 MHz) first.
+	 */
+	udelay(min_t(u32, DIV_ROUND_UP(readl(g3d->base + G3D_PLL_LOCK), 24),
+		     1000));
+
+	if (readl_poll_timeout_atomic(g3d->base + G3D_PLL_CON0, val,
+			val & G3D_PLL_LOCKED, 1, 1000))
+		pr_err("G3D: G3D_PLL did not lock\n");
+}
+
+static int exynos7_g3d_pll_notifier_cb(struct notifier_block *nb,
+				       unsigned long event, void *data)
+{
+	struct exynos7_g3d_pll_nb *g3d =
+		container_of(nb, struct exynos7_g3d_pll_nb, nb);
+	struct clk_notifier_data *ndata = data;
+	int sel;
+
+	/*
+	 * The mux register is written directly, so the clk core's parent
+	 * for mout_aclk_g3d_400 stays the selection to return to.
+	 */
+	switch (event) {
+	case PRE_RATE_CHANGE:
+		exynos7_g3d_set_aclk_mux(g3d, G3D_ACLK_MUX_FIN_PLL);
+		break;
+	case POST_RATE_CHANGE:
+		exynos7_g3d_wait_pll(g3d);
+		exynos7_g3d_set_hpm_div(g3d, ndata->new_rate);
+		fallthrough;
+	case ABORT_RATE_CHANGE:
+		sel = clk_hw_get_parent_index(g3d->aclk_mux);
+		exynos7_g3d_set_aclk_mux(g3d, sel < 0 ? 0 : sel);
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct exynos7_g3d_pll_nb exynos7_g3d_pll_nb = {
+	.nb.notifier_call = exynos7_g3d_pll_notifier_cb,
+};
+
 static void __init exynos7_clk_g3d_init(struct device_node *np)
 {
-	samsung_cmu_register_one(np, &g3d_cmu_info);
+	struct samsung_clk_provider *ctx;
+	struct clk_hw *pll, *mux;
+
+	ctx = samsung_cmu_register_one(np, &g3d_cmu_info);
+	if (!ctx)
+		return;
+
+	pll = ctx->clk_data.hws[CLK_FOUT_G3D_PLL];
+	mux = ctx->clk_data.hws[CLK_MOUT_ACLK_G3D_400];
+	if (IS_ERR_OR_NULL(pll) || !pll->clk || IS_ERR_OR_NULL(mux))
+		goto err;
+
+	exynos7_g3d_pll_nb.base = ctx->reg_base;
+	exynos7_g3d_pll_nb.lock = &ctx->lock;
+	exynos7_g3d_pll_nb.aclk_mux = mux;
+	if (!clk_notifier_register(pll->clk, &exynos7_g3d_pll_nb.nb))
+		return;
+err:
+	pr_err("G3D: no G3D_PLL notifier, GPU rate changes are unsafe\n");
 }
 
 CLK_OF_DECLARE(exynos7_clk_g3d, "samsung,exynos7-clock-g3d",
