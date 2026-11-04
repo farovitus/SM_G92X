@@ -56,5 +56,14 @@ CONFIG_PHY_EXYNOS5_USBDRD=y
 # PCIe (BCM4358 Wi-Fi)
 CONFIG_PCI_EXYNOS7420=y
 
-# Bring-up: plain builds without LTO, which also drops CFI.
+# Bring-up: faster builds without LTO (kCFI does not need it).
 CONFIG_LTO_NONE=y
+
+# S-Boot enters the kernel at EL1, so KVM can never run.
+# CONFIG_KVM is not set
+
+# Appended to S-Boot's arguments (CMDLINE_EXTEND). GKI's defaults without the
+# pKVM ones, plus what the port needs: S-Boot's display clocks and power
+# domains stay on, nohz=off for the per-core timer offsets S-Boot leaves.
+# maxcpus=1 and permissive SELinux are for the first boot test.
+CONFIG_CMDLINE="stack_depot_disable=on cgroup_disable=pressure kasan.stacktrace=off bootconfig clk_ignore_unused pd_ignore_unused deferred_probe_timeout=0 rodata=off nohz=off maxcpus=1 loglevel=8 printk.devkmsg=on androidboot.selinux=permissive"
