@@ -6,6 +6,12 @@
  * (SM-G920F) running its factory firmware. The key status register
  * holds a 2-bit field per key: an odd value is a press, 2 is a release
  * and 0 means no change.
+ *
+ * Android's Samsung touch HAL offers the key disabler (used when the
+ * on-screen navigation bar replaces the keys) only when
+ * /sys/class/sec/sec_touchkey/input/enabled exists, and Lineage's
+ * system_server waits for that HAL. The node is provided here: writing 0
+ * drops key events, writing 1 reports them again.
  */
 
 #include <linux/bits.h>
@@ -14,10 +20,12 @@
 #include <linux/input.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
+#include <linux/kstrtox.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/pm.h>
 #include <linux/property.h>
+#include <linux/regulator/consumer.h>
 
 #define MBR_REG_KEY_STATUS	0x03
 #define MBR_REG_FW_VER		0x04
@@ -25,12 +33,15 @@
 #define MBR_MAX_KEYS		4
 #define MBR_KEY_FIELD_BITS	2
 #define MBR_KEY_FIELD_MASK	GENMASK(1, 0)
+/* cypress,ic-stabilizing-time in the stock DT */
+#define MBR_POWER_ON_MS		150
 
 struct mbr_touchkey {
 	struct i2c_client *client;
 	struct input_dev *input;
 	unsigned int num_keys;
 	u32 keycodes[MBR_MAX_KEYS];
+	bool disabled;
 };
 
 static const u32 mbr_default_keycodes[] = {
@@ -51,6 +62,9 @@ static irqreturn_t mbr_touchkey_irq(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
+	if (READ_ONCE(tk->disabled))
+		return IRQ_HANDLED;
+
 	for (i = 0; i < tk->num_keys; i++) {
 		field = (status >> (i * MBR_KEY_FIELD_BITS)) & MBR_KEY_FIELD_MASK;
 		if (!field)
@@ -70,6 +84,83 @@ static void mbr_touchkey_release_keys(struct mbr_touchkey *tk)
 	for (i = 0; i < tk->num_keys; i++)
 		input_report_key(tk->input, tk->keycodes[i], 0);
 	input_sync(tk->input);
+}
+
+static ssize_t enabled_show(struct device *dev,
+			    struct device_attribute *attr, char *buf)
+{
+	struct mbr_touchkey *tk = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", !READ_ONCE(tk->disabled));
+}
+
+static ssize_t enabled_store(struct device *dev,
+			     struct device_attribute *attr,
+			     const char *buf, size_t count)
+{
+	struct mbr_touchkey *tk = dev_get_drvdata(dev);
+	bool enable;
+	int error;
+
+	error = kstrtobool(buf, &enable);
+	if (error)
+		return error;
+
+	/* Serialise with the threaded handler so no press is left held. */
+	disable_irq(tk->client->irq);
+	WRITE_ONCE(tk->disabled, !enable);
+	if (!enable)
+		mbr_touchkey_release_keys(tk);
+	enable_irq(tk->client->irq);
+
+	return count;
+}
+static DEVICE_ATTR_RW(enabled);
+
+static struct attribute *mbr_touchkey_input_attrs[] = {
+	&dev_attr_enabled.attr,
+	NULL
+};
+
+static const struct attribute_group mbr_touchkey_input_group = {
+	.name = "input",
+	.attrs = mbr_touchkey_input_attrs,
+};
+
+static const struct attribute_group *mbr_touchkey_sec_groups[] = {
+	&mbr_touchkey_input_group,
+	NULL
+};
+
+static void mbr_touchkey_sec_remove(void *data)
+{
+	struct device *sec_dev = data;
+	const struct class *cls = sec_dev->class;
+
+	device_unregister(sec_dev);
+	class_destroy(cls);
+}
+
+/* /sys/class/sec/sec_touchkey, the path Samsung's Android userspace uses. */
+static int mbr_touchkey_sec_create(struct mbr_touchkey *tk)
+{
+	struct device *dev = &tk->client->dev;
+	struct device *sec_dev;
+	struct class *cls;
+
+	cls = class_create("sec");
+	if (IS_ERR(cls))
+		return PTR_ERR(cls);
+
+	sec_dev = device_create_with_groups(cls, dev, 0, tk,
+					    mbr_touchkey_sec_groups,
+					    "sec_touchkey");
+	if (IS_ERR(sec_dev)) {
+		class_destroy(cls);
+		return PTR_ERR(sec_dev);
+	}
+
+	return devm_add_action_or_reset(dev, mbr_touchkey_sec_remove, sec_dev);
 }
 
 static int mbr_touchkey_parse_keymap(struct mbr_touchkey *tk)
@@ -126,6 +217,11 @@ static int mbr_touchkey_probe(struct i2c_client *client)
 	tk->client = client;
 	i2c_set_clientdata(client, tk);
 
+	ret = devm_regulator_get_enable(dev, "vdd");
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to enable vdd\n");
+	msleep(MBR_POWER_ON_MS);
+
 	ret = i2c_smbus_read_i2c_block_data(client, MBR_REG_FW_VER,
 					    sizeof(fw), fw);
 	if (ret < 0)
@@ -165,6 +261,11 @@ static int mbr_touchkey_probe(struct i2c_client *client)
 					dev_name(dev), tk);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request IRQ\n");
+
+	ret = mbr_touchkey_sec_create(tk);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to create sec_touchkey\n");
 
 	return 0;
 }

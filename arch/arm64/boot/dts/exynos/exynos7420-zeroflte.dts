@@ -275,6 +275,7 @@
 			pinctrl-names = "default";
 			pinctrl-0 = <&touchkey_irq_pins>;
 			linux,keycodes = <KEY_APPSELECT KEY_BACK>;
+			vdd-supply = <&touchkey_vdd_ldo21>;
 		};
 	};
 

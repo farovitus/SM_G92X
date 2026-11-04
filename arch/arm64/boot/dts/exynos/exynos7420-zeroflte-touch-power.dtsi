@@ -28,6 +28,13 @@
 					regulator-always-on;
 					regulator-boot-on;
 				};
+
+				/* Touch key core supply; the 3.10 driver enables it at probe. */
+				touchkey_vdd_ldo21: LDO21 {
+					regulator-name = "vtouch_3.3v";
+					regulator-min-microvolt = <3300000>;
+					regulator-max-microvolt = <3300000>;
+				};
 			};
 		};
 	};
