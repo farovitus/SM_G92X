@@ -1423,7 +1423,17 @@ static const struct samsung_mux_clock g3d_mux_clks[] __initconst = {
 static const struct samsung_div_clock g3d_div_clks[] __initconst = {
 	DIV_F(CLK_DIV_ACLK_G3D, "div_aclk_g3d", "mout_aclk_g3d_400",
 		DIV_G3D, 0, 3, CLK_SET_RATE_PARENT, CLK_DIVIDER_READ_ONLY),
-	DIV(CLK_DIV_PCLK_G3D, "div_pclk_g3d", "div_aclk_g3d", DIV_G3D, 4, 3),
+	/*
+	 * The G3D block's register bus (CMU_G3D and SYSREG_G3D) runs from
+	 * this divider, so it must never stop: with the GPU clock gated in
+	 * runtime suspend, the clk core would otherwise stop G3D_PLL and
+	 * the next G3D register access, re-enabling that PLL, hangs.
+	 * Keeping it enabled keeps its parents down to G3D_PLL running;
+	 * during a PLL rate change the notifier below still parks the
+	 * path on fin_pll.
+	 */
+	DIV_F(CLK_DIV_PCLK_G3D, "div_pclk_g3d", "div_aclk_g3d",
+		DIV_G3D, 4, 3, CLK_IS_CRITICAL, 0),
 };
 
 static const struct samsung_gate_clock g3d_gate_clks[] __initconst = {
