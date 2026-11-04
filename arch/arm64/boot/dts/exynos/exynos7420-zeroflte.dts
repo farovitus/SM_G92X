@@ -561,3 +561,39 @@
 		maximum-speed = "high-speed";
 	};
 };
+
+/*
+ * Lineage 20 keeps no fstab in its ramdisk: first-stage init reads the
+ * early mounts from /firmware/android/fstab, as in the 3.10 Lineage tree's
+ * exynos7420.dtsi. Without it init aborts with "failed to read default
+ * fstab for first stage mount" and reboots to the bootloader.
+ */
+/ {
+	firmware {
+		android {
+			compatible = "android,firmware";
+
+			fstab {
+				compatible = "android,fstab";
+
+				system {
+					compatible = "android,system";
+					dev = "/dev/block/platform/15570000.ufs/by-name/SYSTEM";
+					type = "ext4";
+					mnt_flags = "ro,errors=panic,noload";
+					fsmgr_flags = "wait";
+					status = "ok";
+				};
+
+				efs {
+					compatible = "android,efs";
+					dev = "/dev/block/platform/15570000.ufs/by-name/EFS";
+					type = "ext4";
+					mnt_flags = "noatime,nosuid,nodev,noauto_da_alloc,discard,journal_checksum,data=ordered,errors=panic";
+					fsmgr_flags = "wait,check";
+					status = "ok";
+				};
+			};
+		};
+	};
+};
