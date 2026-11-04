@@ -80,6 +80,15 @@ CONFIG_TRUSTONIC_MOBICORE=y
 
 # PCIe (BCM4358 Wi-Fi)
 CONFIG_PCI_EXYNOS7420=y
+# Wi-Fi: mainline brcmfmac drives the BCM4358 over PCIe, with the
+# firmware and NVRAM from the ROM. cfg80211 and the driver are modules the
+# ROM loads, because BOOT has no room for them in the Image.
+CONFIG_CFG80211=m
+CONFIG_WLAN_VENDOR_BROADCOM=y
+CONFIG_BRCMFMAC=m
+CONFIG_BRCMFMAC_PCIE=y
+# CONFIG_BRCMFMAC_SDIO is not set
+# CONFIG_BRCMFMAC_USB is not set
 
 # Initramfs decompressors: xz, which the Lineage 20 ramdisk in BOOT uses
 # because it is the smallest, and LZ4, the fastest, whose code zram and
