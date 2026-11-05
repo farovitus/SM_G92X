@@ -485,11 +485,12 @@
 		 * LPASS routes the DMA and I2S interrupts to the CPU and holds
 		 * their resets. The UART at 0x11460000 (serial_4) is in the
 		 * same block but stays outside this node; the exynos7 variant
-		 * of the driver leaves it alone.
+		 * of the driver leaves it alone. The second reg is the AUD
+		 * SysMMU, which the driver sets to bypass.
 		 */
 		lpass: audio-subsystem@11400000 {
 			compatible = "samsung,exynos7-lpass";
-			reg = <0x11400000 0x100>;
+			reg = <0x11400000 0x100>, <0x114e0000 0x100>;
 			#address-cells = <1>;
 			#size-cells = <1>;
 			ranges;

@@ -49,6 +49,9 @@
 #define  LPASS_INTR_UART		BIT(1)
 #define  LPASS_INTR_SFR			BIT(0)
 
+/* AUD SysMMU, second reg entry on Exynos7 */
+#define SYSMMU_AUD_CTRL			0x00
+
 struct exynos_lpass_variant {
 	/*
 	 * The UART in the subsystem is described outside this node and may
@@ -56,12 +59,19 @@ struct exynos_lpass_variant {
 	 * reset alone and keep its interrupt routed to the CPU.
 	 */
 	bool uart_outside;
+	/*
+	 * The boot loader leaves the AUD SysMMU blocked (CTRL 0x3):
+	 * translation off, but every ADMA bus transaction held. Nothing
+	 * here uses translation, so it is set to bypass.
+	 */
+	bool sysmmu_bypass;
 };
 
 struct exynos_lpass {
 	/* pointer to the LPASS TOP regmap */
 	struct regmap *top;
 	struct clk *sfr0_clk;
+	void __iomem *sysmmu;
 	const struct exynos_lpass_variant *variant;
 };
 
@@ -83,6 +93,14 @@ static void exynos_lpass_core_sw_reset(struct exynos_lpass *lpass, int mask)
 static void exynos_lpass_enable(struct exynos_lpass *lpass)
 {
 	clk_prepare_enable(lpass->sfr0_clk);
+
+	/*
+	 * Before the DMA and I2S leave reset, on every power-up, as the
+	 * vendor driver does. Its gates have no consumer yet and stay on
+	 * only through clk_ignore_unused.
+	 */
+	if (lpass->sysmmu)
+		writel(0, lpass->sysmmu + SYSMMU_AUD_CTRL);
 
 	/* Unmask SFR, DMA and I2S interrupt */
 	regmap_write(lpass->top, SFR_LPASS_INTR_CA5_MASK,
@@ -132,6 +150,12 @@ static int exynos_lpass_probe(struct platform_device *pdev)
 	base_top = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base_top))
 		return PTR_ERR(base_top);
+
+	if (lpass->variant->sysmmu_bypass) {
+		lpass->sysmmu = devm_platform_ioremap_resource(pdev, 1);
+		if (IS_ERR(lpass->sysmmu))
+			return PTR_ERR(lpass->sysmmu);
+	}
 
 	/* Exynos7 has no separate SFR clock gate in CMU_AUD. */
 	lpass->sfr0_clk = devm_clk_get_optional(dev, "sfr0_ctrl");
@@ -195,6 +219,7 @@ static const struct exynos_lpass_variant exynos5433_lpass = {
 
 static const struct exynos_lpass_variant exynos7_lpass = {
 	.uart_outside = true,
+	.sysmmu_bypass = true,
 };
 
 static const struct of_device_id exynos_lpass_of_match[] = {

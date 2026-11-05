@@ -67,6 +67,16 @@ allOf:
       required:
         - clocks
         - clock-names
+  - if:
+      properties:
+        compatible:
+          const: samsung,exynos7-lpass
+    then:
+      properties:
+        reg:
+          items:
+            - description: LPASS top SFRs
+            - description: AUD SysMMU, set to bypass by the driver
 
 additionalProperties: false
 
