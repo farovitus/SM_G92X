@@ -367,6 +367,28 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pcie1_clkreq &pcie1_perst &cfg_wlanen
 			     &wlan_host_wake>;
+
+		/* Root port 00:00.0 */
+		pcie@0,0 {
+			device_type = "pci";
+			reg = <0x0000 0x0 0x0 0x0 0x0>;
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
+
+			/*
+			 * BCM4358 at 01:00.0. brcmfmac arms WLAN_HOST_WAKE as
+			 * its wake IRQ, so the link can stay associated while
+			 * the host sleeps.
+			 */
+			wifi@0,0 {
+				compatible = "brcm,bcm4329-fmac";
+				reg = <0x10000 0x0 0x0 0x0 0x0>;
+				interrupt-parent = <&gpa2>;
+				interrupts = <3 IRQ_TYPE_EDGE_RISING>;
+				interrupt-names = "host-wake";
+			};
+		};
 	};
 };
 
@@ -663,6 +685,7 @@
 		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
 	};
 
+	/* Active high, driven by the BCM4358; pulled down as in the stock tree */
 	wlan_host_wake: wlan-host-wake-pins {
 		samsung,pins = "gpa2-3";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
