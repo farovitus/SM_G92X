@@ -588,14 +588,6 @@ config SAMSUNG_MDNIE_COMPAT
 	  registers. They store their values and do not change the panel.
 	  Do not enable together with a real LCD class driver.
 
-config MAX77843_MUIC_USB
-	tristate "MAX77843 MUIC USB data-path switch"
-	depends on I2C && OF
-	help
-	  Routes the micro-USB data lines to the SoC's USB PHY through the
-	  MAX77843 MUIC, for boards that reach the MUIC as a plain I2C client
-	  instead of through the MAX77843 MFD (Galaxy S6).
-
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"

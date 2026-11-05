@@ -293,9 +293,11 @@
 		#size-cells = <0>;
 
 		/*
-		 * TOPSYS: the MFD core. It owns the interrupt and creates the
-		 * charger (0x69) and fuel gauge (0x36) clients for its cells,
-		 * and carries the haptic block.
+		 * TOPSYS: the MFD core. It creates the charger (0x69), fuel
+		 * gauge (0x36) and MUIC (0x25) clients for its cells and carries
+		 * the haptic block. INTB is level low and shared: each driver
+		 * unmasks its block's source only once it handles it, and the
+		 * fuel gauge, which is polled, stays masked.
 		 */
 		max77843: pmic@66 {
 			compatible = "maxim,max77843";
@@ -313,6 +315,21 @@
 				compatible = "maxim,max77843-charger";
 			};
 
+			/*
+			 * MUIC: accessory detection and the micro-USB switch,
+			 * which routes D+/D- to the USB PHY when a USB host or
+			 * charger is attached and opens it on detach.
+			 */
+			extcon {
+				compatible = "maxim,max77843-muic";
+
+				connector {
+					compatible = "usb-b-connector";
+					label = "micro-USB";
+					type = "micro";
+				};
+			};
+
 			/* LRA motor; the 3.10 G920F period is 33510 ns on PWM timer 1 */
 			haptic {
 				compatible = "maxim,max77843-haptic";
@@ -320,12 +337,6 @@
 				pwms = <&pwm 1 33510 0>;
 				pwm-names = "haptic";
 			};
-		};
-
-		/* MUIC: routes the micro-USB data lines to the USB PHY. */
-		muic@25 {
-			compatible = "maxim,max77843-muic-usb";
-			reg = <0x25>;
 		};
 	};
 

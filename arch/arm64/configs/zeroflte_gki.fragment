@@ -51,8 +51,8 @@ CONFIG_CHARGER_MAX77843=y
 CONFIG_FUEL_GAUGE_MAX77843=y
 # Haptic motor (LRA) on the MAX77843, driven by PWM timer 1.
 CONFIG_INPUT_MAX77693_HAPTIC=y
-# MUIC: routes the micro-USB data lines to the USB PHY for adb.
-CONFIG_MAX77843_MUIC_USB=y
+# MUIC: cable detection and the micro-USB data switch (adb).
+CONFIG_EXTCON_MAX77843=y
 # "battery" and "ac", the names the ROM's thermal and health HALs use.
 CONFIG_BATTERY_SAMSUNG_COMPAT=y
 
