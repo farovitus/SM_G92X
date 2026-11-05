@@ -12,6 +12,8 @@
  *
  * The "ac" temperature is the fuel gauge's battery temperature: this
  * kernel has no driver for the charger thermistor that 3.10 reported.
+ * The battery health is the charger's, which stops or limits charging by
+ * the battery temperature.
  *
  * Lineage's health HAL only starts when battery/charging_enabled exists
  * (added to the 3.10 sec_battery driver for Lineage), and system_server
@@ -41,10 +43,9 @@ static int sec_compat_battery_get(struct power_supply *psy,
 {
 	struct sec_compat *sc = power_supply_get_drvdata(psy);
 
-	if (psp == POWER_SUPPLY_PROP_HEALTH) {
-		val->intval = POWER_SUPPLY_HEALTH_GOOD;
-		return 0;
-	}
+	/* The charger judges the battery temperature */
+	if (psp == POWER_SUPPLY_PROP_HEALTH)
+		return power_supply_get_property(sc->chg, psp, val);
 	return power_supply_get_property(sc->fg, psp, val);
 }
 
