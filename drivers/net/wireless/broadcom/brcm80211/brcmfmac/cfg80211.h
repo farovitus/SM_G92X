@@ -287,6 +287,8 @@ struct brcmf_cfg80211_vif_event {
  * struct brcmf_cfg80211_wowl - wowl related information.
  *
  * @active: set on suspend, cleared on resume.
+ * @keep_link: suspended with the "any" trigger: the dongle keeps running
+ *	and wakes the host through its host-wake line; cleared on resume.
  * @pre_pmmode: firmware PM mode at entering suspend.
  * @nd: net dectect data.
  * @nd_info: helper struct to pass to cfg80211.
@@ -296,6 +298,7 @@ struct brcmf_cfg80211_vif_event {
  */
 struct brcmf_cfg80211_wowl {
 	bool active;
+	bool keep_link;
 	u32 pre_pmmode;
 	struct cfg80211_wowlan_nd_match *nd;
 	struct cfg80211_wowlan_nd_info *nd_info;

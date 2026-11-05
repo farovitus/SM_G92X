@@ -4148,6 +4148,12 @@ static s32 brcmf_cfg80211_resume(struct wiphy *wiphy)
 
 	brcmf_dbg(TRACE, "Enter\n");
 
+	if (cfg->wowl.keep_link) {
+		brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_PM,
+				      cfg->wowl.pre_pmmode);
+		cfg->wowl.keep_link = false;
+	}
+
 	if (cfg->wowl.active) {
 		brcmf_report_wowl_wakeind(wiphy, ifp);
 		brcmf_fil_iovar_int_set(ifp, "wowl_clear", 0);
@@ -4266,7 +4272,26 @@ static s32 brcmf_cfg80211_suspend(struct wiphy *wiphy,
 	if (test_bit(BRCMF_SCAN_STATUS_BUSY, &cfg->scan_status))
 		brcmf_abort_scanning(cfg);
 
-	if (wowl == NULL) {
+	if (wowl && wowl->any) {
+		struct brcmf_bus *bus = cfg->pub->bus_if;
+
+		/* "any": the dongle keeps running as it is and wakes the
+		 * host through its host-wake line. Without a usable line,
+		 * refuse, and cfg80211 suspends again without WoWLAN.
+		 */
+		if (!bus->host_wake || !device_may_wakeup(bus->dev))
+			return 1;
+
+		brcmf_bus_wowl_config(bus, false);
+		brcmf_fil_cmd_int_get(ifp, BRCMF_C_GET_PM,
+				      &cfg->wowl.pre_pmmode);
+		brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_PM, PM_MAX);
+		if (test_bit(BRCMF_VIF_STATUS_CONNECTED, &ifp->vif->sme_state))
+			brcmf_keepalive_start(ifp, 30);
+		else
+			brcmf_set_mpc(ifp, 1);
+		cfg->wowl.keep_link = true;
+	} else if (!wowl) {
 		brcmf_bus_wowl_config(cfg->pub->bus_if, false);
 		list_for_each_entry(vif, &cfg->vif_list, list) {
 			if (!test_bit(BRCMF_VIF_STATUS_READY, &vif->sme_state))
@@ -7544,7 +7569,18 @@ static void brcmf_wiphy_wowl_params(struct wiphy *wiphy, struct brcmf_if *ifp)
 #ifdef CONFIG_PM
 	struct brcmf_cfg80211_info *cfg = wiphy_to_cfg(wiphy);
 	struct brcmf_pub *drvr = cfg->pub;
+	bool fw_wowl = brcmf_feat_is_enabled(ifp, BRCMF_FEAT_WOWL);
 	struct wiphy_wowlan_support *wowl;
+
+	/* "any" needs no firmware WoWLAN, only the host-wake line. */
+	if (!fw_wowl) {
+		wowl = kzalloc(sizeof(*wowl), GFP_KERNEL);
+		if (wowl) {
+			wowl->flags = WIPHY_WOWLAN_ANY;
+			wiphy->wowlan = wowl;
+		}
+		return;
+	}
 
 	wowl = kmemdup(&brcmf_wowlan_support, sizeof(brcmf_wowlan_support),
 		       GFP_KERNEL);
@@ -7565,8 +7601,44 @@ static void brcmf_wiphy_wowl_params(struct wiphy *wiphy, struct brcmf_if *ifp)
 		wowl->flags |= WIPHY_WOWLAN_SUPPORTS_GTK_REKEY;
 		wowl->flags |= WIPHY_WOWLAN_GTK_REKEY_FAILURE;
 	}
+	/* With a host-wake line the dongle can keep running while the
+	 * host sleeps and wake it for traffic: the "any" trigger.
+	 */
+	if (drvr->bus_if->host_wake)
+		wowl->flags |= WIPHY_WOWLAN_ANY;
 
 	wiphy->wowlan = wowl;
+#endif
+}
+
+/* Android never configures WoWLAN, and without a configuration cfg80211
+ * disconnects every interface before suspend. When the "any" trigger is
+ * supported, start with it, so the link stays up and the host-wake line
+ * wakes the host; userspace can change or disable it as usual. cfg80211
+ * owns the configuration and frees it on unregister or replacement.
+ */
+static void brcmf_wowl_set_default(struct brcmf_cfg80211_info *cfg)
+{
+#ifdef CONFIG_PM
+	struct wiphy *wiphy = cfg->wiphy;
+	struct cfg80211_wowlan *config;
+
+	if (!wiphy->wowlan || !(wiphy->wowlan->flags & WIPHY_WOWLAN_ANY))
+		return;
+
+	config = kzalloc(sizeof(*config), GFP_KERNEL);
+	if (!config)
+		return;
+	config->any = true;
+
+	wiphy_lock(wiphy);
+	if (!wiphy->wowlan_config) {
+		wiphy->wowlan_config = config;
+		config = NULL;
+		brcmf_info("WoWLAN \"any\" set by default: host-wake line present\n");
+	}
+	wiphy_unlock(wiphy);
+	kfree(config);
 #endif
 }
 
@@ -7651,7 +7723,8 @@ static int brcmf_setup_wiphy(struct wiphy *wiphy, struct brcmf_if *ifp)
 	wiphy->vendor_commands = brcmf_vendor_cmds;
 	wiphy->n_vendor_commands = BRCMF_VNDR_CMDS_LAST - 1;
 
-	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_WOWL))
+	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_WOWL) ||
+	    drvr->bus_if->host_wake)
 		brcmf_wiphy_wowl_params(wiphy, ifp);
 	err = brcmf_fil_cmd_data_get(ifp, BRCMF_C_GET_BANDLIST, &bandlist,
 				     sizeof(bandlist));
@@ -8334,6 +8407,7 @@ struct brcmf_cfg80211_info *brcmf_cfg80211_attach(struct brcmf_pub *drvr,
 		bphy_err(drvr, "Could not register wiphy device (%d)\n", err);
 		goto priv_out;
 	}
+	brcmf_wowl_set_default(cfg);
 
 	err = brcmf_setup_wiphybands(cfg);
 	if (err) {
