@@ -74,6 +74,7 @@
 
 /* I2C_TRAILING_CTL Register bits */
 #define HSI2C_TRAILING_COUNT			(0xf)
+#define HSI2C_TRAILING_COUNT_MAX		(0xffffff)
 
 /* I2C_INT_EN Register bits */
 #define HSI2C_INT_TX_ALMOSTEMPTY_EN		(1u << 0)
@@ -389,6 +390,29 @@ static int exynos5_hsi2c_clock_setup(struct exynos5_i2c *i2c)
 }
 
 /*
+ * The trailing timer raises HSI2C_INT_TRAILING once the RX side has been
+ * idle for TRAILING_COUNT controller clocks, so the tail of a read below
+ * the FIFO trigger level gets collected. It counts the controller clock,
+ * not SCL: a fixed 15 clocks is far shorter than one byte on the bus, so
+ * the interrupt fires over and over between the bytes of every read (on
+ * Exynos7420 about 500 interrupts per touch-controller transfer). Let it
+ * expire only after two byte times on the bus.
+ */
+static u32 exynos5_i2c_trailing_count(struct exynos5_i2c *i2c)
+{
+	unsigned long clkin = clk_get_rate(i2c->clk);
+	u64 count;
+
+	if (!clkin || !i2c->op_clock)
+		return HSI2C_TRAILING_COUNT;
+
+	count = DIV_ROUND_UP_ULL((u64)clkin * 2 * 9, i2c->op_clock);
+
+	return clamp_t(u64, count, HSI2C_TRAILING_COUNT,
+		       HSI2C_TRAILING_COUNT_MAX);
+}
+
+/*
  * exynos5_i2c_init: configures the controller for I2C functionality
  * Programs I2C controller for Master mode operation
  */
@@ -403,7 +427,7 @@ static void exynos5_i2c_init(struct exynos5_i2c *i2c)
 
 	writel((HSI2C_FUNC_MODE_I2C | HSI2C_MASTER),
 					i2c->regs + HSI2C_CTL);
-	writel(HSI2C_TRAILING_COUNT, i2c->regs + HSI2C_TRAILIG_CTL);
+	writel(exynos5_i2c_trailing_count(i2c), i2c->regs + HSI2C_TRAILIG_CTL);
 
 	if (i2c->op_clock >= I2C_MAX_FAST_MODE_PLUS_FREQ) {
 		writel(HSI2C_MASTER_ID(MASTER_ID(i2c->adap.nr)),
