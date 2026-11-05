@@ -481,14 +481,41 @@
 			#dma-cells = <1>;
 		};
 
-		adma: dma-controller@11420000 {
-			compatible = "arm,pl330", "arm,primecell";
-			reg = <0x11420000 0x1000>;
-			interrupts = <GIC_SPI 97 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&cmu_aud ACLK_ADMA>;
-			clock-names = "apb_pclk";
-			#dma-cells = <1>;
+		/*
+		 * LPASS routes the DMA and I2S interrupts to the CPU and holds
+		 * their resets. The UART at 0x11460000 (serial_4) is in the
+		 * same block but stays outside this node; the exynos7 variant
+		 * of the driver leaves it alone.
+		 */
+		lpass: audio-subsystem@11400000 {
+			compatible = "samsung,exynos7-lpass";
+			reg = <0x11400000 0x100>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
 			status = "disabled";
+
+			adma: dma-controller@11420000 {
+				compatible = "arm,pl330", "arm,primecell";
+				reg = <0x11420000 0x1000>;
+				interrupts = <GIC_SPI 97 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&cmu_aud ACLK_ADMA>;
+				clock-names = "apb_pclk";
+				#dma-cells = <1>;
+			};
+
+			i2s0: i2s@11440000 {
+				compatible = "samsung,exynos7-i2s";
+				reg = <0x11440000 0x100>;
+				interrupts = <GIC_SPI 70 IRQ_TYPE_LEVEL_HIGH>;
+				dmas = <&adma 0>, <&adma 2>;
+				dma-names = "tx", "rx";
+				clocks = <&cmu_aud PCLK_I2S>, <&cmu_aud SCLK_I2S>,
+					 <&cmu_aud SCLK_I2S>;
+				clock-names = "iis", "i2s_opclk0", "i2s_opclk1";
+				#sound-dai-cells = <1>;
+				status = "disabled";
+			};
 		};
 
 		clock_atlas: clock-controller@11800000 {
@@ -1079,19 +1106,6 @@
 			#pwm-cells = <3>;
 			clocks = <&clock_peric0 PCLK_PWM>;
 			clock-names = "timers";
-		};
-
-		i2s0: i2s@11440000 {
-			compatible = "samsung,exynos7-i2s";
-			reg = <0x11440000 0x100>;
-			interrupts = <GIC_SPI 70 IRQ_TYPE_LEVEL_HIGH>;
-			dmas = <&adma 0>, <&adma 2>;
-			dma-names = "tx", "rx";
-			clocks = <&cmu_aud PCLK_I2S>, <&cmu_aud SCLK_I2S>,
-				 <&cmu_aud SCLK_I2S>;
-			clock-names = "iis", "i2s_opclk0", "i2s_opclk1";
-			#sound-dai-cells = <1>;
-			status = "disabled";
 		};
 
 		sysmmu_disp_ro: iommu@13a00000 {
