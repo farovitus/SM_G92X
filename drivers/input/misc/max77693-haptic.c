@@ -72,6 +72,17 @@ static int max77693_haptic_set_duty_cycle(struct max77693_haptic *haptic)
 
 	pwm_get_args(haptic->pwm_dev, &pargs);
 	delta = (pargs.period + haptic->pwm_duty) / 2;
+
+	/*
+	 * The MAX77843 drives its motor at the PWM input frequency divided
+	 * down by PDIV, so the input needs edges. Full magnitude maps to
+	 * 100% duty, a constant level, and the motor does not move at all.
+	 * Scale the upper half to 50-99% duty instead; the Galaxy S6 vendor
+	 * kernel ran its motor at 33175/33510 ns, 99%.
+	 */
+	if (haptic->dev_type == TYPE_MAX77843)
+		delta = pargs.period / 2 + haptic->pwm_duty * 49 / 100;
+
 	error = pwm_config(haptic->pwm_dev, delta, pargs.period);
 	if (error) {
 		dev_err(haptic->dev, "failed to configure pwm: %d\n", error);
