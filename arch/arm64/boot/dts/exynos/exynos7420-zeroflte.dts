@@ -292,6 +292,27 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
+		/*
+		 * TOPSYS: the MFD core. It owns the interrupt and creates the
+		 * charger (0x69) and fuel gauge (0x36) clients for its cells.
+		 */
+		max77843: pmic@66 {
+			compatible = "maxim,max77843";
+			reg = <0x66>;
+			interrupt-parent = <&gpa1>;
+			interrupts = <4 IRQ_TYPE_LEVEL_LOW>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&max77843_irq>;
+
+			fuelgauge {
+				compatible = "maxim,max77843-fuelgauge";
+			};
+
+			charger {
+				compatible = "maxim,max77843-charger";
+			};
+		};
+
 		/* MUIC: routes the micro-USB data lines to the USB PHY. */
 		muic@25 {
 			compatible = "maxim,max77843-muic-usb";
@@ -607,6 +628,13 @@
 		samsung,pins = "gpa2-1";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	/* MAX77843 INTB: open drain, active low (3.10 irq-gpio gpa1-4) */
+	max77843_irq: max77843-irq {
+		samsung,pins = "gpa1-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
 	};
 
 	pmic_irq: pmic-irq {
