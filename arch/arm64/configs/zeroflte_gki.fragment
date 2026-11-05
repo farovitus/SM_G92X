@@ -171,8 +171,6 @@ CONFIG_CMDLINE="stack_depot_disable=on cgroup_disable=pressure kasan.stacktrace=
 # and its 3 MB of unwind tables can never be used; shadow call stacks stay,
 # compiled in statically.
 # CONFIG_UNWIND_PATCH_PAC_INTO_SCS is not set
-# Function names stay in kallsyms; drop the data-symbol names.
-# CONFIG_KALLSYMS_ALL is not set
 # Keep only the codepages Android uses (UTF-8, and CP437/ISO-8859-1 for FAT).
 # CONFIG_NLS_CODEPAGE_737 is not set
 # CONFIG_NLS_CODEPAGE_775 is not set
@@ -255,3 +253,10 @@ CONFIG_GPIO_MADERA=m
 CONFIG_REGULATOR_ARIZONA_MICSUPP=m
 CONFIG_SND_SOC_SAMSUNG=y
 CONFIG_SND_SOC_SAMSUNG_ZERO_WM1840=m
+
+# Root: KernelSU, built in, hooked through kprobes, the syscall
+# tracepoint and its sys_call_table dispatcher (GKI mode).
+CONFIG_KSU=y
+# KernelSU finds sys_call_table, security_hook_heads and other data
+# symbols through kallsyms, as on GKI.
+CONFIG_KALLSYMS_ALL=y
