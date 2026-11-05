@@ -5922,10 +5922,17 @@ static int brcmf_cfg80211_set_pmk(struct wiphy *wiphy, struct net_device *dev,
 
 	brcmf_dbg(TRACE, "enter\n");
 
-	/* expect using firmware supplicant for 1X */
+	/* Only the firmware 802.1X supplicant takes a PMK. Android's
+	 * wpa_supplicant (CONFIG_DRIVER_NL80211_BRCM) also passes one down
+	 * after every PSK connection, which userspace must not be able to
+	 * turn into a WARN; it treats the failure as harmless.
+	 */
 	ifp = netdev_priv(dev);
-	if (WARN_ON(ifp->vif->profile.use_fwsup != BRCMF_PROFILE_FWSUP_1X))
-		return -EINVAL;
+	if (ifp->vif->profile.use_fwsup != BRCMF_PROFILE_FWSUP_1X) {
+		brcmf_dbg(CONN, "PMK not used, use_fwsup %d\n",
+			  ifp->vif->profile.use_fwsup);
+		return -EOPNOTSUPP;
+	}
 
 	if (conf->pmk_len > BRCMF_WSEC_MAX_PSK_LEN)
 		return -ERANGE;
