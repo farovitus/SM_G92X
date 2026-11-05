@@ -206,7 +206,10 @@ mod_closure() {
 for ko in "$mod_dir"/*.ko; do
 	m=$(basename "$ko" .ko)
 	deps=$(mod_closure "$m" | awk '!seen[$0]++' | tail -r | sed 's/$/.ko/' | tr '\n' ' ')
-	echo "$m.ko: ${deps% }" >> "$mod_dir/modules.dep"
+	deps=${deps% }
+	# Like depmod: no space after the colon when there are no dependencies.
+	# Android's modprobe reads a trailing space as an empty module name.
+	echo "$m.ko:${deps:+ $deps}" >> "$mod_dir/modules.dep"
 done
 
 image="$kernel_out/arch/arm64/boot/Image"
