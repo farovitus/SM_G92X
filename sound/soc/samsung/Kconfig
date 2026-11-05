@@ -127,13 +127,14 @@ config SND_SOC_SAMSUNG_TM2_WM5110
 
 config SND_SOC_SAMSUNG_ZERO_WM1840
 	tristate "SoC I2S Audio support for WM1840 on Galaxy S6 (zero) boards"
-	depends on SND_SOC_SAMSUNG && MFD_MADERA && MFD_CS47L85
+	depends on SND_SOC_SAMSUNG && MFD_MADERA && MFD_CS47L85 && I2C
 	select SND_SOC_CS47L85
+	select SND_SOC_MAX98925
 	select SND_SAMSUNG_I2S
 	help
 	  Say Y if you want to add support for SoC audio on the Galaxy S6
-	  and S6 edge (zeroflte, zerolte), with the I2S0 controller and
-	  the Cirrus Logic WM1840 codec.
+	  and S6 edge (zeroflte, zerolte), with the I2S0 controller, the
+	  Cirrus Logic WM1840 codec and the MAX98505 speaker amp.
 
 config SND_SOC_SAMSUNG_ARIES_WM8994
 	tristate "SoC I2S Audio support for WM8994 on Aries"

@@ -7,6 +7,10 @@
  * and makes a 98.304 MHz SYSCLK, so only 48 kHz-family rates are offered.
  * The FLL runs only while the codec is out of BIAS_OFF. Routes come from
  * the samsung,audio-routing DT property.
+ *
+ * The loudspeaker has a MAX98505 smart amp (max98925 driver) on the
+ * codec's AIF4, a codec-to-codec link: AIF4 is the I2S clock provider at
+ * 48 kHz, 16 bit, 2 slots, and the amp runs from its BCLK.
  */
 
 #include <linux/mfd/madera/core.h>
@@ -23,6 +27,14 @@
 
 #define ZERO_MCLK2_RATE		32768
 #define ZERO_SYSCLK_RATE	98304000
+
+/*
+ * max98925 set_sysclk: clock ID 1 selects BCLK as the amp's DAI clock.
+ * The frequency only picks the driver's divider table; the vendor driver
+ * used 12.288 MHz with BCLK as the source too.
+ */
+#define ZERO_AMP_CLK_BCLK	1
+#define ZERO_AMP_SYSCLK_RATE	12288000
 
 struct zero_priv {
 	struct snd_soc_component *codec;
@@ -132,6 +144,21 @@ static const struct snd_soc_ops zero_aif1_ops = {
 	.hw_params = zero_aif1_hw_params,
 };
 
+static int zero_amp_init(struct snd_soc_pcm_runtime *rtd)
+{
+	return snd_soc_dai_set_sysclk(snd_soc_rtd_to_codec(rtd, 0),
+				      ZERO_AMP_CLK_BCLK, ZERO_AMP_SYSCLK_RATE,
+				      SND_SOC_CLOCK_IN);
+}
+
+static const struct snd_soc_pcm_stream zero_amp_params = {
+	.formats	= SNDRV_PCM_FMTBIT_S16_LE,
+	.rate_min	= 48000,
+	.rate_max	= 48000,
+	.channels_min	= 2,
+	.channels_max	= 2,
+};
+
 static int zero_late_probe(struct snd_soc_card *card)
 {
 	struct zero_priv *priv = snd_soc_card_get_drvdata(card);
@@ -147,6 +174,7 @@ static int zero_late_probe(struct snd_soc_card *card)
 static const struct snd_soc_dapm_widget zero_dapm_widgets[] = {
 	SND_SOC_DAPM_HP("HP", NULL),
 	SND_SOC_DAPM_SPK("RCV", NULL),
+	SND_SOC_DAPM_SPK("SPK", NULL),
 	SND_SOC_DAPM_MIC("Main Mic", NULL),
 	SND_SOC_DAPM_MIC("Sub Mic", NULL),
 	SND_SOC_DAPM_MIC("Third Mic", NULL),
@@ -156,6 +184,7 @@ static const struct snd_soc_dapm_widget zero_dapm_widgets[] = {
 static const struct snd_kcontrol_new zero_controls[] = {
 	SOC_DAPM_PIN_SWITCH("HP"),
 	SOC_DAPM_PIN_SWITCH("RCV"),
+	SOC_DAPM_PIN_SWITCH("SPK"),
 	SOC_DAPM_PIN_SWITCH("Main Mic"),
 	SOC_DAPM_PIN_SWITCH("Sub Mic"),
 	SOC_DAPM_PIN_SWITCH("Third Mic"),
@@ -167,6 +196,10 @@ SND_SOC_DAILINK_DEFS(aif1,
 	DAILINK_COMP_ARRAY(COMP_CODEC("cs47l85-codec", "cs47l85-aif1")),
 	DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
+SND_SOC_DAILINK_DEFS(amp,
+	DAILINK_COMP_ARRAY(COMP_CPU("cs47l85-aif4")),
+	DAILINK_COMP_ARRAY(COMP_CODEC(NULL, "max98925-aif1")));
+
 static struct snd_soc_dai_link zero_dai_links[] = {
 	{
 		.name		= "WM1840 AIF1",
@@ -176,12 +209,21 @@ static struct snd_soc_dai_link zero_dai_links[] = {
 		.ops		= &zero_aif1_ops,
 		SND_SOC_DAILINK_REG(aif1),
 	},
+	{
+		.name		= "WM1840 AIF4 Speaker Amp",
+		.stream_name	= "Speaker Amp",
+		.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
+				  SND_SOC_DAIFMT_CBC_CFC,
+		.c2c_params	= &zero_amp_params,
+		.num_c2c_params	= 1,
+		.init		= zero_amp_init,
+		SND_SOC_DAILINK_REG(amp),
+	},
 };
 
 static struct snd_soc_card zero_card = {
 	.owner			= THIS_MODULE,
 	.dai_link		= zero_dai_links,
-	.num_links		= ARRAY_SIZE(zero_dai_links),
 	.controls		= zero_controls,
 	.num_controls		= ARRAY_SIZE(zero_controls),
 	.dapm_widgets		= zero_dapm_widgets,
@@ -199,7 +241,7 @@ static int zero_audio_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct snd_soc_card *card = &zero_card;
-	struct device_node *i2s_node;
+	struct device_node *i2s_node, *amp_node;
 	struct zero_priv *priv;
 	int ret;
 
@@ -229,6 +271,19 @@ static int zero_audio_probe(struct platform_device *pdev)
 
 	zero_dai_links[0].cpus->of_node = i2s_node;
 	zero_dai_links[0].platforms->of_node = i2s_node;
+
+	/* Without an amp node the card has the AIF1 link only. */
+	amp_node = of_parse_phandle(dev->of_node, "samsung,speaker-amp", 0);
+	if (amp_node) {
+		ret = devm_add_action_or_reset(dev, zero_put_node, amp_node);
+		if (ret)
+			return ret;
+
+		zero_dai_links[1].codecs->of_node = amp_node;
+		card->num_links = ARRAY_SIZE(zero_dai_links);
+	} else {
+		card->num_links = 1;
+	}
 
 	return devm_snd_soc_register_card(dev, card);
 }
