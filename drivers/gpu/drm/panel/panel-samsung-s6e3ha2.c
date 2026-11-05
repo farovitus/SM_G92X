@@ -237,6 +237,7 @@ struct s6e3ha2 {
 	struct regulator_bulk_data supplies[2];
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *enable_gpio;
+	bool boot_on;		/* left running by the bootloader */
 
 	const struct s6e3ha2_panel_desc *desc;
 };
@@ -706,14 +707,37 @@ static int s6e3ha2_probe(struct mipi_dsi_device *dsi)
 		return ret;
 	}
 
-	ctx->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
+	/*
+	 * A reset line the bootloader left deasserted means it left the
+	 * panel running: let the backlight work without a DRM enable, which
+	 * a host that only sends commands over the bootloader's link never
+	 * issues. Read the line before claiming it as an output; the
+	 * Exynos pin controller cannot report a direction.
+	 */
+	ctx->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_ASIS);
 	if (IS_ERR(ctx->reset_gpio)) {
 		dev_err(dev, "cannot get reset-gpios %ld\n",
 			PTR_ERR(ctx->reset_gpio));
 		return PTR_ERR(ctx->reset_gpio);
 	}
+	ctx->boot_on = gpiod_get_value_cansleep(ctx->reset_gpio) == 0;
 
-	ctx->enable_gpio = devm_gpiod_get(dev, "enable", GPIOD_OUT_HIGH);
+	/*
+	 * Drive it deasserted, as mainline always did at probe. When the
+	 * panel is running this is the level the line already has, and the
+	 * value is written before the direction, so it does not glitch.
+	 */
+	ret = gpiod_direction_output(ctx->reset_gpio, 0);
+	if (ret) {
+		dev_err(dev, "cannot drive reset-gpios %d\n", ret);
+		return ret;
+	}
+	dev_info(dev, "panel %s by the bootloader\n",
+		 ctx->boot_on ? "left running" : "found in reset");
+
+	/* Optional: the Galaxy S6 has no panel enable line. */
+	ctx->enable_gpio = devm_gpiod_get_optional(dev, "enable",
+						   GPIOD_OUT_HIGH);
 	if (IS_ERR(ctx->enable_gpio)) {
 		dev_err(dev, "cannot get enable-gpios %ld\n",
 			PTR_ERR(ctx->enable_gpio));
@@ -729,7 +753,8 @@ static int s6e3ha2_probe(struct mipi_dsi_device *dsi)
 
 	ctx->bl_dev->props.max_brightness = S6E3HA2_MAX_BRIGHTNESS;
 	ctx->bl_dev->props.brightness = S6E3HA2_DEFAULT_BRIGHTNESS;
-	ctx->bl_dev->props.power = FB_BLANK_POWERDOWN;
+	ctx->bl_dev->props.power = ctx->boot_on ? FB_BLANK_UNBLANK :
+						  FB_BLANK_POWERDOWN;
 
 	drm_panel_init(&ctx->panel, dev, &s6e3ha2_drm_funcs,
 		       DRM_MODE_CONNECTOR_DSI);
