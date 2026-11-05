@@ -693,6 +693,13 @@ config LEDS_MAX77650
 	help
 	  LEDs driver for MAX77650 family of PMICs from Maxim Integrated.
 
+config LEDS_MAX77843
+	tristate "RGB LED support for Maxim MAX77843 PMIC"
+	depends on LEDS_CLASS_MULTICOLOR && MFD_MAX77843
+	help
+	  This option enables the RGB indicator LED of the Maxim MAX77843
+	  PMIC as one multicolor LED, with hardware blinking.
+
 config LEDS_MAX8997
 	tristate "LED support for MAX8997 PMIC"
 	depends on LEDS_CLASS && MFD_MAX8997
