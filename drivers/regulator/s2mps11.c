@@ -1117,6 +1117,42 @@ static const struct regulator_desc s2mpu02_regulators[] = {
 	regulator_desc_s2mpu02_buck7(7),
 };
 
+/*
+ * From the second silicon revision (REG_ID != 0) the S2MPS15 swaps the
+ * LDO25 and LDO26 control registers: L26CTRL is 0x4c and L25CTRL is 0x4d.
+ * The voltage ranges are unchanged. The vendor driver picks its register
+ * table on the same REG_ID test.
+ */
+static int s2mps15_get_regulators(struct platform_device *pdev,
+				  struct regmap *regmap,
+				  const struct regulator_desc **regulators)
+{
+	struct regulator_desc *descs;
+	unsigned int rev;
+	int ret;
+
+	*regulators = s2mps15_regulators;
+
+	ret = regmap_read(regmap, S2MPS15_REG_ID, &rev);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "failed to read REG_ID\n");
+	if (!rev)
+		return 0;
+
+	descs = devm_kmemdup(&pdev->dev, s2mps15_regulators,
+			     sizeof(s2mps15_regulators), GFP_KERNEL);
+	if (!descs)
+		return -ENOMEM;
+
+	descs[S2MPS15_LDO25].vsel_reg = S2MPS15_REG_L25CTRL_REV1;
+	descs[S2MPS15_LDO25].enable_reg = S2MPS15_REG_L25CTRL_REV1;
+	descs[S2MPS15_LDO26].vsel_reg = S2MPS15_REG_L26CTRL_REV1;
+	descs[S2MPS15_LDO26].enable_reg = S2MPS15_REG_L26CTRL_REV1;
+	*regulators = descs;
+
+	return 0;
+}
+
 static int s2mps11_pmic_probe(struct platform_device *pdev)
 {
 	struct sec_pmic_dev *iodev = dev_get_drvdata(pdev->dev.parent);
@@ -1151,8 +1187,11 @@ static int s2mps11_pmic_probe(struct platform_device *pdev)
 		break;
 	case S2MPS15X:
 		rdev_num = ARRAY_SIZE(s2mps15_regulators);
-		regulators = s2mps15_regulators;
 		BUILD_BUG_ON(S2MPS_REGULATOR_MAX < ARRAY_SIZE(s2mps15_regulators));
+		ret = s2mps15_get_regulators(pdev, iodev->regmap_pmic,
+					     &regulators);
+		if (ret)
+			return ret;
 		break;
 	case S2MPU02:
 		rdev_num = ARRAY_SIZE(s2mpu02_regulators);

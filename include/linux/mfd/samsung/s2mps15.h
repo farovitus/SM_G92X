@@ -94,6 +94,10 @@ enum s2mps15_reg {
 	S2MPS15_REG_LDODSCH4,
 };
 
+/* LDO25/LDO26 control registers on REG_ID != 0 silicon */
+#define S2MPS15_REG_L26CTRL_REV1	S2MPS15_REG_L25CTRL
+#define S2MPS15_REG_L25CTRL_REV1	S2MPS15_REG_L26CTRL
+
 /* S2MPS15 regulator ids */
 enum s2mps15_regulators {
 	S2MPS15_LDO1,
