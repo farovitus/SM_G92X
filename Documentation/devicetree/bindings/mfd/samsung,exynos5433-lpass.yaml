@@ -20,11 +20,12 @@ properties:
     const: 1
 
   clocks:
-    maxItems: 1
+    minItems: 1
+    maxItems: 3
 
   clock-names:
-    items:
-      - const: sfr0_ctrl
+    minItems: 1
+    maxItems: 3
 
   power-domains:
     maxItems: 1
@@ -62,6 +63,11 @@ allOf:
           const: samsung,exynos5433-lpass
     then:
       properties:
+        clocks:
+          maxItems: 1
+        clock-names:
+          items:
+            - const: sfr0_ctrl
         reg:
           minItems: 2
       required:
@@ -77,6 +83,19 @@ allOf:
           items:
             - description: LPASS top SFRs
             - description: AUD SysMMU, set to bypass by the driver
+        clocks:
+          items:
+            - description: AUD SysMMU APB clock
+            - description: AUD SysMMU AXI clock
+            - description: AUD to top bus async bridge clock
+        clock-names:
+          items:
+            - const: smmu_pclk
+            - const: smmu_aclk
+            - const: async_aclk
+      required:
+        - clocks
+        - clock-names
 
 additionalProperties: false
 

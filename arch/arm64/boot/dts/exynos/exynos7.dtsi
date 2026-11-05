@@ -486,11 +486,17 @@
 		 * their resets. The UART at 0x11460000 (serial_4) is in the
 		 * same block but stays outside this node; the exynos7 variant
 		 * of the driver leaves it alone. The second reg is the AUD
-		 * SysMMU, which the driver sets to bypass.
+		 * SysMMU, which the driver sets to bypass. The clocks keep the
+		 * SysMMU and the bridge to the top bus, the ADMA's path out,
+		 * running while LPASS is up.
 		 */
 		lpass: audio-subsystem@11400000 {
 			compatible = "samsung,exynos7-lpass";
 			reg = <0x11400000 0x100>, <0x114e0000 0x100>;
+			clocks = <&cmu_aud PCLK_SMMU_AUD>,
+				 <&cmu_aud ACLK_SMMU_AUD>,
+				 <&cmu_aud ACLK_ACEL_LH_ASYNC_SI_TOP>;
+			clock-names = "smmu_pclk", "smmu_aclk", "async_aclk";
 			#address-cells = <1>;
 			#size-cells = <1>;
 			ranges;

@@ -70,7 +70,8 @@ struct exynos_lpass_variant {
 struct exynos_lpass {
 	/* pointer to the LPASS TOP regmap */
 	struct regmap *top;
-	struct clk *sfr0_clk;
+	struct clk_bulk_data *clks;
+	int num_clks;
 	void __iomem *sysmmu;
 	const struct exynos_lpass_variant *variant;
 };
@@ -90,14 +91,17 @@ static void exynos_lpass_core_sw_reset(struct exynos_lpass *lpass, int mask)
 	regmap_write(lpass->top, SFR_LPASS_CORE_SW_RESET, val);
 }
 
-static void exynos_lpass_enable(struct exynos_lpass *lpass)
+static int exynos_lpass_enable(struct exynos_lpass *lpass)
 {
-	clk_prepare_enable(lpass->sfr0_clk);
+	int ret;
+
+	ret = clk_bulk_prepare_enable(lpass->num_clks, lpass->clks);
+	if (ret)
+		return ret;
 
 	/*
 	 * Before the DMA and I2S leave reset, on every power-up, as the
-	 * vendor driver does. Its gates have no consumer yet and stay on
-	 * only through clk_ignore_unused.
+	 * vendor driver does.
 	 */
 	if (lpass->sysmmu)
 		writel(0, lpass->sysmmu + SYSMMU_AUD_CTRL);
@@ -115,6 +119,8 @@ static void exynos_lpass_enable(struct exynos_lpass *lpass)
 	exynos_lpass_core_sw_reset(lpass, LPASS_MEM_SW_RESET);
 	if (!lpass->variant->uart_outside)
 		exynos_lpass_core_sw_reset(lpass, LPASS_UART_SW_RESET);
+
+	return 0;
 }
 
 static void exynos_lpass_disable(struct exynos_lpass *lpass)
@@ -124,7 +130,7 @@ static void exynos_lpass_disable(struct exynos_lpass *lpass)
 		     lpass->variant->uart_outside ? LPASS_INTR_UART : 0);
 	regmap_write(lpass->top, SFR_LPASS_INTR_CA5_MASK, 0);
 
-	clk_disable_unprepare(lpass->sfr0_clk);
+	clk_bulk_disable_unprepare(lpass->num_clks, lpass->clks);
 }
 
 static const struct regmap_config exynos_lpass_reg_conf = {
@@ -140,6 +146,7 @@ static int exynos_lpass_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct exynos_lpass *lpass;
 	void __iomem *base_top;
+	int ret;
 
 	lpass = devm_kzalloc(dev, sizeof(*lpass), GFP_KERNEL);
 	if (!lpass)
@@ -157,10 +164,14 @@ static int exynos_lpass_probe(struct platform_device *pdev)
 			return PTR_ERR(lpass->sysmmu);
 	}
 
-	/* Exynos7 has no separate SFR clock gate in CMU_AUD. */
-	lpass->sfr0_clk = devm_clk_get_optional(dev, "sfr0_ctrl");
-	if (IS_ERR(lpass->sfr0_clk))
-		return PTR_ERR(lpass->sfr0_clk);
+	/*
+	 * Exynos5433: the SFR clock. Exynos7: the AUD SysMMU and the async
+	 * bridge to the top bus, which every ADMA transfer goes through.
+	 */
+	lpass->num_clks = devm_clk_bulk_get_all(dev, &lpass->clks);
+	if (lpass->num_clks < 0)
+		return dev_err_probe(dev, lpass->num_clks,
+				     "failed to get clocks\n");
 
 	lpass->top = regmap_init_mmio(dev, base_top,
 					&exynos_lpass_reg_conf);
@@ -169,10 +180,15 @@ static int exynos_lpass_probe(struct platform_device *pdev)
 		return PTR_ERR(lpass->top);
 	}
 
+	ret = exynos_lpass_enable(lpass);
+	if (ret) {
+		regmap_exit(lpass->top);
+		return dev_err_probe(dev, ret, "failed to enable clocks\n");
+	}
+
 	platform_set_drvdata(pdev, lpass);
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
-	exynos_lpass_enable(lpass);
 
 	return devm_of_platform_populate(dev);
 }
@@ -202,9 +218,7 @@ static int __maybe_unused exynos_lpass_resume(struct device *dev)
 {
 	struct exynos_lpass *lpass = dev_get_drvdata(dev);
 
-	exynos_lpass_enable(lpass);
-
-	return 0;
+	return exynos_lpass_enable(lpass);
 }
 
 static const struct dev_pm_ops lpass_pm_ops = {
