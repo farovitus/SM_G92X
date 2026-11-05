@@ -236,3 +236,19 @@ CONFIG_FONTS=y
 CONFIG_FONT_TER16x32=y
 # Room for the console: UBSAN's inline bounds checks cost about 1 MB.
 # CONFIG_UBSAN is not set
+
+# Audio
+# LPASS routes the ADMA and I2S interrupts to the CPU (exynos7 variant).
+CONFIG_MFD_EXYNOS_LPASS=y
+# SPI0's controller clock is in CMU_PERIC1, which hangs the bus: bit-bang it.
+CONFIG_SPI_GPIO=y
+# Cirrus WM1840 (CS47L85 family) codec core, its SPI bus and its MICVDD pump.
+# Modules: the mainline CS47L85 route table alone is 4.5 MB, which built
+# in pushes the Image past the 29 MB BOOT partition.
+CONFIG_MFD_MADERA=m
+CONFIG_MFD_MADERA_SPI=m
+CONFIG_MFD_CS47L85=y
+CONFIG_GPIO_MADERA=m
+CONFIG_REGULATOR_ARIZONA_MICSUPP=m
+CONFIG_SND_SOC_SAMSUNG=y
+CONFIG_SND_SOC_SAMSUNG_ZERO_WM1840=m

@@ -59,6 +59,13 @@
 					regulator-boot-on;
 				};
 
+				/* WM1840 AVDD, DBVDD1-4, CPVDD1, SPKVDDL/R. */
+				codec_1v8: LDO16 {
+					regulator-name = "vcc_1.8v_codec";
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+				};
+
 				/* Haptic motor supply (3.10 VCC_MOTOR_3.0) */
 				vcc_motor: LDO17 {
 					regulator-name = "vcc_motor_3.0v";
@@ -71,6 +78,16 @@
 					regulator-name = "vtouch_3.3v";
 					regulator-min-microvolt = <3300000>;
 					regulator-max-microvolt = <3300000>;
+				};
+
+				/*
+				 * WM1840 DCVDD and CPVDD2. REG_ID != 0 parts keep
+				 * L26CTRL at 0x4c; s2mps11 handles that swap.
+				 */
+				codec_1v2: LDO26 {
+					regulator-name = "vdd_1.2v_codec";
+					regulator-min-microvolt = <1200000>;
+					regulator-max-microvolt = <1200000>;
 				};
 
 				/*

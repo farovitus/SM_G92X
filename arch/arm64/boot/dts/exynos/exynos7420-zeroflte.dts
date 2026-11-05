@@ -12,6 +12,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/sound/madera.h>
 #include "exynos7420-zeroflte-touch-power.dtsi"
 
 / {
@@ -224,6 +225,19 @@
 			clock-frequency = <133000000>;
 			clock-output-names = "hsi2c7_pclk";
 		};
+
+		/*
+		 * 32.768 kHz from the S2MPS15 into WM1840 MCLK2. The vendor
+		 * kernel (noble_arizona) uses it as the 32k and FLL reference
+		 * and never gates it; mainline has no S2MPS15 clock driver, so
+		 * it is fixed.
+		 */
+		pmic_32k: clock-pmic-32k {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <32768>;
+			clock-output-names = "pmic_32khz";
+		};
 	};
 
 	/*
@@ -421,6 +435,127 @@
 						"NI-NI-2", "UZ-MA-2", "ZA-ZA-19", "EG-EG-13", "TN-TN-1",
 						"AO-AD-0", "BT-BJ-0", "BW-BJ-0", "LY-LI-4", "BO-NG-0",
 						"UM-PR-38", "US-US-988", "CU-US-988", "CA-Q2-993";
+			};
+		};
+	};
+
+	sound {
+		compatible = "samsung,zero-wm1840";
+		model = "zero-wm1840";
+		samsung,i2s-controller = <&i2s0>;
+		samsung,audio-routing =
+			"HP", "HPOUT1L",
+			"HP", "HPOUT1R",
+			"RCV", "HPOUT3L",
+			"RCV", "HPOUT3R",
+			"IN1ALN", "Main Mic",
+			"IN1RN", "Main Mic",
+			"Main Mic", "MICBIAS1",
+			"IN2BLN", "Headset Mic",
+			"IN2BLP", "Headset Mic",
+			"Headset Mic", "MICBIAS2",
+			"IN3LN", "Sub Mic",
+			"IN3RN", "Sub Mic",
+			"Sub Mic", "MICBIAS4",
+			"DMICCLK4", "Third Mic",
+			"DMICDAT4", "Third Mic",
+			"Third Mic", "MICBIAS3";
+	};
+
+	/*
+	 * Audio: Cirrus Logic WM1840 (Madera, CS47L85 family) on AIF1 <-> I2S0.
+	 * Board facts are from the stock rev01-07 DT; only rev00 had a WM5110.
+	 *
+	 * The codec sits on SPI0's pins, but the SPI0 controller is clocked
+	 * from CMU_PERIC1, which hangs the bus on this board, so the bus is
+	 * bit-banged on the same pins in pinctrl_bus0 (CLK gpd8-0, CS gpd8-1,
+	 * MISO gpd6-0, MOSI gpd6-1). IRQ is gpa2-5 (active low), reset gpf4-0.
+	 *
+	 * The codec's FLL1 runs from MCLK2, the PMIC's 32.768 kHz output,
+	 * which S-Boot leaves running (the BCM4358 uses it too); pmic_32k
+	 * stands in for it.
+	 */
+	spi-codec {
+		compatible = "spi-gpio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		sck-gpios = <&gpd8 0 GPIO_ACTIVE_HIGH>;
+		miso-gpios = <&gpd6 0 GPIO_ACTIVE_HIGH>;
+		mosi-gpios = <&gpd6 1 GPIO_ACTIVE_HIGH>;
+		cs-gpios = <&gpd8 1 GPIO_ACTIVE_LOW>;
+		num-chipselects = <1>;
+		/*
+		 * The SoC pins for the codec are set here: the codec node's
+		 * own pinctrl-0 is taken by its internal pin-settings.
+		 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&codec_spi &codec_irq &codec_reset>;
+
+		wm1840: codec@0 {
+			compatible = "cirrus,wm1840";
+			reg = <0>;
+			spi-max-frequency = <20000000>;
+
+			interrupt-parent = <&gpa2>;
+			interrupts = <5 IRQ_TYPE_LEVEL_LOW>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			reset-gpios = <&gpf4 0 GPIO_ACTIVE_LOW>;
+
+			clocks = <&pmic_32k>;
+			clock-names = "mclk2";
+
+			AVDD-supply = <&codec_1v8>;
+			DBVDD1-supply = <&codec_1v8>;
+			DBVDD2-supply = <&codec_1v8>;
+			DBVDD3-supply = <&codec_1v8>;
+			DBVDD4-supply = <&codec_1v8>;
+			CPVDD1-supply = <&codec_1v8>;
+			CPVDD2-supply = <&codec_1v2>;
+			DCVDD-supply = <&codec_1v2>;
+			SPKVDDL-supply = <&codec_1v8>;
+			SPKVDDR-supply = <&codec_1v8>;
+
+			/*
+			 * IN1 (main), IN3 (sub) and IN4 (third) are DMICs.
+			 * cirrus,inmode only takes DIFF or SE: IN1 and IN3 are
+			 * switched to DMIC with the "IN1 Mode"/"IN3 Mode"
+			 * controls, IN4 is digital only. IN2B, the headset
+			 * mic, is differential, the default.
+			 */
+			cirrus,dmic-ref = <MADERA_DMIC_REF_MICBIAS1
+					   MADERA_DMIC_REF_MICBIAS2
+					   MADERA_DMIC_REF_MICBIAS1
+					   MADERA_DMIC_REF_MICVDD
+					   MADERA_DMIC_REF_MICVDD
+					   MADERA_DMIC_REF_MICVDD>;
+			/* OUT2 and OUT3 (earpiece) are mono. */
+			cirrus,out-mono = <0 1 1 0 0 0>;
+			cirrus,max-channels-clocked = <2 0 0 0>;
+
+			pinctrl-names = "default";
+			pinctrl-0 = <&wm1840_pins>;
+
+			wm1840_pins: pin-settings {
+				aif1-pins {
+					groups = "aif1";
+					function = "aif1";
+					bias-bus-hold;
+				};
+
+				aif2-pins {
+					groups = "aif2";
+					function = "aif2";
+					bias-bus-hold;
+				};
+
+				aif3-pins {
+					groups = "aif3";
+					function = "aif3";
+					bias-bus-hold;
+				};
 			};
 		};
 	};
@@ -651,6 +786,16 @@
 	};
 };
 
+&i2s0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2s0_bus>;
+	status = "okay";
+};
+
+&lpass {
+	status = "okay";
+};
+
 &mct {
 	status = "okay";
 };
@@ -725,6 +870,13 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
 	};
+
+	/* WM1840 IRQ, active low */
+	codec_irq: codec-irq-pins {
+		samsung,pins = "gpa2-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
 };
 
 &pinctrl_aud {
@@ -733,6 +885,14 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
 	};
+
+	i2s0_bus: i2s0-bus-pins {
+		samsung,pins = "gpz0-0", "gpz0-1", "gpz0-2", "gpz0-3",
+			       "gpz0-4", "gpz0-5", "gpz0-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
 };
 
 &pinctrl_bus0 {
@@ -740,6 +900,13 @@
 		samsung,pins = "gpd2-5";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	/* WM1840 bit-banged SPI: CLK gpd8-0, CS gpd8-1, MISO gpd6-0, MOSI gpd6-1 */
+	codec_spi: codec-spi-pins {
+		samsung,pins = "gpd8-0", "gpd8-1", "gpd6-0", "gpd6-1";
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
 	};
 };
 
@@ -769,6 +936,13 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+
+	/* WM1840 reset */
+	codec_reset: codec-reset-pins {
+		samsung,pins = "gpf4-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
 	};
 };
 
