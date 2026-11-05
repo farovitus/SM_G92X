@@ -3961,12 +3961,14 @@ static void binder_transaction(struct binder_proc *proc,
 		BUG_ON(t->buffer->async_transaction != 1);
 		return_error = binder_proc_transaction(t, target_proc, NULL);
 		/*
-		 * Let the caller know when async transaction reaches a frozen
-		 * process and is put in a pending queue, waiting for the target
-		 * process to be unfrozen.
+		 * An async transaction to a frozen process is queued until the
+		 * process is unfrozen. Upstream tells the caller so with
+		 * BR_TRANSACTION_PENDING_FROZEN, but the Android 13 (Lineage 20)
+		 * libbinder this kernel runs under predates that command and
+		 * aborts on it ("BAD COMMAND"), taking system_server down. Report
+		 * a plain BR_TRANSACTION_COMPLETE, as kernels before it did; the
+		 * transaction is still delivered once the target is unfrozen.
 		 */
-		if (return_error == BR_TRANSACTION_PENDING_FROZEN)
-			tcomplete->type = BINDER_WORK_TRANSACTION_PENDING;
 		binder_enqueue_thread_work(thread, tcomplete);
 		if (return_error &&
 		    return_error != BR_TRANSACTION_PENDING_FROZEN)
