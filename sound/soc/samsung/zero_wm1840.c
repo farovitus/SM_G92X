@@ -11,13 +11,18 @@
  * The loudspeaker has a MAX98505 smart amp (max98925 driver) on the
  * codec's AIF4, a codec-to-codec link: AIF4 is the I2S clock provider at
  * 48 kHz, 16 bit, 2 slots, and the amp runs from its BCLK.
+ *
+ * The headset jack is the codec's own accessory detection: the MICDET
+ * clamp follows JD1, and MICDET1 measures the mic ring through MICBIAS2.
  */
 
+#include <linux/input.h>
 #include <linux/mfd/madera/core.h>
 #include <linux/mfd/madera/registers.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <sound/jack.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
@@ -38,6 +43,43 @@
 
 struct zero_priv {
 	struct snd_soc_component *codec;
+	struct snd_soc_jack jack;
+};
+
+/* Stock headset buttons: impedance up to max ohms, and their keys. */
+static const struct madera_micd_range zero_micd_ranges[] = {
+	{ .max =  116, .key = KEY_MEDIA },
+	{ .max =  173, .key = KEY_VOICECOMMAND },
+	{ .max =  321, .key = KEY_VOLUMEUP },
+	{ .max =  752, .key = KEY_VOLUMEDOWN },
+	{ .max = 1257, .key = KEY_SEARCH },
+};
+
+#define ZERO_JACK_BUTTONS	(SND_JACK_BTN_0 | SND_JACK_BTN_1 | \
+				 SND_JACK_BTN_2 | SND_JACK_BTN_3 | \
+				 SND_JACK_BTN_4)
+
+/* The stock accessory detect settings (wlf,* in the vendor DT). */
+static const struct madera_jack_cfg zero_jack_cfg = {
+	.micd_clamp_mode		= 0x8,
+	.micd_bias			= 2,
+	.micd_bias_start_time		= 1,
+	.micd_rate			= 7,
+	.micd_dbtime			= true,
+	.micd_detect_debounce_ms	= 300,
+	.micd_timeout_ms		= 1000,
+	.init_mic_delay_ms		= 30,
+	.micd_software_compare		= true,
+	.micd_force_micbias		= true,
+	.micd_open_circuit_declare	= true,
+	.gpsw				= 0x3,
+	.micd_ranges			= zero_micd_ranges,
+	.num_micd_ranges		= ARRAY_SIZE(zero_micd_ranges),
+};
+
+static struct snd_soc_jack_pin zero_jack_pins[] = {
+	{ .pin = "HP",		.mask = SND_JACK_HEADPHONE },
+	{ .pin = "Headset Mic",	.mask = SND_JACK_MICROPHONE },
 };
 
 static int zero_start_sysclk(struct snd_soc_component *codec)
@@ -139,6 +181,34 @@ static int zero_aif1_hw_params(struct snd_pcm_substream *substream,
 				      SAMSUNG_I2S_OPCLK_PCLK);
 }
 
+static int zero_aif1_init(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_card *card = rtd->card;
+	struct zero_priv *priv = snd_soc_card_get_drvdata(card);
+	int ret;
+
+	/* The codec is still in BIAS_OFF here; SYSCLK starts on STANDBY. */
+	priv->codec = snd_soc_rtd_to_codec(rtd, 0)->component;
+
+	ret = snd_soc_card_jack_new_pins(card, "Headset Jack",
+					 SND_JACK_HEADSET | SND_JACK_MECHANICAL |
+					 ZERO_JACK_BUTTONS,
+					 &priv->jack, zero_jack_pins,
+					 ARRAY_SIZE(zero_jack_pins));
+	if (ret)
+		return ret;
+
+	return snd_soc_component_set_jack(priv->codec, &priv->jack,
+					  (void *)&zero_jack_cfg);
+}
+
+static void zero_aif1_exit(struct snd_soc_pcm_runtime *rtd)
+{
+	struct zero_priv *priv = snd_soc_card_get_drvdata(rtd->card);
+
+	snd_soc_component_set_jack(priv->codec, NULL, NULL);
+}
+
 static const struct snd_soc_ops zero_aif1_ops = {
 	.startup = zero_aif1_startup,
 	.hw_params = zero_aif1_hw_params,
@@ -158,18 +228,6 @@ static const struct snd_soc_pcm_stream zero_amp_params = {
 	.channels_min	= 2,
 	.channels_max	= 2,
 };
-
-static int zero_late_probe(struct snd_soc_card *card)
-{
-	struct zero_priv *priv = snd_soc_card_get_drvdata(card);
-	struct snd_soc_pcm_runtime *rtd;
-
-	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[0]);
-	priv->codec = snd_soc_rtd_to_codec(rtd, 0)->component;
-
-	/* The codec is still in BIAS_OFF here; SYSCLK starts on STANDBY. */
-	return 0;
-}
 
 static const struct snd_soc_dapm_widget zero_dapm_widgets[] = {
 	SND_SOC_DAPM_HP("HP", NULL),
@@ -206,6 +264,8 @@ static struct snd_soc_dai_link zero_dai_links[] = {
 		.stream_name	= "HiFi",
 		.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 				  SND_SOC_DAIFMT_CBP_CFP,
+		.init		= zero_aif1_init,
+		.exit		= zero_aif1_exit,
 		.ops		= &zero_aif1_ops,
 		SND_SOC_DAILINK_REG(aif1),
 	},
@@ -228,7 +288,6 @@ static struct snd_soc_card zero_card = {
 	.num_controls		= ARRAY_SIZE(zero_controls),
 	.dapm_widgets		= zero_dapm_widgets,
 	.num_dapm_widgets	= ARRAY_SIZE(zero_dapm_widgets),
-	.late_probe		= zero_late_probe,
 	.set_bias_level		= zero_set_bias_level,
 };
 
