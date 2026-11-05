@@ -128,6 +128,13 @@ if [[ "$use_ccache" == 1 ]]; then
 	make_args+=(CC="ccache $llvm_bin/clang")
 fi
 
+# A fixed banner (user@host in /proc/version) instead of the build machine's
+# login and hostname, and the commit's date as the build date, so the same
+# commit always builds the same kernel.
+export KBUILD_BUILD_USER=${KBUILD_BUILD_USER:-FAROVITUS}
+export KBUILD_BUILD_HOST=${KBUILD_BUILD_HOST:-nk7420}
+export KBUILD_BUILD_TIMESTAMP=${KBUILD_BUILD_TIMESTAMP:-$(git -C "$kernel_dir" log -1 --format=%cd --date=rfc2822)}
+
 kmake() {
 	"$make_cmd" "${make_args[@]}" "$@"
 }
