@@ -2576,6 +2576,7 @@ static const struct snd_soc_component_driver soc_component_dev_cs47l85 = {
 	.remove			= &cs47l85_component_remove,
 	.set_sysclk		= &madera_set_sysclk,
 	.set_pll		= &cs47l85_set_fll,
+	.set_jack		= &madera_jack_set_jack,
 	.name			= DRV_NAME,
 	.compress_ops		= &cs47l85_compress_ops,
 	.controls		= cs47l85_snd_controls,
