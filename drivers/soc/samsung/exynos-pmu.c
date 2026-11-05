@@ -174,8 +174,124 @@ static int exynos7_pmu_power_off(struct sys_off_data *data)
 	return NOTIFY_DONE;
 }
 
+/*
+ * Boot-time PMU setup from Samsung's Exynos 7420 CAL (pmu_cal_sys_init).
+ * The boot loader leaves these at reset values. Without them, taking all
+ * four A57 (ATLAS) cores offline powers the cluster's non-CPU block down,
+ * so any CMU_ATLAS access aborts, and the cores do not come back online.
+ */
+#define EXYNOS7_UP_SCHEDULER			0x0120
+#define EXYNOS7_CPU_OPTION(n)			(0x2008 + (n) * 0x80)
+#define EXYNOS7_CPU_DURATION0(n)		(0x2010 + (n) * 0x80)
+#define EXYNOS7_ATLAS_DBG_CONFIGURATION		0x2440
+#define EXYNOS7_ATLAS_CPUSEQUENCER_OPTION	0x2488
+#define EXYNOS7_L2_OPTION(n)			(0x2608 + (n) * 0x20)
+#define EXYNOS7_XXTI_DURATION3			0x343c
+#define EXYNOS7_EXT_REGULATOR_DURATION3		0x361c
+
+/* CPU_OPTION */
+#define EXYNOS7_USE_SMPEN			BIT(28)
+#define EXYNOS7_USE_STANDBYWFE			BIT(24)
+#define EXYNOS7_USE_STANDBYWFI			BIT(16)
+#define EXYNOS7_USE_MEMPWRDOWN			BIT(2)
+#define EXYNOS7_USE_SC_FEEDBACK			BIT(1)
+#define EXYNOS7_USE_SC_COUNTER			BIT(0)
+/* CPU_DURATION0 */
+#define EXYNOS7_DUR_WAIT_RESET			(0xf << 20)
+#define EXYNOS7_DUR_SCALL			(0xf << 4)
+#define EXYNOS7_DUR_SCALL_VALUE			(0x1 << 4)
+/* L2_OPTION */
+#define EXYNOS7_USE_AUTOMATIC_L2FLUSHREQ	BIT(17)
+#define EXYNOS7_USE_STANDBYWFIL2		BIT(16)
+#define EXYNOS7_USE_RETENTION			BIT(4)
+/* CPUSEQUENCER_OPTION */
+#define EXYNOS7_SKIP_BLK_PWR_DOWN		BIT(8)
+/* UP_SCHEDULER */
+#define EXYNOS7_ENABLE_ATLAS_CPU		BIT(0)
+#define EXYNOS7_ENABLE_APOLLO_CPU		BIT(1)
+/* ATLAS_DBG_CONFIGURATION */
+#define EXYNOS7_DBG_INITIATE_WAKEUP		(0x3 << 16)
+/* DURATION3 */
+#define EXYNOS7_DUR_STABLE_MASK			0xfffff
+#define EXYNOS7_XXTI_DUR_STABLE			0x1d4c	/* 5 ms */
+#define EXYNOS7_EXTREG_DUR_STABLE		0x3fff	/* 10 ms */
+
+/* Block option registers that use the sequencer feedback, not a counter. */
+static const u32 exynos7_feedback_options[] = {
+	0x2408,	/* ATLAS_NONCPU */
+	0x2428,	/* APOLLO_NONCPU */
+	0x2c48,	/* TOP_PWR */
+	0x2cc8,	/* TOP_PWR_MIF */
+	0x4008,	/* AUD */
+	0x4048,	/* CAM0 */
+	0x4088,	/* DISP */
+	0x4108,	/* G3D */
+	0x41c8,	/* MSCL */
+	0x41a8,	/* MFC */
+	0x4028,	/* BUS0 */
+	0x40a8,	/* FSYS0 */
+	0x40c8,	/* FSYS1 */
+	0x4148,	/* ISP0 */
+	0x4188,	/* ISP1 */
+	0x41e8,	/* VPP */
+};
+
+static void exynos7_pmu_update(u32 offset, u32 clear, u32 set)
+{
+	pmu_raw_writel((pmu_raw_readl(offset) & ~clear) | set, offset);
+}
+
+static void exynos7_pmu_sys_init(void)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(exynos7_feedback_options); i++)
+		exynos7_pmu_update(exynos7_feedback_options[i],
+				   EXYNOS7_USE_SC_COUNTER,
+				   EXYNOS7_USE_SC_FEEDBACK);
+
+	/* No automatic L2 flush or retention; STANDBYWFIL2 handshake. */
+	for (i = 0; i < 2; i++)
+		exynos7_pmu_update(EXYNOS7_L2_OPTION(i),
+				   EXYNOS7_USE_AUTOMATIC_L2FLUSHREQ |
+				   EXYNOS7_USE_RETENTION,
+				   EXYNOS7_USE_STANDBYWFIL2);
+
+	/* Cores 0-3 are ATLAS, 4-7 APOLLO. */
+	for (i = 0; i < 8; i++) {
+		exynos7_pmu_update(EXYNOS7_CPU_OPTION(i),
+				   EXYNOS7_USE_STANDBYWFE,
+				   (i < 4 ? EXYNOS7_USE_MEMPWRDOWN : 0) |
+				   EXYNOS7_USE_SC_FEEDBACK |
+				   EXYNOS7_USE_SC_COUNTER |
+				   EXYNOS7_USE_SMPEN |
+				   EXYNOS7_USE_STANDBYWFI);
+		exynos7_pmu_update(EXYNOS7_CPU_DURATION0(i),
+				   EXYNOS7_DUR_SCALL,
+				   EXYNOS7_DUR_WAIT_RESET |
+				   EXYNOS7_DUR_SCALL_VALUE);
+	}
+
+	/* Keep the ATLAS block powered when its cores power down. */
+	exynos7_pmu_update(EXYNOS7_ATLAS_CPUSEQUENCER_OPTION, 0,
+			   EXYNOS7_SKIP_BLK_PWR_DOWN);
+
+	/* Limit in-rush current when a cluster powers up. */
+	exynos7_pmu_update(EXYNOS7_UP_SCHEDULER, 0,
+			   EXYNOS7_ENABLE_ATLAS_CPU | EXYNOS7_ENABLE_APOLLO_CPU);
+
+	exynos7_pmu_update(EXYNOS7_XXTI_DURATION3, EXYNOS7_DUR_STABLE_MASK,
+			   EXYNOS7_XXTI_DUR_STABLE);
+	exynos7_pmu_update(EXYNOS7_EXT_REGULATOR_DURATION3,
+			   EXYNOS7_DUR_STABLE_MASK, EXYNOS7_EXTREG_DUR_STABLE);
+
+	exynos7_pmu_update(EXYNOS7_ATLAS_DBG_CONFIGURATION, 0,
+			   EXYNOS7_DBG_INITIATE_WAKEUP);
+}
+
 static void exynos7_pmu_init(void)
 {
+	exynos7_pmu_sys_init();
 	cpu_pm_register_notifier(&exynos7_cpu_pm_nb);
 	register_reboot_notifier(&exynos7_pmu_reboot_nb);
 	register_sys_off_handler(SYS_OFF_MODE_POWER_OFF, SYS_OFF_PRIO_HIGH,
