@@ -194,6 +194,20 @@
 		fout_aud_pll: clock-fout-aud-pll {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
+			/*
+			 * Measured on SM-G920F (2026-11-05): S-Boot leaves the AUD
+			 * PLL at 196.608 MHz (4096 x 48 kHz, an entry of the stock
+			 * pll_1460x table). With S-Boot's dividers (MUX_SEL_AUD =
+			 * PLL, DIV_AUD1 cdclk /2, uart /2) sclk_uart is PLL/4 =
+			 * 49.152 MHz. A UART4 divider sweep with HCI_Reset got
+			 * Command Complete only at divider/16 = 414..438, centre
+			 * 426, i.e. sclk 49.07 MHz; 196.608 MHz gives 426.7.
+			 *
+			 * The 117 MHz uart-sclk-frequency in the stock DTS is the
+			 * rate the stock kernel set up itself; it is not what
+			 * S-Boot hands over. At 468 MHz this kernel programmed a
+			 * 2.4x too-slow baud and the BCM4358 never answered.
+			 */
 			clock-frequency = <196608000>;
 			clock-output-names = "fout_aud_pll";
 		};
