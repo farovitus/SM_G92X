@@ -16,6 +16,7 @@
 #include <linux/moduleparam.h>
 #include <linux/pid_namespace.h>
 #include <linux/reboot.h>
+#include <linux/string.h>
 #include <linux/sched/debug.h>
 #include <linux/syscalls.h>
 #include <linux/timekeeping.h>
@@ -78,7 +79,9 @@ console_initcall(ess_console_init);
  * that uptime, so a test boot returns to TWRP with its log without anyone
  * holding the keys. Writing 0 to
  * /sys/module/dsh_esslog/parameters/autorecovery cancels it, so a boot
- * that completes stays up.
+ * that completes stays up. An off-mode charging boot
+ * (androidboot.mode=charger) never completes and has no adb to cancel it,
+ * so it is left alone.
  */
 static unsigned int ess_autorecovery;
 module_param_named(autorecovery, ess_autorecovery, uint, 0644);
@@ -88,6 +91,15 @@ static int __init ess_autorecovery_setup(char *s)
 	return !kstrtouint(s, 0, &ess_autorecovery);
 }
 __setup("dsh_autorecovery=", ess_autorecovery_setup);
+
+static bool ess_charger_mode;
+
+static int __init ess_bootmode_setup(char *s)
+{
+	ess_charger_mode = !strcmp(s, "charger");
+	return 1;	/* init still reads it from /proc/cmdline */
+}
+__setup("androidboot.mode=", ess_bootmode_setup);
 
 /*
  * Android writes so much through /dev/kmsg that the kernel's own boot
@@ -131,7 +143,7 @@ static void ess_beat(struct work_struct *work)
 		sched_show_task(init_task_p);
 	rcu_read_unlock();
 	show_state_filter(TASK_UNINTERRUPTIBLE);
-	if (ess_autorecovery &&
+	if (ess_autorecovery && !ess_charger_mode &&
 	    ktime_get_boottime_seconds() >= ess_autorecovery) {
 		ksys_sync();
 		ess_replay_kernel_log();
