@@ -158,6 +158,8 @@ struct brcmf_bus_stats {
  * @fwvid: firmware vendor-support identifier of the device.
  * @always_use_fws_queue: bus wants use queue also when fwsignal is inactive.
  * @wowl_supported: is wowl supported by bus driver.
+ * @host_wake: the dongle can wake the host from suspend through a
+ *	host-wake line, so the link can stay up while the host sleeps.
  * @ops: callbacks for this bus instance.
  * @msgbuf: msgbuf protocol parameters provided by bus layer.
  * @list: member used to add this bus instance to linked list.
@@ -179,6 +181,7 @@ struct brcmf_bus {
 	enum brcmf_fwvendor fwvid;
 	bool always_use_fws_queue;
 	bool wowl_supported;
+	bool host_wake;
 
 	const struct brcmf_bus_ops *ops;
 	struct brcmf_bus_msgbuf *msgbuf;

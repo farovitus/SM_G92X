@@ -16,6 +16,9 @@
 #include <linux/kthread.h>
 #include <linux/io.h>
 #include <linux/random.h>
+#include <linux/pm_wakeirq.h>
+#include <linux/pm_wakeup.h>
+#include <linux/suspend.h>
 #include <asm/unaligned.h>
 
 #include <soc.h>
@@ -2405,7 +2408,7 @@ static const struct pci_device_id brcmf_pcie_devid_table[];
 static int
 brcmf_pcie_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
-	int ret;
+	int ret, wake_irq;
 	struct brcmf_fw_request *fwreq;
 	struct brcmf_pciedev_info *devinfo;
 	struct brcmf_pciedev *pcie_bus_dev;
@@ -2482,6 +2485,18 @@ brcmf_pcie_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	bus->wowl_supported = pci_pme_capable(pdev, PCI_D3hot);
 	dev_set_drvdata(&pdev->dev, bus);
 
+	wake_irq = devinfo->settings->bus.pcie.host_wake_irq;
+	if (wake_irq > 0) {
+		ret = dev_pm_set_dedicated_wake_irq(&pdev->dev, wake_irq);
+		if (ret) {
+			brcmf_err(bus, "host-wake IRQ %d not usable: %d\n",
+				  wake_irq, ret);
+		} else {
+			device_init_wakeup(&pdev->dev, true);
+			bus->host_wake = true;
+		}
+	}
+
 	ret = brcmf_alloc(&devinfo->pdev->dev, devinfo->settings);
 	if (ret)
 		goto fail_bus;
@@ -2513,6 +2528,10 @@ brcmf_pcie_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 fail_brcmf:
 	brcmf_free(&devinfo->pdev->dev);
 fail_bus:
+	if (bus->host_wake) {
+		device_init_wakeup(&pdev->dev, false);
+		dev_pm_clear_wake_irq(&pdev->dev);
+	}
 	kfree(bus->msgbuf);
 	kfree(bus);
 fail:
@@ -2543,6 +2562,11 @@ brcmf_pcie_remove(struct pci_dev *pdev)
 	devinfo = bus->bus_priv.pcie->devinfo;
 	brcmf_pcie_bus_console_read(devinfo, false);
 	brcmf_pcie_fwcon_timer(devinfo, false);
+
+	if (bus->host_wake) {
+		device_init_wakeup(&pdev->dev, false);
+		dev_pm_clear_wake_irq(&pdev->dev);
+	}
 
 	devinfo->state = BRCMFMAC_PCIE_STATE_DOWN;
 	if (devinfo->ci)
@@ -2576,6 +2600,21 @@ brcmf_pcie_remove(struct pci_dev *pdev)
 
 #ifdef CONFIG_PM
 
+/* How long to keep the host awake after the dongle woke it, so the
+ * traffic that caused the wake reaches userspace before the next suspend.
+ */
+#define BRCMF_PCIE_HOST_WAKE_HOLD_MS	500
+
+static bool brcmf_pcie_woke_host(struct brcmf_bus *bus,
+				 struct brcmf_pciedev_info *devinfo)
+{
+#ifdef CONFIG_PM_SLEEP
+	return bus->host_wake &&
+	       pm_wakeup_irq() == devinfo->settings->bus.pcie.host_wake_irq;
+#else
+	return false;
+#endif
+}
 
 static int brcmf_pcie_pm_enter_D3(struct device *dev)
 {
@@ -2632,6 +2671,8 @@ static int brcmf_pcie_pm_leave_D3(struct device *dev)
 		brcmf_pcie_intr_enable(devinfo);
 		brcmf_pcie_hostready(devinfo);
 		brcmf_pcie_fwcon_timer(devinfo, true);
+		if (brcmf_pcie_woke_host(bus, devinfo))
+			pm_wakeup_event(dev, BRCMF_PCIE_HOST_WAKE_HOLD_MS);
 		return 0;
 	}
 

@@ -40,7 +40,7 @@ extern struct brcmf_mp_global_t brcmf_mp_global;
  * @ignore_probe_fail: Ignore probe failure.
  * @trivial_ccode_map: Assume firmware uses ISO3166 country codes with rev 0
  * @country_codes: If available, pointer to struct for translating country codes
- * @bus: Bus specific platform data. Only SDIO at the mmoment.
+ * @bus: Bus specific platform data: SDIO, or the PCIe host-wake IRQ.
  */
 struct brcmf_mp_device {
 	bool		p2p_enable;
@@ -58,6 +58,9 @@ struct brcmf_mp_device {
 	int		cal_size;
 	union {
 		struct brcmfmac_sdio_pd sdio;
+		struct {
+			int host_wake_irq;
+		} pcie;
 	} bus;
 };
 

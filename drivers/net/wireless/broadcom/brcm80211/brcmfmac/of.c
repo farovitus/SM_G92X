@@ -121,6 +121,16 @@ void brcmf_of_probe(struct device *dev, enum brcmf_bus_type bus_type,
 
 	of_get_mac_address(np, settings->mac);
 
+	/* A PCIe dongle may also have a host-wake line, for waking the
+	 * host from suspend while the link sits in D3.
+	 */
+	if (bus_type == BRCMF_BUSTYPE_PCIE) {
+		irq = of_irq_get_byname(np, "host-wake");
+		if (irq > 0)
+			settings->bus.pcie.host_wake_irq = irq;
+		return;
+	}
+
 	if (bus_type != BRCMF_BUSTYPE_SDIO)
 		return;
 
