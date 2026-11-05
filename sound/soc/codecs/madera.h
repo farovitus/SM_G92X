@@ -105,6 +105,7 @@
 #define MADERA_NUM_MIXER_INPUTS		148
 
 struct madera;
+struct madera_jack;
 struct wm_adsp;
 
 struct madera_voice_trigger_info {
@@ -143,6 +144,8 @@ struct madera_priv {
 	int tdm_slots[MADERA_MAX_AIF];
 
 	int domain_group_ref[MADERA_N_DOM_GRPS];
+
+	struct madera_jack *jack;
 };
 
 struct madera_fll_cfg {
@@ -434,6 +437,54 @@ int madera_init_dai(struct madera_priv *priv, int id);
 
 int madera_set_output_mode(struct snd_soc_component *component, int output,
 			   bool differential);
+
+/**
+ * struct madera_micd_range - a headset button
+ * @max: highest impedance of the button, in ohms
+ * @key: input key code to report
+ */
+struct madera_micd_range {
+	int max;
+	int key;
+};
+
+/**
+ * struct madera_jack_cfg - accessory detection settings of a board
+ * @micd_clamp_mode: MICD_CLAMP_MODE, the jack detect inputs that clamp
+ *		     MICDET1 while no plug is in
+ * @micd_bias: MICBIAS that MICDET1 measures through, 1 to 4
+ * @micd_bias_start_time: MICD_BIAS_STARTTIME
+ * @micd_rate: MICD_RATE
+ * @micd_dbtime: MICD_DBTIME, four readings instead of two
+ * @micd_detect_debounce_ms: wait before the first MICDET reading
+ * @micd_timeout_ms: report headphones if MICDET gives no result by then
+ * @init_mic_delay_ms: wait after jack insertion before starting MICDET
+ * @micd_software_compare: identify the plug from the MICDET ADC value
+ * @micd_force_micbias: keep the bias on while a headset is in
+ * @micd_open_circuit_declare: treat an open MICDET as a headset mic
+ * @gpsw: GP_SWITCH_1 SW1_MODE, 0 to leave it
+ * @micd_ranges: headset buttons, sorted by impedance
+ * @num_micd_ranges: number of buttons, at most 6
+ */
+struct madera_jack_cfg {
+	unsigned int micd_clamp_mode;
+	unsigned int micd_bias;
+	unsigned int micd_bias_start_time;
+	unsigned int micd_rate;
+	bool micd_dbtime;
+	unsigned int micd_detect_debounce_ms;
+	unsigned int micd_timeout_ms;
+	unsigned int init_mic_delay_ms;
+	bool micd_software_compare;
+	bool micd_force_micbias;
+	bool micd_open_circuit_declare;
+	unsigned int gpsw;
+	const struct madera_micd_range *micd_ranges;
+	int num_micd_ranges;
+};
+
+int madera_jack_set_jack(struct snd_soc_component *component,
+			 struct snd_soc_jack *jack, void *data);
 
 /* Following functions are for use by machine drivers */
 static inline int madera_register_notifier(struct snd_soc_component *component,
