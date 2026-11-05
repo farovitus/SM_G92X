@@ -940,9 +940,15 @@
 			status = "disabled";
 		};
 
+		/* Non-secure SYSRAM: INFORM words shared with the firmware. */
+		sysram-ns@2157000 {
+			compatible = "samsung,exynos4210-sysram-ns";
+			reg = <0x02157000 0x1000>;
+		};
+
 		pmu_system_controller: system-controller@105c0000 {
 			compatible = "samsung,exynos7-pmu", "syscon";
-			reg = <0x105c0000 0x5000>;
+			reg = <0x105c0000 0x10000>;
 		};
 
 		pd_disp: power-domain@105c4080 {

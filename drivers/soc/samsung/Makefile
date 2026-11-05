@@ -7,6 +7,9 @@ exynos_chipid-y			+= exynos-chipid.o exynos-asv.o
 obj-$(CONFIG_EXYNOS_USI)	+= exynos-usi.o
 
 obj-$(CONFIG_EXYNOS_PMU)	+= exynos-pmu.o
+ifeq ($(CONFIG_ARM64)$(CONFIG_SUSPEND),yy)
+obj-$(CONFIG_EXYNOS_PMU)	+= exynos7-pm.o exynos7-pm-entry.o
+endif
 
 obj-$(CONFIG_EXYNOS_PMU_ARM_DRIVERS)	+= exynos3250-pmu.o exynos4-pmu.o \
 					exynos5250-pmu.o exynos5420-pmu.o
