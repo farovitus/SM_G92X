@@ -65,6 +65,17 @@ config DRM_EXYNOS_DSI
 	help
 	  This enables support for Exynos MIPI-DSI device.
 
+config DRM_EXYNOS7420_DSIM_CMD
+	tristate "Command-only DSI host for a bootloader-set Exynos7420 link"
+	depends on DRM_EXYNOS7_DECON && OF
+	select DRM_MIPI_DSI
+	select DRM_PANEL
+	help
+	  Lets a MIPI DSI panel driver send commands (brightness, mostly)
+	  over the Exynos7420 DSIM link that the bootloader set up and
+	  left running. It does not set up the link, the PHY or the
+	  video path, and it cannot read from the panel.
+
 config DRM_EXYNOS_DP
 	bool "Exynos specific extensions for Analogix DP driver"
 	depends on DRM_EXYNOS_FIMD || DRM_EXYNOS7_DECON

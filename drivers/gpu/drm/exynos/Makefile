@@ -25,3 +25,4 @@ exynosdrm-$(CONFIG_DRM_EXYNOS_GSC)	+= exynos_drm_gsc.o
 exynosdrm-$(CONFIG_DRM_EXYNOS_MIC)     += exynos_drm_mic.o
 
 obj-$(CONFIG_DRM_EXYNOS)		+= exynosdrm.o
+obj-$(CONFIG_DRM_EXYNOS7420_DSIM_CMD)	+= exynos7420_dsim_cmd.o
