@@ -2724,6 +2724,7 @@ static int dwc3_gadget_soft_disconnect(struct dwc3 *dwc)
 	}
 
 	dwc->connected = false;
+	__pm_relax(dwc->connect_ws);
 
 	/*
 	 * Attempt to end pending SETUP status phase, and not wait for the
@@ -4078,6 +4079,7 @@ static void dwc3_gadget_disconnect_interrupt(struct dwc3 *dwc)
 	dwc3_gadget_dctl_write_safe(dwc, reg);
 
 	dwc->connected = false;
+	__pm_relax(dwc->connect_ws);
 
 	dwc3_disconnect_gadget(dwc);
 
@@ -4185,6 +4187,13 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 
 	if (!dwc->softconnect)
 		return;
+
+	/*
+	 * A host has enumerated us. System suspend would tear the gadget
+	 * down and drop the host's session, so stay awake until the host
+	 * disconnects or the gadget is pulled off the bus.
+	 */
+	__pm_stay_awake(dwc->connect_ws);
 
 	reg = dwc3_readl(dwc->regs, DWC3_DSTS);
 	speed = reg & DWC3_DSTS_CONNECTSPD;
@@ -4780,6 +4789,9 @@ int dwc3_gadget_init(struct dwc3 *dwc)
 	if (dwc->sys_wakeup)
 		device_wakeup_disable(dwc->sysdev);
 
+	/* Optional: without it the system may suspend while connected. */
+	dwc->connect_ws = wakeup_source_register(dwc->dev, "dwc3-gadget");
+
 	return 0;
 
 err5:
@@ -4810,6 +4822,8 @@ void dwc3_gadget_exit(struct dwc3 *dwc)
 		return;
 
 	dwc3_enable_susphy(dwc, true);
+	wakeup_source_unregister(dwc->connect_ws);
+	dwc->connect_ws = NULL;
 	usb_del_gadget(dwc->gadget);
 	dwc3_gadget_free_endpoints(dwc);
 	usb_put_gadget(dwc->gadget);

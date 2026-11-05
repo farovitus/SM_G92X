@@ -1019,6 +1019,7 @@ struct dwc3_scratchpad_array {
  * @eps: endpoint array
  * @gadget: device side representation of the peripheral controller
  * @gadget_driver: pointer to the gadget driver
+ * @connect_ws: wakeup source held while a host has the gadget connected
  * @bus_clk: clock for accessing the registers
  * @ref_clk: reference clock
  * @susp_clk: clock used when the SS phy is in low power (S3) state
@@ -1189,6 +1190,7 @@ struct dwc3 {
 
 	struct usb_gadget	*gadget;
 	struct usb_gadget_driver *gadget_driver;
+	struct wakeup_source	*connect_ws;
 
 	struct clk		*bus_clk;
 	struct clk		*ref_clk;
