@@ -704,6 +704,34 @@
 	};
 };
 
+/*
+ * The secure world owns the four pin controllers on the PERIC1 side, as
+ * the stock kernel's CONFIG_ESE_SECURE_GPIO, CONFIG_SENSORS_FP_SPI_GPIO
+ * and CONFIG_MST_SECURE_GPIO record:
+ *   pinctrl_nfc   14cd0000  gpj0  HRM I2C, MST
+ *   pinctrl_touch 14ce0000  gpj1  touch I2C, MST
+ *   pinctrl_ff    14c90000  gpg4  eSE SPI
+ *   pinctrl_ese   14ca0000  gpv7  fingerprint SPI
+ * Normal-world reads of them abort. Probe does not touch the registers,
+ * but saving them at suspend_late does, so Linux must not instantiate
+ * them. Pins on them stay as the bootloader muxed them.
+ */
+&pinctrl_nfc {
+	status = "disabled";
+};
+
+&pinctrl_touch {
+	status = "disabled";
+};
+
+&pinctrl_ff {
+	status = "disabled";
+};
+
+&pinctrl_ese {
+	status = "disabled";
+};
+
 &pinctrl_fsys1 {
 	bt_wake_pin: bt-wake-pins {
 		samsung,pins = "gpr3-4";
