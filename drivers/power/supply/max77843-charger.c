@@ -8,11 +8,13 @@
  */
 
 #include <linux/bitfield.h>
+#include <linux/interrupt.h>
 #include <linux/mfd/max77693-common.h>
 #include <linux/mfd/max77843-private.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/pm_wakeup.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
 
@@ -30,6 +32,7 @@ struct max77843_charger {
 	struct device *dev;
 	struct regmap *regmap;
 	struct power_supply *psy;
+	struct regmap_irq_chip_data *irq_data;
 };
 
 static int max77843_charger_online(struct max77843_charger *chg, int *val)
@@ -167,6 +170,96 @@ static const struct power_supply_desc max77843_charger_desc = {
 	.get_property	= max77843_charger_get_property,
 };
 
+static const struct regmap_irq max77843_chg_irqs[] = {
+	REGMAP_IRQ_REG(0, 0, MAX77843_CHG_BYP_I),
+	REGMAP_IRQ_REG(1, 0, MAX77843_CHG_BATP_I),
+	REGMAP_IRQ_REG(2, 0, MAX77843_CHG_BAT_I),
+	REGMAP_IRQ_REG(3, 0, MAX77843_CHG_CHG_I),
+	REGMAP_IRQ_REG(4, 0, MAX77843_CHG_WCIN_I),
+	REGMAP_IRQ_REG(5, 0, MAX77843_CHG_CHGIN_I),
+	REGMAP_IRQ_REG(6, 0, MAX77843_CHG_AICL_I),
+};
+
+#define MAX77843_CHG_IRQ_CHG	3
+#define MAX77843_CHG_IRQ_CHGIN	5
+
+static const struct regmap_irq_chip max77843_chg_irq_chip = {
+	.name		= "max77843-chg",
+	.status_base	= MAX77843_CHG_REG_CHG_INT,
+	.mask_base	= MAX77843_CHG_REG_CHG_INT_MASK,
+	.num_regs	= 1,
+	.irqs		= max77843_chg_irqs,
+	.num_irqs	= ARRAY_SIZE(max77843_chg_irqs),
+};
+
+static irqreturn_t max77843_charger_irq(int irq, void *data)
+{
+	struct max77843_charger *chg = data;
+
+	pm_wakeup_event(chg->dev, 2000);
+	power_supply_changed(chg->psy);
+
+	return IRQ_HANDLED;
+}
+
+static int max77843_chg_request_irq(struct max77843_charger *chg, int hwirq,
+				    const char *name)
+{
+	int virq = regmap_irq_get_virq(chg->irq_data, hwirq);
+
+	if (virq < 0)
+		return virq;
+
+	return devm_request_threaded_irq(chg->dev, virq, NULL,
+					 max77843_charger_irq, IRQF_ONESHOT,
+					 name, chg);
+}
+
+static void max77843_chg_mask_intsrc(void *data)
+{
+	struct regmap *topsys = data;
+
+	regmap_update_bits(topsys, MAX77843_SYS_REG_INTSRCMASK,
+			   MAX77843_INTSRCMASK_CHGR_MASK,
+			   MAX77843_INTSRCMASK_CHGR_MASK);
+}
+
+static int max77843_chg_init_irq(struct max77843_charger *chg, int irq,
+				 struct regmap *topsys)
+{
+	struct device *dev = chg->dev;
+	int ret;
+
+	if (irq <= 0)
+		return 0;
+
+	ret = devm_regmap_add_irq_chip(dev, chg->regmap, irq,
+				       IRQF_TRIGGER_LOW | IRQF_ONESHOT |
+				       IRQF_SHARED, 0, &max77843_chg_irq_chip,
+				       &chg->irq_data);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to add CHG irq chip\n");
+
+	ret = max77843_chg_request_irq(chg, MAX77843_CHG_IRQ_CHGIN,
+				       "max77843-chgin");
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to request CHGIN irq\n");
+
+	ret = max77843_chg_request_irq(chg, MAX77843_CHG_IRQ_CHG,
+				       "max77843-chg");
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to request CHG irq\n");
+
+	device_init_wakeup(dev, true);
+
+	ret = regmap_update_bits(topsys, MAX77843_SYS_REG_INTSRCMASK,
+				 MAX77843_INTSRCMASK_CHGR_MASK, 0);
+	if (ret)
+		return ret;
+
+	return devm_add_action_or_reset(dev, max77843_chg_mask_intsrc, topsys);
+}
+
 static int max77843_charger_probe(struct platform_device *pdev)
 {
 	struct max77693_dev *max77843 = dev_get_drvdata(pdev->dev.parent);
@@ -194,7 +287,7 @@ static int max77843_charger_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, PTR_ERR(chg->psy),
 				     "failed to register power supply\n");
 
-	return 0;
+	return max77843_chg_init_irq(chg, max77843->irq, max77843->regmap);
 }
 
 static const struct of_device_id max77843_charger_of_match[] = {
