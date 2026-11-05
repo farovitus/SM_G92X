@@ -12,12 +12,14 @@
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
+#include <linux/suspend.h>
 
 #include "pcie-designware.h"
 
@@ -119,6 +121,8 @@ struct exynos7420_pcie {
 	struct gpio_desc	*perst_gpio;
 	struct gpio_desc	*wlen_gpio;
 	int			irq;
+	/* the link was powered off for system sleep */
+	bool			sleep_off;
 
 	/* L1-exit request around DBI and config accesses, may nest */
 	raw_spinlock_t		l1_lock;
@@ -388,22 +392,9 @@ static void exynos7420_pcie_phy_config(struct exynos7420_pcie *ep)
 	udelay(20);
 }
 
-static int exynos7420_pcie_host_init(struct dw_pcie_rp *pp)
+/* Clock gates, endpoint power and PHY power, with interrupts masked. */
+static void exynos7420_pcie_power_up(struct exynos7420_pcie *ep)
 {
-	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
-	struct exynos7420_pcie *ep = to_exynos7420_pcie(pci);
-	struct device *dev = pci->dev;
-	void __iomem *elbi = ep->elbi_base;
-	int ret;
-
-	pp->bridge->ops = &exynos7420_pcie_ops;
-
-	ep->dw_child_ops = pp->bridge->child_ops;
-	ep->child_ops = *ep->dw_child_ops;
-	ep->child_ops.read = exynos7420_pcie_rd_other_conf;
-	ep->child_ops.write = exynos7420_pcie_wr_other_conf;
-	pp->bridge->child_ops = &ep->child_ops;
-
 	/* CMU_FSYS1 gates must be open before any PHY, ELBI or DBI access */
 	exynos7420_pcie_enable_gates(ep);
 
@@ -414,15 +405,13 @@ static int exynos7420_pcie_host_init(struct dw_pcie_rp *pp)
 	exynos7420_pcie_phy_power_on(ep);
 
 	exynos7420_pcie_irq_mask_all(ep);
+}
 
-	ret = devm_request_irq(dev, ep->irq, exynos7420_pcie_irq_handler,
-			       IRQF_SHARED, "exynos7420-pcie", ep);
-	if (ret) {
-		dev_err(dev, "failed to request irq %d: %d\n", ep->irq, ret);
-		goto err_power_off;
-	}
+/* Release PERST#, configure the PHY and enable the MSI interrupt. */
+static void exynos7420_pcie_hw_init(struct exynos7420_pcie *ep)
+{
+	void __iomem *elbi = ep->elbi_base;
 
-	/* Release PERST# */
 	gpiod_set_value_cansleep(ep->perst_gpio, 0);
 	usleep_range(18000, 20000);
 
@@ -439,13 +428,47 @@ static int exynos7420_pcie_host_init(struct dw_pcie_rp *pp)
 	writel(0, elbi + PCIE_IRQ_EN_PULSE);
 	writel(IRQ_MSI_ENABLE, elbi + PCIE_IRQ_EN_LEVEL);
 	writel(0, elbi + PCIE_IRQ_EN_SPECIAL);
+}
 
-	return 0;
-
-err_power_off:
+/* Endpoint in reset, link and PHY down, endpoint unpowered. */
+static void exynos7420_pcie_power_off(struct exynos7420_pcie *ep)
+{
+	gpiod_set_value_cansleep(ep->perst_gpio, 1);
+	writel(0, ep->elbi_base + PCIE_APP_LTSSM_ENABLE);
 	exynos7420_pcie_phy_power_off(ep);
 	gpiod_set_value_cansleep(ep->wlen_gpio, 0);
-	return ret;
+
+	/* The FSYS1 gates stay on: several of them are shared with UFS. */
+}
+
+static int exynos7420_pcie_host_init(struct dw_pcie_rp *pp)
+{
+	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+	struct exynos7420_pcie *ep = to_exynos7420_pcie(pci);
+	struct device *dev = pci->dev;
+	int ret;
+
+	pp->bridge->ops = &exynos7420_pcie_ops;
+
+	ep->dw_child_ops = pp->bridge->child_ops;
+	ep->child_ops = *ep->dw_child_ops;
+	ep->child_ops.read = exynos7420_pcie_rd_other_conf;
+	ep->child_ops.write = exynos7420_pcie_wr_other_conf;
+	pp->bridge->child_ops = &ep->child_ops;
+
+	exynos7420_pcie_power_up(ep);
+
+	ret = devm_request_irq(dev, ep->irq, exynos7420_pcie_irq_handler,
+			       IRQF_SHARED, "exynos7420-pcie", ep);
+	if (ret) {
+		dev_err(dev, "failed to request irq %d: %d\n", ep->irq, ret);
+		exynos7420_pcie_power_off(ep);
+		return ret;
+	}
+
+	exynos7420_pcie_hw_init(ep);
+
+	return 0;
 }
 
 static void exynos7420_pcie_host_deinit(struct dw_pcie_rp *pp)
@@ -456,12 +479,7 @@ static void exynos7420_pcie_host_deinit(struct dw_pcie_rp *pp)
 	exynos7420_pcie_irq_mask_all(ep);
 	devm_free_irq(pci->dev, ep->irq, ep);
 
-	gpiod_set_value_cansleep(ep->perst_gpio, 1);
-	writel(0, ep->elbi_base + PCIE_APP_LTSSM_ENABLE);
-	exynos7420_pcie_phy_power_off(ep);
-	gpiod_set_value_cansleep(ep->wlen_gpio, 0);
-
-	/* The FSYS1 gates stay on: several of them are shared with UFS. */
+	exynos7420_pcie_power_off(ep);
 }
 
 static const struct dw_pcie_host_ops exynos7420_pcie_host_ops = {
@@ -579,6 +597,120 @@ static void exynos7420_pcie_remove(struct platform_device *pdev)
 	dw_pcie_host_deinit(&ep->pci.pp);
 }
 
+/* ------------------------------------------------------------------ */
+/* System sleep                                                        */
+/* ------------------------------------------------------------------ */
+
+#define PCIE_IRQ_RADM_PM_TO_ACK		BIT(18)
+#define PCIE_LTSSM_L23_READY		0x15
+#define PCIE_PME_TIMEOUT_US		10000
+
+/*
+ * PME_Turn_Off and the wait for L23_READY, as Samsung's
+ * exynos_pcie_send_pme_turn_off() did it on this SoC: the PHY is given
+ * temporary settings while the message goes out, then restored.
+ */
+static void exynos7420_pcie_pme_turn_off(struct exynos7420_pcie *ep)
+{
+	static const u16 phy_reg[] = { 0x5c, 0x4a, 0x3f, 0x15, 0x4e, 0x4f };
+	static const u32 phy_val[] = { 0x54, 0xdf, 0xcd, 0x41, 0xe0, 0x28 };
+	struct device *dev = ep->pci.dev;
+	void __iomem *elbi = ep->elbi_base;
+	u32 saved[ARRAY_SIZE(phy_reg)], val;
+	int i, ret;
+
+	writel(0, elbi + 0xa8);
+	writel(0, elbi + PCIE_APP_REQ_EXIT_L1_MODE);
+	for (i = 0; i < ARRAY_SIZE(phy_reg); i++) {
+		saved[i] = readl(ep->phy_base + PHY_REG(phy_reg[i]));
+		writel(phy_val[i], ep->phy_base + PHY_REG(phy_reg[i]));
+	}
+
+	writel(1, elbi + PCIE_APP_REQ_EXIT_L1);
+	writel(1, elbi + 0xac);
+	writel(0x13, elbi + 0xb0);
+	writel(0x19, elbi + 0xd0);
+	writel(1, elbi + 0xa8);
+	ret = readl_poll_timeout_atomic(elbi + PCIE_IRQ_PULSE, val,
+					val & PCIE_IRQ_RADM_PM_TO_ACK,
+					10, PCIE_PME_TIMEOUT_US);
+	if (ret)
+		dev_warn(dev, "no PME_TO_Ack from the endpoint\n");
+	writel(0, elbi + PCIE_APP_REQ_EXIT_L1);
+
+	ret = readl_poll_timeout_atomic(elbi + PCIE_ELBI_RDLH_LINKUP, val,
+					(val & PCIE_LTSSM_STATE_MASK) ==
+					PCIE_LTSSM_L23_READY,
+					10, PCIE_PME_TIMEOUT_US);
+	if (ret)
+		dev_warn(dev, "link did not reach L23_READY: %#x\n", val);
+
+	for (i = 0; i < ARRAY_SIZE(phy_reg); i++)
+		writel(saved[i], ep->phy_base + PHY_REG(phy_reg[i]));
+}
+
+/*
+ * An active link keeps the PCIe PHY and FSYS1 busy, and the SoC cannot
+ * power down with it. Samsung's kernel sent PME_Turn_Off and held PERST
+ * through sleep; here the whole link is powered off, as on remove, and
+ * brought up again from scratch on resume, as on probe.
+ */
+static int exynos7420_pcie_suspend_noirq(struct device *dev)
+{
+	struct exynos7420_pcie *ep = dev_get_drvdata(dev);
+
+	/*
+	 * Only a system power-down needs the link off. In s2idle the SoC
+	 * stays powered, and the link did not retrain after a power cycle,
+	 * leaving the root port to be resumed on an unpowered controller.
+	 */
+	if (pm_suspend_target_state != PM_SUSPEND_MEM)
+		return 0;
+	if (exynos7420_pcie_link_up(&ep->pci))
+		exynos7420_pcie_pme_turn_off(ep);
+	exynos7420_pcie_irq_mask_all(ep);
+	exynos7420_pcie_power_off(ep);
+	ep->sleep_off = true;
+	dev_info(dev, "link powered off for sleep\n");
+
+	return 0;
+}
+
+static int exynos7420_pcie_resume_noirq(struct device *dev)
+{
+	struct exynos7420_pcie *ep = dev_get_drvdata(dev);
+	struct dw_pcie *pci = &ep->pci;
+	int ret;
+
+	if (!ep->sleep_off)
+		return 0;
+	ep->sleep_off = false;
+
+	exynos7420_pcie_power_up(ep);
+	exynos7420_pcie_hw_init(ep);
+	dw_pcie_setup_rc(&pci->pp);
+	ret = dw_pcie_start_link(pci);
+	if (ret)
+		goto err;
+	ret = dw_pcie_wait_for_link(pci);
+	if (ret)
+		goto err;
+	dev_info(dev, "link up again after sleep\n");
+	return 0;
+
+err:
+	/* Leave the link off; the rest of the system can still resume. */
+	dev_err(dev, "link did not come back after sleep: %d\n", ret);
+	exynos7420_pcie_irq_mask_all(ep);
+	exynos7420_pcie_power_off(ep);
+	return 0;
+}
+
+static const struct dev_pm_ops exynos7420_pcie_pm_ops = {
+	NOIRQ_SYSTEM_SLEEP_PM_OPS(exynos7420_pcie_suspend_noirq,
+				  exynos7420_pcie_resume_noirq)
+};
+
 static const struct of_device_id exynos7420_pcie_of_match[] = {
 	{ .compatible = "samsung,exynos7420-pcie", },
 	{ },
@@ -591,6 +723,7 @@ static struct platform_driver exynos7420_pcie_driver = {
 	.driver = {
 		.name	= "exynos7420-pcie",
 		.of_match_table = exynos7420_pcie_of_match,
+		.pm = pm_sleep_ptr(&exynos7420_pcie_pm_ops),
 	},
 };
 module_platform_driver(exynos7420_pcie_driver);
