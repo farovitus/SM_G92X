@@ -91,8 +91,9 @@
 		 * Two clusters. Without the map and the per-MHz capacities the
 		 * scheduler treats the eight cores as equal one-core clusters.
 		 * The A53's efficiency, 677 per MHz to the A57's 1000, is the
-		 * CoreMark value measured on a G920F (nk7420 calibration); at
-		 * 1.5 and 2.1 GHz it gives capacities of 495 and 1024.
+		 * CoreMark value measured on a G920F (nk7420 calibration). With
+		 * the top OPPs, 1.5 GHz on the A53s and 1.8 GHz on the A57s, it
+		 * gives capacities of 578 and 1024.
 		 */
 		cpu-map {
 			cluster0 {
