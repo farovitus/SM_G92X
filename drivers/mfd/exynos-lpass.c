@@ -16,6 +16,7 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -48,10 +49,20 @@
 #define  LPASS_INTR_UART		BIT(1)
 #define  LPASS_INTR_SFR			BIT(0)
 
+struct exynos_lpass_variant {
+	/*
+	 * The UART in the subsystem is described outside this node and may
+	 * be open before LPASS probes and while audio is idle: leave its
+	 * reset alone and keep its interrupt routed to the CPU.
+	 */
+	bool uart_outside;
+};
+
 struct exynos_lpass {
 	/* pointer to the LPASS TOP regmap */
 	struct regmap *top;
 	struct clk *sfr0_clk;
+	const struct exynos_lpass_variant *variant;
 };
 
 static void exynos_lpass_core_sw_reset(struct exynos_lpass *lpass, int mask)
@@ -84,13 +95,15 @@ static void exynos_lpass_enable(struct exynos_lpass *lpass)
 	exynos_lpass_core_sw_reset(lpass, LPASS_I2S_SW_RESET);
 	exynos_lpass_core_sw_reset(lpass, LPASS_DMA_SW_RESET);
 	exynos_lpass_core_sw_reset(lpass, LPASS_MEM_SW_RESET);
-	exynos_lpass_core_sw_reset(lpass, LPASS_UART_SW_RESET);
+	if (!lpass->variant->uart_outside)
+		exynos_lpass_core_sw_reset(lpass, LPASS_UART_SW_RESET);
 }
 
 static void exynos_lpass_disable(struct exynos_lpass *lpass)
 {
 	/* Mask any unmasked IP interrupt sources */
-	regmap_write(lpass->top, SFR_LPASS_INTR_CPU_MASK, 0);
+	regmap_write(lpass->top, SFR_LPASS_INTR_CPU_MASK,
+		     lpass->variant->uart_outside ? LPASS_INTR_UART : 0);
 	regmap_write(lpass->top, SFR_LPASS_INTR_CA5_MASK, 0);
 
 	clk_disable_unprepare(lpass->sfr0_clk);
@@ -114,11 +127,14 @@ static int exynos_lpass_probe(struct platform_device *pdev)
 	if (!lpass)
 		return -ENOMEM;
 
+	lpass->variant = of_device_get_match_data(dev);
+
 	base_top = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base_top))
 		return PTR_ERR(base_top);
 
-	lpass->sfr0_clk = devm_clk_get(dev, "sfr0_ctrl");
+	/* Exynos7 has no separate SFR clock gate in CMU_AUD. */
+	lpass->sfr0_clk = devm_clk_get_optional(dev, "sfr0_ctrl");
 	if (IS_ERR(lpass->sfr0_clk))
 		return PTR_ERR(lpass->sfr0_clk);
 
@@ -173,8 +189,17 @@ static const struct dev_pm_ops lpass_pm_ops = {
 				     pm_runtime_force_resume)
 };
 
+static const struct exynos_lpass_variant exynos5433_lpass = {
+	.uart_outside = false,
+};
+
+static const struct exynos_lpass_variant exynos7_lpass = {
+	.uart_outside = true,
+};
+
 static const struct of_device_id exynos_lpass_of_match[] = {
-	{ .compatible = "samsung,exynos5433-lpass" },
+	{ .compatible = "samsung,exynos5433-lpass", .data = &exynos5433_lpass },
+	{ .compatible = "samsung,exynos7-lpass", .data = &exynos7_lpass },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, exynos_lpass_of_match);

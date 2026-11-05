@@ -12,7 +12,9 @@ maintainers:
 
 properties:
   compatible:
-    const: samsung,exynos5433-lpass
+    enum:
+      - samsung,exynos5433-lpass
+      - samsung,exynos7-lpass
 
   '#address-cells':
     const: 1
@@ -30,7 +32,7 @@ properties:
   ranges: true
 
   reg:
-    minItems: 2
+    minItems: 1
     maxItems: 2
 
   '#size-cells':
@@ -49,11 +51,22 @@ patternProperties:
 required:
   - compatible
   - '#address-cells'
-  - clocks
-  - clock-names
   - ranges
   - reg
   - '#size-cells'
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          const: samsung,exynos5433-lpass
+    then:
+      properties:
+        reg:
+          minItems: 2
+      required:
+        - clocks
+        - clock-names
 
 additionalProperties: false
 
