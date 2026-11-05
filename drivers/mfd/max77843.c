@@ -138,10 +138,19 @@ static int max77843_probe(struct i2c_client *i2c)
 		goto err_pmic_id;
 	}
 
+	/*
+	 * INTB is level low and shared by every block, and the TOPSYS chip
+	 * above only claims SYSINTSRC. Unmask only that source here: the
+	 * MUIC and charger drivers unmask theirs once their handlers are in
+	 * place. A source unmasked with no handler holds INTB asserted until
+	 * the kernel disables the line as spurious, and with it every
+	 * MAX77843 interrupt and wakeup.
+	 */
 	ret = regmap_update_bits(max77843->regmap,
 				 MAX77843_SYS_REG_INTSRCMASK,
 				 MAX77843_INTSRC_MASK_MASK,
-				 (unsigned int)~MAX77843_INTSRC_MASK_MASK);
+				 MAX77843_INTSRC_MASK_MASK &
+				 ~MAX77843_INTSRCMASK_SYS_MASK);
 	if (ret < 0) {
 		dev_err(&i2c->dev, "Failed to unmask interrupt source\n");
 		goto err_pmic_id;
