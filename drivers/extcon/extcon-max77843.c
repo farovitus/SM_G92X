@@ -914,6 +914,14 @@ static int max77843_muic_probe(struct platform_device *pdev)
 		}
 	}
 
+	/* The MFD core leaves the MUIC source masked until it is handled. */
+	ret = regmap_update_bits(max77843->regmap, MAX77843_SYS_REG_INTSRCMASK,
+				 MAX77843_INTSRCMASK_MUIC_MASK, 0);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to unmask MUIC interrupts\n");
+		goto err_muic_irq;
+	}
+
 	/* Detect accessory after completing the initialization of platform */
 	INIT_DELAYED_WORK(&info->wq_detcable, max77843_muic_detect_cable_wq);
 	queue_delayed_work(system_power_efficient_wq,
@@ -933,6 +941,9 @@ static int max77843_muic_remove(struct platform_device *pdev)
 	struct max77843_muic_info *info = platform_get_drvdata(pdev);
 	struct max77693_dev *max77843 = info->max77843;
 
+	regmap_update_bits(max77843->regmap, MAX77843_SYS_REG_INTSRCMASK,
+			   MAX77843_INTSRCMASK_MUIC_MASK,
+			   MAX77843_INTSRCMASK_MUIC_MASK);
 	cancel_work_sync(&info->irq_work);
 	regmap_del_irq_chip(max77843->irq, max77843->irq_data_muic);
 	i2c_unregister_device(max77843->i2c_muic);
