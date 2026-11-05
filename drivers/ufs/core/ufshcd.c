@@ -9996,7 +9996,16 @@ static int __ufshcd_wl_resume(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 			goto vendor_suspend;
 	}
 
-	if (!ufshcd_is_ufs_dev_active(hba)) {
+	/*
+	 * After a link-off suspend the device comes back from a power-on
+	 * reset and holds a POWER ON RESET unit attention on the device
+	 * W-LUN, which nothing else addresses. Left pending, it fails the
+	 * next suspend's START STOP UNIT, and the SDEV_UA uevent that SCSI
+	 * sends for it aborts that suspend, so the system never sleeps.
+	 * Send START STOP UNIT now, while resuming, to consume it.
+	 */
+	if (old_link_state == UIC_LINK_OFF_STATE ||
+	    !ufshcd_is_ufs_dev_active(hba)) {
 		ret = ufshcd_set_dev_pwr_mode(hba, UFS_ACTIVE_PWR_MODE);
 		if (ret)
 			goto set_old_link_state;
