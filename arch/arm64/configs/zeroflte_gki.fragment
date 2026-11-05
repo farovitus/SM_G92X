@@ -24,6 +24,8 @@ CONFIG_RTC_DRV_S3C=y
 CONFIG_RTC_DRV_S5M=y
 # S-Boot's restart targets (recovery, download) through PMU INFORM3.
 CONFIG_SYSCON_REBOOT_MODE=y
+# Power off by dropping PS_HOLD (syscon-poweroff node in the SoC DT).
+CONFIG_POWER_RESET_SYSCON_POWEROFF=y
 
 # Cluster DVFS: cpufreq-dt on the DT OPP tables, schedutil (GKI default).
 CONFIG_CPUFREQ_DT=y
