@@ -12,13 +12,16 @@
  *   charge-term-current-microamp            top-off current    (CHG_CNFG_03)
  *   re-charge-voltage-microvolt             restart threshold  (CHG_CNFG_01)
  *
- * Charging is enabled at probe and again on every input change. Without a
- * monitored battery the driver stays read-only and leaves the boot loader's
- * configuration alone.
+ * Charging is enabled at probe and again on every input change. The input
+ * current limit follows the charger type that the MUIC reports through the
+ * extcon device named by the "extcon" phandle (max77843-muic). Until a type
+ * is known the limit is 500 mA. Without a monitored battery the driver
+ * stays read-only and leaves the boot loader's configuration alone.
  */
 
 #include <linux/bitfield.h>
 #include <linux/devm-helpers.h>
+#include <linux/extcon.h>
 #include <linux/interrupt.h>
 #include <linux/math64.h>
 #include <linux/mfd/max77693-common.h>
@@ -68,12 +71,34 @@
 /* Input limit used until the charger type is known */
 #define MAX77843_CHG_DEFAULT_INPUT_UA	500000
 
+/*
+ * Input limits per charger type, from the stock G920F and G925F battery
+ * description: 1800 mA for a dedicated charger (the MUIC's DCP, which stock
+ * treats as the Samsung travel adapter), 1000 mA for a charging downstream
+ * port and Apple's 1 A charger, 500 mA for a USB host port and the 500 mA
+ * special charger (stock: 460 mA). The charger's AICL backs off further when
+ * a weak adapter's VBUS sags.
+ */
+static const struct {
+	unsigned int id;
+	int input_ua;
+} max77843_chg_cables[] = {
+	{ EXTCON_CHG_USB_DCP,	1800000 },
+	{ EXTCON_CHG_USB_CDP,	1000000 },
+	{ EXTCON_CHG_USB_FAST,	1000000 },
+	{ EXTCON_CHG_USB_SLOW,	 500000 },
+	{ EXTCON_CHG_USB_SDP,	 500000 },
+};
+
 struct max77843_charger {
 	struct device *dev;
 	struct regmap *regmap;
 	struct power_supply *psy;
 	struct regmap_irq_chip_data *irq_data;
 	struct power_supply_battery_info *bat;
+	struct extcon_dev *edev;
+	struct notifier_block extcon_nb;
+	int input_ua;			/* last input limit applied */
 	struct work_struct work;
 	struct mutex lock;		/* serialises max77843_chg_apply() */
 	unsigned int pmic_rev;
@@ -265,12 +290,26 @@ static int max77843_chg_unlock(struct max77843_charger *chg)
 				   MAX77843_CNFG00_WDTEN, 0);
 }
 
+static int max77843_chg_cable_input_ua(struct max77843_charger *chg)
+{
+	int i;
+
+	if (!chg->edev)
+		return MAX77843_CHG_DEFAULT_INPUT_UA;
+
+	for (i = 0; i < ARRAY_SIZE(max77843_chg_cables); i++)
+		if (extcon_get_state(chg->edev, max77843_chg_cables[i].id) > 0)
+			return max77843_chg_cables[i].input_ua;
+
+	return MAX77843_CHG_DEFAULT_INPUT_UA;
+}
+
 static int max77843_chg_apply(struct max77843_charger *chg)
 {
 	struct power_supply_battery_info *bat = chg->bat;
 	int cv_uv = bat->constant_charge_voltage_max_uv;
 	int cc_ua = bat->constant_charge_current_max_ua;
-	int input_ua = MAX77843_CHG_DEFAULT_INPUT_UA;
+	int input_ua = max77843_chg_cable_input_ua(chg);
 	unsigned int mode;
 	int ret;
 
@@ -308,8 +347,11 @@ static int max77843_chg_apply(struct max77843_charger *chg)
 	if (ret)
 		goto out;
 
-	dev_dbg(chg->dev, "input %d uA, fast charge %d uA, float %d uV\n",
-		input_ua, cc_ua, cv_uv);
+	if (input_ua != chg->input_ua)
+		dev_info(chg->dev,
+			 "input limit %d mA, fast charge %d mA, float %d mV\n",
+			 input_ua / 1000, cc_ua / 1000, cv_uv / 1000);
+	chg->input_ua = input_ua;
 out:
 	mutex_unlock(&chg->lock);
 	return ret;
@@ -358,6 +400,41 @@ static void max77843_chg_work(struct work_struct *work)
 
 	max77843_chg_apply(chg);
 	power_supply_changed(chg->psy);
+}
+
+static int max77843_chg_extcon_notify(struct notifier_block *nb,
+				      unsigned long event, void *ptr)
+{
+	struct max77843_charger *chg = container_of(nb,
+					struct max77843_charger, extcon_nb);
+
+	schedule_work(&chg->work);
+	return NOTIFY_OK;
+}
+
+static int max77843_chg_get_extcon(struct max77843_charger *chg)
+{
+	struct device *dev = chg->dev;
+	int ret;
+
+	if (!of_property_present(dev->of_node, "extcon")) {
+		dev_info(dev, "no extcon, input limited to %d mA\n",
+			 MAX77843_CHG_DEFAULT_INPUT_UA / 1000);
+		return 0;
+	}
+
+	chg->edev = extcon_get_edev_by_phandle(dev, 0);
+	if (IS_ERR(chg->edev))
+		return dev_err_probe(dev, PTR_ERR(chg->edev),
+				     "cannot get the MUIC extcon\n");
+
+	chg->extcon_nb.notifier_call = max77843_chg_extcon_notify;
+	ret = devm_extcon_register_notifier_all(dev, chg->edev,
+						&chg->extcon_nb);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "cannot register the extcon notifier\n");
+	return 0;
 }
 
 static void max77843_chg_get_battery(struct max77843_charger *chg)
@@ -551,6 +628,10 @@ static int max77843_charger_probe(struct platform_device *pdev)
 
 	max77843_chg_get_battery(chg);
 	if (chg->bat) {
+		ret = max77843_chg_get_extcon(chg);
+		if (ret)
+			return ret;
+
 		ret = max77843_chg_init_hw(chg);
 		if (ret)
 			return dev_err_probe(&pdev->dev, ret,
