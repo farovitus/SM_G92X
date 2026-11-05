@@ -596,6 +596,18 @@ static int pwm_samsung_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	/*
+	 * Without the PWM clocksource this driver is the only user of the
+	 * prescalers. Run them at 1:1 for the finest period and duty steps;
+	 * the boot loader may leave a coarse value (Exynos7420 S-Boot divides
+	 * by 66, a 1 us tick that cannot hit a motor's resonant frequency).
+	 */
+	if (!IS_ENABLED(CONFIG_CLKSRC_SAMSUNG_PWM))
+		writel(readl(chip->base + REG_TCFG0) &
+		       ~(TCFG0_PRESCALER_MASK |
+			 TCFG0_PRESCALER_MASK << TCFG0_PRESCALER1_SHIFT),
+		       chip->base + REG_TCFG0);
+
 	for (chan = 0; chan < SAMSUNG_PWM_NUM; ++chan)
 		if (chip->variant.output_mask & BIT(chan))
 			pwm_samsung_set_invert(chip, chan, true);
