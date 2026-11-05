@@ -940,15 +940,9 @@
 			status = "disabled";
 		};
 
-		/* Non-secure SYSRAM: INFORM words shared with the firmware. */
-		sysram-ns@2157000 {
-			compatible = "samsung,exynos4210-sysram-ns";
-			reg = <0x02157000 0x1000>;
-		};
-
 		pmu_system_controller: system-controller@105c0000 {
 			compatible = "samsung,exynos7-pmu", "syscon";
-			reg = <0x105c0000 0x10000>;
+			reg = <0x105c0000 0x5000>;
 		};
 
 		pd_disp: power-domain@105c4080 {
@@ -986,64 +980,6 @@
 			clocks = <&fin_pll>, <&clock_peris PCLK_MCT>;
 			clock-names = "fin_pll", "mct";
 			status = "disabled";
-		};
-
-		/*
-		 * Block power domains without a driver yet. S-Boot leaves them on;
-		 * declared here, genpd powers them off as unused, as Samsung's
-		 * kernel kept them off while idle. Parents as in Samsung's DT:
-		 * CAM0 and ISP1 under CAM1, ISP0 under ISP1.
-		 */
-		pd_aud: power-domain@105c4000 {
-			compatible = "samsung,exynos5433-pd";
-			reg = <0x105c4000 0x20>;
-			#power-domain-cells = <0>;
-			label = "AUD";
-		};
-
-		pd_cam0: power-domain@105c4040 {
-			compatible = "samsung,exynos5433-pd";
-			reg = <0x105c4040 0x20>;
-			#power-domain-cells = <0>;
-			label = "CAM0";
-			power-domains = <&pd_cam1>;
-		};
-
-		pd_cam1: power-domain@105c4060 {
-			compatible = "samsung,exynos5433-pd";
-			reg = <0x105c4060 0x20>;
-			#power-domain-cells = <0>;
-			label = "CAM1";
-		};
-
-		pd_isp0: power-domain@105c4140 {
-			compatible = "samsung,exynos5433-pd";
-			reg = <0x105c4140 0x20>;
-			#power-domain-cells = <0>;
-			label = "ISP0";
-			power-domains = <&pd_isp1>;
-		};
-
-		pd_isp1: power-domain@105c4180 {
-			compatible = "samsung,exynos5433-pd";
-			reg = <0x105c4180 0x20>;
-			#power-domain-cells = <0>;
-			label = "ISP1";
-			power-domains = <&pd_cam1>;
-		};
-
-		pd_mfc: power-domain@105c41a0 {
-			compatible = "samsung,exynos5433-pd";
-			reg = <0x105c41a0 0x20>;
-			#power-domain-cells = <0>;
-			label = "MFC";
-		};
-
-		pd_mscl: power-domain@105c41c0 {
-			compatible = "samsung,exynos5433-pd";
-			reg = <0x105c41c0 0x20>;
-			#power-domain-cells = <0>;
-			label = "MSCL";
 		};
 
 		rtc: rtc@10590000 {

@@ -41,10 +41,4 @@ extern const struct exynos_pmu_data exynos5420_pmu_data;
 
 extern void pmu_raw_writel(u32 val, u32 offset);
 extern u32 pmu_raw_readl(u32 offset);
-
-#if defined(CONFIG_ARM64) && defined(CONFIG_SUSPEND)
-void exynos7_pm_init(void);
-#else
-static inline void exynos7_pm_init(void) {}
-#endif
 #endif /* __EXYNOS_PMU_H */

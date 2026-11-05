@@ -382,108 +382,57 @@ static const struct samsung_pin_bank_data exynos7_pin_banks9[] __initconst = {
 	EXYNOS_PIN_BANK_EINTG(4, 0x020, "gpz1", 0x04),
 };
 
-/*
- * PMU pad retention groups of the Exynos7420 (offsets as on the Exynos5433).
- * Samsung's kernel released all of them after a system power-down; audio
- * pads are left out, as there.
- */
-static const u32 exynos7_retention_regs[] = {
-	0x3068,	/* BUS0_TOP */
-	0x30c8,	/* MMC2 */
-	EXYNOS5433_PAD_RETENTION_TOP_OPTION,
-	EXYNOS5433_PAD_RETENTION_UART_OPTION,
-	EXYNOS5433_PAD_RETENTION_MMC0_OPTION,
-	EXYNOS5433_PAD_RETENTION_MMC1_OPTION,
-	EXYNOS5433_PAD_RETENTION_EBIA_OPTION,
-	EXYNOS5433_PAD_RETENTION_EBIB_OPTION,
-	EXYNOS5433_PAD_RETENTION_SPI_OPTION,
-	EXYNOS5433_PAD_RETENTION_MIF_OPTION,
-	0x3228,	/* LLI */
-	EXYNOS5433_PAD_RETENTION_UFS_OPTION,
-	EXYNOS5433_PAD_RETENTION_FSYSGENIO_OPTION,
-	0x32c8,	/* BOOTLDO_0 */
-	0x32e8,	/* BOOTLDO_1 */
-};
-
-static const struct samsung_retention_data exynos7_retention_data __initconst = {
-	.regs	 = exynos7_retention_regs,
-	.nr_regs = ARRAY_SIZE(exynos7_retention_regs),
-	.value	 = EXYNOS_WAKEUP_FROM_LOWPWR,
-	.init	 = exynos_retention_init,
-};
-
 static const struct samsung_pin_ctrl exynos7_pin_ctrl[] __initconst = {
 	{
 		/* pin-controller instance 0 Alive data */
 		.pin_banks	= exynos7_pin_banks0,
 		.nr_banks	= ARRAY_SIZE(exynos7_pin_banks0),
 		.eint_wkup_init = exynos_eint_wkup_init,
-		.suspend	= exynos_pinctrl_suspend,
-		.resume		= exynos_pinctrl_resume,
-		.retention_data	= &exynos7_retention_data,
 	}, {
 		/* pin-controller instance 1 BUS0 data */
 		.pin_banks	= exynos7_pin_banks1,
 		.nr_banks	= ARRAY_SIZE(exynos7_pin_banks1),
 		.eint_gpio_init = exynos_eint_gpio_init,
-		.suspend	= exynos_pinctrl_suspend,
-		.resume		= exynos_pinctrl_resume,
 	}, {
 		/* pin-controller instance 2 NFC data */
 		.pin_banks	= exynos7_pin_banks2,
 		.nr_banks	= ARRAY_SIZE(exynos7_pin_banks2),
 		.eint_gpio_init = exynos_eint_gpio_init,
-		.suspend	= exynos_pinctrl_suspend,
-		.resume		= exynos_pinctrl_resume,
 	}, {
 		/* pin-controller instance 3 TOUCH data */
 		.pin_banks	= exynos7_pin_banks3,
 		.nr_banks	= ARRAY_SIZE(exynos7_pin_banks3),
 		.eint_gpio_init = exynos_eint_gpio_init,
-		.suspend	= exynos_pinctrl_suspend,
-		.resume		= exynos_pinctrl_resume,
 	}, {
 		/* pin-controller instance 4 FF data */
 		.pin_banks	= exynos7_pin_banks4,
 		.nr_banks	= ARRAY_SIZE(exynos7_pin_banks4),
 		.eint_gpio_init = exynos_eint_gpio_init,
-		.suspend	= exynos_pinctrl_suspend,
-		.resume		= exynos_pinctrl_resume,
 	}, {
 		/* pin-controller instance 5 ESE data */
 		.pin_banks	= exynos7_pin_banks5,
 		.nr_banks	= ARRAY_SIZE(exynos7_pin_banks5),
 		.eint_gpio_init = exynos_eint_gpio_init,
-		.suspend	= exynos_pinctrl_suspend,
-		.resume		= exynos_pinctrl_resume,
 	}, {
 		/* pin-controller instance 6 FSYS0 data */
 		.pin_banks	= exynos7_pin_banks6,
 		.nr_banks	= ARRAY_SIZE(exynos7_pin_banks6),
 		.eint_gpio_init = exynos_eint_gpio_init,
-		.suspend	= exynos_pinctrl_suspend,
-		.resume		= exynos_pinctrl_resume,
 	}, {
 		/* pin-controller instance 7 FSYS1 data */
 		.pin_banks	= exynos7_pin_banks7,
 		.nr_banks	= ARRAY_SIZE(exynos7_pin_banks7),
 		.eint_gpio_init = exynos_eint_gpio_init,
-		.suspend	= exynos_pinctrl_suspend,
-		.resume		= exynos_pinctrl_resume,
 	}, {
 		/* pin-controller instance 8 BUS1 data */
 		.pin_banks	= exynos7_pin_banks8,
 		.nr_banks	= ARRAY_SIZE(exynos7_pin_banks8),
 		.eint_gpio_init = exynos_eint_gpio_init,
-		.suspend	= exynos_pinctrl_suspend,
-		.resume		= exynos_pinctrl_resume,
 	}, {
 		/* pin-controller instance 9 AUD data */
 		.pin_banks	= exynos7_pin_banks9,
 		.nr_banks	= ARRAY_SIZE(exynos7_pin_banks9),
 		.eint_gpio_init = exynos_eint_gpio_init,
-		.suspend	= exynos_pinctrl_suspend,
-		.resume		= exynos_pinctrl_resume,
 	},
 };
 
