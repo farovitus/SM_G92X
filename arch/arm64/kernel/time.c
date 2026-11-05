@@ -68,5 +68,17 @@ void __init time_init(void)
 	/* Calibrate the delay loop directly */
 	lpj_fine = arch_timer_rate / HZ;
 
+	/*
+	 * S-Boot appends lpj=239616, its 3.10 kernel's value. arm64 delays
+	 * count the architected timer, so the right value is rate / HZ
+	 * (96000 at 24 MHz and HZ=250); the preset made every udelay(),
+	 * including i2c-gpio bit timing, about 2.5 times too long.
+	 */
+	if (preset_lpj && preset_lpj != lpj_fine) {
+		pr_info("Ignoring lpj=%lu, using %lu from the timer\n",
+			preset_lpj, lpj_fine);
+		preset_lpj = 0;
+	}
+
 	pv_time_init();
 }
