@@ -101,6 +101,9 @@
 						HSI2C_INT_NO_DEV_ACK |	\
 						HSI2C_INT_NO_DEV |	\
 						HSI2C_INT_TIMEOUT)
+#define HSI2C_INT_FIFO_DATA			(HSI2C_INT_TX_ALMOSTEMPTY | \
+						HSI2C_INT_RX_ALMOSTFULL | \
+						HSI2C_INT_TRAILING)
 
 /* I2C_FIFO_STAT Register bits */
 #define HSI2C_RX_FIFO_EMPTY			(1u << 24)
@@ -475,8 +478,15 @@ static irqreturn_t exynos5_i2c_irq(int irqno, void *dev_id)
 
 	spin_lock(&i2c->lock);
 
+	/*
+	 * The FIFO interrupts stay asserted while the FIFO is past its
+	 * trigger level, so acking them before the FIFO is serviced latches
+	 * them again at once and the next interrupt finds nothing to do
+	 * (about half of all RX interrupts on Exynos7420). Ack them only
+	 * after the FIFO has been drained or filled, below.
+	 */
 	int_status = readl(i2c->regs + HSI2C_INT_STATUS);
-	writel(int_status, i2c->regs + HSI2C_INT_STATUS);
+	writel(int_status & ~HSI2C_INT_FIFO_DATA, i2c->regs + HSI2C_INT_STATUS);
 
 	/* handle interrupt related to the transfer status */
 	switch (i2c->variant->hw) {
@@ -567,6 +577,8 @@ static irqreturn_t exynos5_i2c_irq(int irqno, void *dev_id)
 		}
 		i2c->state = 0;
 	}
+
+	writel(int_status & HSI2C_INT_FIFO_DATA, i2c->regs + HSI2C_INT_STATUS);
 
  stop:
 	if ((i2c->trans_done && (i2c->msg->len == i2c->msg_ptr)) ||
