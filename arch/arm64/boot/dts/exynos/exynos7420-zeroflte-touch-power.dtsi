@@ -59,6 +59,13 @@
 					regulator-boot-on;
 				};
 
+				/* Haptic motor supply (3.10 VCC_MOTOR_3.0) */
+				vcc_motor: LDO17 {
+					regulator-name = "vcc_motor_3.0v";
+					regulator-min-microvolt = <3000000>;
+					regulator-max-microvolt = <3000000>;
+				};
+
 				/* Touch key core supply; the 3.10 driver enables it at probe. */
 				touchkey_vdd_ldo21: LDO21 {
 					regulator-name = "vtouch_3.3v";

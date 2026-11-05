@@ -294,7 +294,8 @@
 
 		/*
 		 * TOPSYS: the MFD core. It owns the interrupt and creates the
-		 * charger (0x69) and fuel gauge (0x36) clients for its cells.
+		 * charger (0x69) and fuel gauge (0x36) clients for its cells,
+		 * and carries the haptic block.
 		 */
 		max77843: pmic@66 {
 			compatible = "maxim,max77843";
@@ -310,6 +311,14 @@
 
 			charger {
 				compatible = "maxim,max77843-charger";
+			};
+
+			/* LRA motor; the 3.10 G920F period is 33510 ns on PWM timer 1 */
+			haptic {
+				compatible = "maxim,max77843-haptic";
+				haptic-supply = <&vcc_motor>;
+				pwms = <&pwm 1 33510 0>;
+				pwm-names = "haptic";
 			};
 		};
 
@@ -658,6 +667,14 @@
 	};
 };
 
+&pinctrl_bus0 {
+	pwm_tout1: pwm-tout1-pins {
+		samsung,pins = "gpd2-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
 &pinctrl_bus1 {
 	bt_en_pin: bt-en-pins {
 		samsung,pins = "gpf4-1";
@@ -720,6 +737,29 @@
 		mode-download = <0x12345678>;
 		mode-recovery = <0x12345678>;
 	};
+};
+
+/*
+ * PWM timers, for the haptic motor (TOUT1 on gpd2-5, 3.10 vibetonz_pwm).
+ * PCLK_PWM is a CMU_PERIC0 gate, and CMU_PERIC0 is disabled here, so a
+ * fixed clock stands in at the aclk_peric0_66 rate; the gate itself is
+ * left as S-Boot set it.
+ */
+/ {
+	pwm_pclk: clock-pwm {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <66000000>;
+		clock-output-names = "pclk_pwm";
+	};
+};
+
+&pwm {
+	clocks = <&pwm_pclk>;
+	clock-names = "timers";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pwm_tout1>;
+	status = "okay";
 };
 
 &serial_4 {
