@@ -847,7 +847,7 @@
 
 	bt_host_wake: bt-host-wake-pins {
 		samsung,pins = "gpa2-1";
-		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
 
@@ -1032,10 +1032,37 @@
 	status = "okay";
 };
 
+/*
+ * BCM4358 Bluetooth on UART4 through the serdev hci_bcm driver. 6.6
+ * serial_core registers every samsung_tty port as a serdev controller, so
+ * the child below binds hci_bcm directly; no btattach is needed.
+ *
+ * Hardware facts from the stock SMG920FXXS6ETK DT and bcm4358.c:
+ *   BT_EN gpf4-1, BT_WAKE gpr3-4, BT_HOST_WAKE gpa2-1, all active high
+ *   (the stock LPM driver drives BT_WAKE 1 to wake the chip and treats
+ *   host-wake 1 as "chip has data"). gpz1-0..3 carry RXD/TXD/CTS/RTS.
+ *   The 32 kHz LPO is the S2MPS15 BT_EN32KHZ output, which the bootloader
+ *   leaves on and the stock kernel never touches, so no clock is listed.
+ *   The stock libbt ran the link at 921600 (libbt_vndcfg.txt).
+ * "brcm,bcm4358-bt" is matched by hci_bcm with the BCM43540 (4354-family)
+ * device data.
+ */
 &serial_4 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&bt_uart_bus &bt_host_wake &bt_en_pin &bt_wake_pin>;
+	pinctrl-0 = <&bt_uart_bus>;
 	status = "okay";
+
+	bluetooth {
+		compatible = "brcm,bcm4358-bt";
+		pinctrl-names = "default";
+		pinctrl-0 = <&bt_en_pin &bt_wake_pin &bt_host_wake>;
+		shutdown-gpios = <&gpf4 1 GPIO_ACTIVE_HIGH>;
+		device-wakeup-gpios = <&gpr3 4 GPIO_ACTIVE_HIGH>;
+		interrupt-parent = <&gpa2>;
+		interrupts = <1 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "host-wakeup";
+		max-speed = <921600>;
+	};
 };
 
 &sysmmu_disp_ro {
