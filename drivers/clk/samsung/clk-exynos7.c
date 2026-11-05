@@ -1320,7 +1320,9 @@ static const struct samsung_gate_clock aud_gate_clks[] __initconst = {
 			ENABLE_SCLK_AUD, 30, 0, 0),
 
 	GATE(0, "pclk_dbg_aud", "dout_aud_pclk_dbg", ENABLE_PCLK_AUD, 19, 0, 0),
-	GATE(0, "pclk_gpio_aud", "dout_aclk_aud", ENABLE_PCLK_AUD, 20, 0, 0),
+	/* pinctrl@114b0000 takes no clock: keep its bus clock running. */
+	GATE(0, "pclk_gpio_aud", "dout_aclk_aud", ENABLE_PCLK_AUD, 20,
+			CLK_IGNORE_UNUSED, 0),
 	GATE(0, "pclk_wdt1", "dout_aclk_aud", ENABLE_PCLK_AUD, 22, 0, 0),
 	GATE(0, "pclk_wdt0", "dout_aclk_aud", ENABLE_PCLK_AUD, 23, 0, 0),
 	GATE(0, "pclk_slimbus", "dout_aclk_aud", ENABLE_PCLK_AUD, 24, 0, 0),
@@ -1330,11 +1332,13 @@ static const struct samsung_gate_clock aud_gate_clks[] __initconst = {
 	GATE(PCLK_I2S, "pclk_i2s", "dout_aclk_aud",
 			ENABLE_PCLK_AUD, 27, CLK_SET_RATE_PARENT, 0),
 	GATE(0, "pclk_timer", "dout_aclk_aud", ENABLE_PCLK_AUD, 28, 0, 0),
-	GATE(0, "pclk_smmu_aud", "dout_aclk_aud", ENABLE_PCLK_AUD, 31, 0, 0),
+	GATE(PCLK_SMMU_AUD, "pclk_smmu_aud", "dout_aclk_aud",
+			ENABLE_PCLK_AUD, 31, 0, 0),
 
-	GATE(0, "aclk_smmu_aud", "dout_aclk_aud", ENABLE_ACLK_AUD, 27, 0, 0),
-	GATE(0, "aclk_acel_lh_async_si_top", "dout_aclk_aud",
-			 ENABLE_ACLK_AUD, 28, 0, 0),
+	GATE(ACLK_SMMU_AUD, "aclk_smmu_aud", "dout_aclk_aud",
+			ENABLE_ACLK_AUD, 27, 0, 0),
+	GATE(ACLK_ACEL_LH_ASYNC_SI_TOP, "aclk_acel_lh_async_si_top",
+			"dout_aclk_aud", ENABLE_ACLK_AUD, 28, 0, 0),
 	GATE(ACLK_ADMA, "aclk_dmac", "dout_aclk_aud", ENABLE_ACLK_AUD, 31, 0, 0),
 };
 

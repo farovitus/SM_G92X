@@ -213,7 +213,10 @@
 #define ACLK_ADMA			5
 #define PCLK_UART			6
 #define SCLK_UART			7
-#define AUD_NR_CLK			8
+#define PCLK_SMMU_AUD			8
+#define ACLK_SMMU_AUD			9
+#define ACLK_ACEL_LH_ASYNC_SI_TOP	10
+#define AUD_NR_CLK			11
 
 /* G3D */
 #define CLK_FOUT_G3D_PLL		1
