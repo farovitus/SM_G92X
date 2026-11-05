@@ -1,0 +1,253 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Galaxy S6 / S6 edge (zeroflte, zerolte) audio: Exynos7420 I2S0 and a
+ * Cirrus Logic WM1840 (Madera, CS47L85 family).
+ *
+ * The codec clocks the I2S link. Its FLL1 runs from the 32.768 kHz MCLK2
+ * and makes a 98.304 MHz SYSCLK, so only 48 kHz-family rates are offered.
+ * The FLL runs only while the codec is out of BIAS_OFF. Routes come from
+ * the samsung,audio-routing DT property.
+ */
+
+#include <linux/mfd/madera/core.h>
+#include <linux/mfd/madera/registers.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+#include <sound/pcm.h>
+#include <sound/pcm_params.h>
+#include <sound/soc.h>
+
+#include "i2s.h"
+#include "../codecs/madera.h"
+
+#define ZERO_MCLK2_RATE		32768
+#define ZERO_SYSCLK_RATE	98304000
+
+struct zero_priv {
+	struct snd_soc_component *codec;
+};
+
+static int zero_start_sysclk(struct snd_soc_component *codec)
+{
+	int ret;
+
+	ret = snd_soc_component_set_pll(codec, MADERA_FLL1_REFCLK,
+					MADERA_FLL_SRC_MCLK2, ZERO_MCLK2_RATE,
+					ZERO_SYSCLK_RATE);
+	if (ret) {
+		dev_err(codec->dev, "Failed to start FLL1: %d\n", ret);
+		return ret;
+	}
+
+	ret = snd_soc_component_set_sysclk(codec, MADERA_CLK_SYSCLK_1,
+					   MADERA_CLK_SRC_FLL1,
+					   ZERO_SYSCLK_RATE, SND_SOC_CLOCK_IN);
+	if (ret) {
+		dev_err(codec->dev, "Failed to set SYSCLK: %d\n", ret);
+		return ret;
+	}
+
+	/* madera only warns on a lock timeout; say where the clock stands. */
+	dev_info(codec->dev, "FLL1 %s on MCLK2\n",
+		 snd_soc_component_read(codec, MADERA_IRQ1_RAW_STATUS_2) &
+		 MADERA_FLL1_LOCK_STS1 ? "locked" : "NOT locked");
+
+	return 0;
+}
+
+static void zero_stop_sysclk(struct snd_soc_component *codec)
+{
+	snd_soc_component_set_sysclk(codec, MADERA_CLK_SYSCLK_1,
+				     MADERA_CLK_SRC_FLL1, 0, SND_SOC_CLOCK_IN);
+	snd_soc_component_set_pll(codec, MADERA_FLL1_REFCLK,
+				  MADERA_FLL_SRC_NONE, 0, 0);
+}
+
+static int zero_set_bias_level(struct snd_soc_card *card,
+			       struct snd_soc_dapm_context *dapm,
+			       enum snd_soc_bias_level level)
+{
+	struct zero_priv *priv = snd_soc_card_get_drvdata(card);
+
+	if (!priv->codec || dapm->dev != priv->codec->dev)
+		return 0;
+
+	switch (level) {
+	case SND_SOC_BIAS_STANDBY:
+		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF)
+			return zero_start_sysclk(priv->codec);
+		break;
+	case SND_SOC_BIAS_OFF:
+		zero_stop_sysclk(priv->codec);
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+static const unsigned int zero_rates[] = {
+	8000, 16000, 32000, 48000, 96000,
+};
+
+static const struct snd_pcm_hw_constraint_list zero_rate_list = {
+	.count = ARRAY_SIZE(zero_rates),
+	.list = zero_rates,
+};
+
+static int zero_aif1_startup(struct snd_pcm_substream *substream)
+{
+	return snd_pcm_hw_constraint_list(substream->runtime, 0,
+					  SNDRV_PCM_HW_PARAM_RATE,
+					  &zero_rate_list);
+}
+
+/*
+ * The codec drives BCLK and LRCLK, so the I2S is a clock consumer: it
+ * does not drive CDCLK, and its core runs from PCLK rather than the
+ * default CDCLK out, which nothing drives here. The vendor driver and
+ * the mainline boards with a codec clock provider (midas, tm2) do the
+ * same.
+ */
+static int zero_aif1_hw_params(struct snd_pcm_substream *substream,
+			       struct snd_pcm_hw_params *params)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+	int ret;
+
+	ret = snd_soc_dai_set_sysclk(cpu_dai, SAMSUNG_I2S_CDCLK, 0,
+				     SND_SOC_CLOCK_IN);
+	if (ret)
+		return ret;
+
+	return snd_soc_dai_set_sysclk(cpu_dai, SAMSUNG_I2S_OPCLK, 0,
+				      SAMSUNG_I2S_OPCLK_PCLK);
+}
+
+static const struct snd_soc_ops zero_aif1_ops = {
+	.startup = zero_aif1_startup,
+	.hw_params = zero_aif1_hw_params,
+};
+
+static int zero_late_probe(struct snd_soc_card *card)
+{
+	struct zero_priv *priv = snd_soc_card_get_drvdata(card);
+	struct snd_soc_pcm_runtime *rtd;
+
+	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[0]);
+	priv->codec = snd_soc_rtd_to_codec(rtd, 0)->component;
+
+	/* The codec is still in BIAS_OFF here; SYSCLK starts on STANDBY. */
+	return 0;
+}
+
+static const struct snd_soc_dapm_widget zero_dapm_widgets[] = {
+	SND_SOC_DAPM_HP("HP", NULL),
+	SND_SOC_DAPM_SPK("RCV", NULL),
+	SND_SOC_DAPM_MIC("Main Mic", NULL),
+	SND_SOC_DAPM_MIC("Sub Mic", NULL),
+	SND_SOC_DAPM_MIC("Third Mic", NULL),
+	SND_SOC_DAPM_MIC("Headset Mic", NULL),
+};
+
+static const struct snd_kcontrol_new zero_controls[] = {
+	SOC_DAPM_PIN_SWITCH("HP"),
+	SOC_DAPM_PIN_SWITCH("RCV"),
+	SOC_DAPM_PIN_SWITCH("Main Mic"),
+	SOC_DAPM_PIN_SWITCH("Sub Mic"),
+	SOC_DAPM_PIN_SWITCH("Third Mic"),
+	SOC_DAPM_PIN_SWITCH("Headset Mic"),
+};
+
+SND_SOC_DAILINK_DEFS(aif1,
+	DAILINK_COMP_ARRAY(COMP_CPU(SAMSUNG_I2S_DAI)),
+	DAILINK_COMP_ARRAY(COMP_CODEC("cs47l85-codec", "cs47l85-aif1")),
+	DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
+static struct snd_soc_dai_link zero_dai_links[] = {
+	{
+		.name		= "WM1840 AIF1",
+		.stream_name	= "HiFi",
+		.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
+				  SND_SOC_DAIFMT_CBP_CFP,
+		.ops		= &zero_aif1_ops,
+		SND_SOC_DAILINK_REG(aif1),
+	},
+};
+
+static struct snd_soc_card zero_card = {
+	.owner			= THIS_MODULE,
+	.dai_link		= zero_dai_links,
+	.num_links		= ARRAY_SIZE(zero_dai_links),
+	.controls		= zero_controls,
+	.num_controls		= ARRAY_SIZE(zero_controls),
+	.dapm_widgets		= zero_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(zero_dapm_widgets),
+	.late_probe		= zero_late_probe,
+	.set_bias_level		= zero_set_bias_level,
+};
+
+static void zero_put_node(void *np)
+{
+	of_node_put(np);
+}
+
+static int zero_audio_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct snd_soc_card *card = &zero_card;
+	struct device_node *i2s_node;
+	struct zero_priv *priv;
+	int ret;
+
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
+
+	card->dev = dev;
+	snd_soc_card_set_drvdata(card, priv);
+
+	ret = snd_soc_of_parse_card_name(card, "model");
+	if (ret)
+		return ret;
+
+	ret = snd_soc_of_parse_audio_routing(card, "samsung,audio-routing");
+	if (ret)
+		return ret;
+
+	i2s_node = of_parse_phandle(dev->of_node, "samsung,i2s-controller", 0);
+	if (!i2s_node)
+		return dev_err_probe(dev, -EINVAL,
+				     "samsung,i2s-controller missing\n");
+
+	ret = devm_add_action_or_reset(dev, zero_put_node, i2s_node);
+	if (ret)
+		return ret;
+
+	zero_dai_links[0].cpus->of_node = i2s_node;
+	zero_dai_links[0].platforms->of_node = i2s_node;
+
+	return devm_snd_soc_register_card(dev, card);
+}
+
+static const struct of_device_id zero_audio_of_match[] = {
+	{ .compatible = "samsung,zero-wm1840" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, zero_audio_of_match);
+
+static struct platform_driver zero_audio_driver = {
+	.driver = {
+		.name		= "zero-wm1840",
+		.pm		= &snd_soc_pm_ops,
+		.of_match_table	= zero_audio_of_match,
+	},
+	.probe = zero_audio_probe,
+};
+module_platform_driver(zero_audio_driver);
+
+MODULE_DESCRIPTION("Galaxy S6 WM1840 audio");
+MODULE_LICENSE("GPL");

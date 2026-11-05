@@ -25,6 +25,7 @@ snd-soc-bells-objs := bells.o
 snd-soc-odroid-objs := odroid.o
 snd-soc-arndale-objs := arndale.o
 snd-soc-tm2-wm5110-objs := tm2_wm5110.o
+snd-soc-zero-wm1840-objs := zero_wm1840.o
 snd-soc-aries-wm8994-objs := aries_wm8994.o
 snd-soc-midas-wm1811-objs := midas_wm1811.o
 
@@ -40,5 +41,6 @@ obj-$(CONFIG_SND_SOC_BELLS) += snd-soc-bells.o
 obj-$(CONFIG_SND_SOC_ODROID) += snd-soc-odroid.o
 obj-$(CONFIG_SND_SOC_ARNDALE) += snd-soc-arndale.o
 obj-$(CONFIG_SND_SOC_SAMSUNG_TM2_WM5110) += snd-soc-tm2-wm5110.o
+obj-$(CONFIG_SND_SOC_SAMSUNG_ZERO_WM1840) += snd-soc-zero-wm1840.o
 obj-$(CONFIG_SND_SOC_SAMSUNG_ARIES_WM8994) += snd-soc-aries-wm8994.o
 obj-$(CONFIG_SND_SOC_SAMSUNG_MIDAS_WM1811) += snd-soc-midas-wm1811.o
