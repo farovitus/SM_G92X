@@ -17,6 +17,19 @@
  * extcon device named by the "extcon" phandle (max77843-muic). Until a type
  * is known the limit is 500 mA. Without a monitored battery the driver
  * stays read-only and leaves the boot loader's configuration alone.
+ *
+ * While an input is present the battery temperature is checked every 30 s
+ * and on every input change, with 5 degC hysteresis as stock:
+ *
+ *   operating-range-celsius   charging stops outside this range
+ *   alert-celsius             outside it, charge with at most
+ *                             maxim,alert-charge-current-microamp and
+ *                             maxim,alert-charge-voltage-microvolt
+ *                             (the stock "swelling" limits)
+ *
+ * The temperature is the battery temperature that the MAX77843 fuel gauge
+ * reports. It is only as good as that register: stock wrote the AP ADC
+ * thermistor reading into it, and nothing does that on this kernel yet.
  */
 
 #include <linux/bitfield.h>
@@ -29,6 +42,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_wakeup.h>
 #include <linux/power_supply.h>
@@ -68,6 +82,11 @@
 /* Stock top-off time: 70 minutes in top-off before the charger is done */
 #define MAX77843_CHG_TO_TIME_70MIN	7
 
+/* Battery temperature checks while an input is present */
+#define MAX77843_CHG_POLL_MS		30000
+#define MAX77843_CHG_TEMP_HYST		50	/* 0.1 degC, stock 5 degC */
+#define MAX77843_FG_PSY_NAME		"max77843-fuelgauge"
+
 /* Input limit used until the charger type is known */
 #define MAX77843_CHG_DEFAULT_INPUT_UA	500000
 
@@ -99,7 +118,10 @@ struct max77843_charger {
 	struct extcon_dev *edev;
 	struct notifier_block extcon_nb;
 	int input_ua;			/* last input limit applied */
-	struct work_struct work;
+	u32 alert_cc_ua;		/* charge current in the alert range */
+	u32 alert_cv_uv;		/* float voltage in the alert range */
+	int health;			/* POWER_SUPPLY_HEALTH_* from temperature */
+	struct delayed_work work;
 	struct mutex lock;		/* serialises max77843_chg_apply() */
 	unsigned int pmic_rev;
 };
@@ -290,6 +312,65 @@ static int max77843_chg_unlock(struct max77843_charger *chg)
 				   MAX77843_CNFG00_WDTEN, 0);
 }
 
+/*
+ * Next temperature state, in the battery's 0.1 degC. Each window is left
+ * only once the temperature is MAX77843_CHG_TEMP_HYST back inside it.
+ */
+static int max77843_chg_temp_health(struct max77843_charger *chg, int temp)
+{
+	struct power_supply_battery_info *bat = chg->bat;
+	int prev = chg->health, hyst = MAX77843_CHG_TEMP_HYST;
+	bool hot = prev == POWER_SUPPLY_HEALTH_OVERHEAT;
+	bool cold = prev == POWER_SUPPLY_HEALTH_COLD;
+	bool warm = hot || prev == POWER_SUPPLY_HEALTH_WARM;
+	bool cool = cold || prev == POWER_SUPPLY_HEALTH_COOL;
+
+	if (bat->temp_max != INT_MAX &&
+	    (temp >= bat->temp_max * 10 ||
+	     (hot && temp > bat->temp_max * 10 - hyst)))
+		return POWER_SUPPLY_HEALTH_OVERHEAT;
+	if (bat->temp_min != INT_MIN &&
+	    (temp <= bat->temp_min * 10 ||
+	     (cold && temp < bat->temp_min * 10 + hyst)))
+		return POWER_SUPPLY_HEALTH_COLD;
+	if (bat->temp_alert_max != INT_MAX &&
+	    (temp >= bat->temp_alert_max * 10 ||
+	     (warm && temp > bat->temp_alert_max * 10 - hyst)))
+		return POWER_SUPPLY_HEALTH_WARM;
+	if (bat->temp_alert_min != INT_MIN &&
+	    (temp <= bat->temp_alert_min * 10 ||
+	     (cool && temp < bat->temp_alert_min * 10 + hyst)))
+		return POWER_SUPPLY_HEALTH_COOL;
+
+	return POWER_SUPPLY_HEALTH_GOOD;
+}
+
+static void max77843_chg_update_health(struct max77843_charger *chg)
+{
+	union power_supply_propval val;
+	struct power_supply *fg;
+	int health, ret;
+
+	fg = power_supply_get_by_name(MAX77843_FG_PSY_NAME);
+	if (!fg)
+		return;		/* keep the last state until the gauge is up */
+	ret = power_supply_get_property(fg, POWER_SUPPLY_PROP_TEMP, &val);
+	power_supply_put(fg);
+	if (ret) {
+		dev_warn_ratelimited(chg->dev,
+				     "cannot read the battery temperature: %d\n",
+				     ret);
+		return;
+	}
+
+	health = max77843_chg_temp_health(chg, val.intval);
+	if (health != chg->health)
+		dev_info(chg->dev, "battery %d.%d degC: health %d -> %d\n",
+			 val.intval / 10, abs(val.intval % 10),
+			 chg->health, health);
+	chg->health = health;
+}
+
 static int max77843_chg_cable_input_ua(struct max77843_charger *chg)
 {
 	int i;
@@ -315,6 +396,14 @@ static int max77843_chg_apply(struct max77843_charger *chg)
 
 	mutex_lock(&chg->lock);
 
+	if (chg->health == POWER_SUPPLY_HEALTH_WARM ||
+	    chg->health == POWER_SUPPLY_HEALTH_COOL) {
+		if (chg->alert_cc_ua)
+			cc_ua = min_t(int, cc_ua, chg->alert_cc_ua);
+		if (chg->alert_cv_uv)
+			cv_uv = min_t(int, cv_uv, chg->alert_cv_uv);
+	}
+
 	ret = max77843_chg_unlock(chg);
 	if (ret)
 		goto out;
@@ -338,8 +427,14 @@ static int max77843_chg_apply(struct max77843_charger *chg)
 	if (ret)
 		goto out;
 
-	/* Charger and buck on; OTG and boost off */
-	mode = MAX77843_CNFG00_CHG | MAX77843_CNFG00_BUCK;
+	/*
+	 * Buck on, so the system runs from the input; charger on unless the
+	 * battery is too hot or too cold; OTG and boost off.
+	 */
+	mode = MAX77843_CNFG00_BUCK;
+	if (chg->health != POWER_SUPPLY_HEALTH_OVERHEAT &&
+	    chg->health != POWER_SUPPLY_HEALTH_COLD)
+		mode |= MAX77843_CNFG00_CHG;
 	ret = max77843_chg_update(chg, MAX77843_CHG_REG_CHG_CNFG_00,
 				  MAX77843_CNFG00_CHG | MAX77843_CNFG00_OTG |
 				  MAX77843_CNFG00_BUCK | MAX77843_CNFG00_BOOST,
@@ -349,8 +444,9 @@ static int max77843_chg_apply(struct max77843_charger *chg)
 
 	if (input_ua != chg->input_ua)
 		dev_info(chg->dev,
-			 "input limit %d mA, fast charge %d mA, float %d mV\n",
-			 input_ua / 1000, cc_ua / 1000, cv_uv / 1000);
+			 "input limit %d mA, fast charge %d mA, float %d mV%s\n",
+			 input_ua / 1000, cc_ua / 1000, cv_uv / 1000,
+			 mode & MAX77843_CNFG00_CHG ? "" : ", charging stopped");
 	chg->input_ua = input_ua;
 out:
 	mutex_unlock(&chg->lock);
@@ -390,16 +486,27 @@ static int max77843_chg_init_hw(struct max77843_charger *chg)
 			return ret;
 	}
 
+	max77843_chg_update_health(chg);
 	return max77843_chg_apply(chg);
 }
 
+/*
+ * Runs on every input change and, while an input is present, every
+ * MAX77843_CHG_POLL_MS for the temperature. It does not run in suspend.
+ */
 static void max77843_chg_work(struct work_struct *work)
 {
-	struct max77843_charger *chg = container_of(work,
+	struct max77843_charger *chg = container_of(to_delayed_work(work),
 					struct max77843_charger, work);
+	int online = 0;
 
+	max77843_chg_update_health(chg);
 	max77843_chg_apply(chg);
 	power_supply_changed(chg->psy);
+
+	if (!max77843_charger_online(chg, &online) && online)
+		schedule_delayed_work(&chg->work,
+				      msecs_to_jiffies(MAX77843_CHG_POLL_MS));
 }
 
 static int max77843_chg_extcon_notify(struct notifier_block *nb,
@@ -408,7 +515,7 @@ static int max77843_chg_extcon_notify(struct notifier_block *nb,
 	struct max77843_charger *chg = container_of(nb,
 					struct max77843_charger, extcon_nb);
 
-	schedule_work(&chg->work);
+	mod_delayed_work(system_wq, &chg->work, 0);
 	return NOTIFY_OK;
 }
 
@@ -458,11 +565,19 @@ static void max77843_chg_get_battery(struct max77843_charger *chg)
 	}
 
 	chg->bat = bat;
+
+	of_property_read_u32(chg->dev->of_node,
+			     "maxim,alert-charge-current-microamp",
+			     &chg->alert_cc_ua);
+	of_property_read_u32(chg->dev->of_node,
+			     "maxim,alert-charge-voltage-microvolt",
+			     &chg->alert_cv_uv);
 }
 
 static enum power_supply_property max77843_charger_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
 };
@@ -478,6 +593,9 @@ static int max77843_charger_get_property(struct power_supply *psy,
 		return max77843_charger_online(chg, &val->intval);
 	case POWER_SUPPLY_PROP_STATUS:
 		return max77843_charger_status(chg, &val->intval);
+	case POWER_SUPPLY_PROP_HEALTH:
+		val->intval = chg->health;
+		return 0;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 		return max77843_charger_fast_current(chg, &val->intval);
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
@@ -523,7 +641,7 @@ static irqreturn_t max77843_charger_irq(int irq, void *data)
 
 	pm_wakeup_event(chg->dev, 2000);
 	if (chg->bat)
-		schedule_work(&chg->work);
+		mod_delayed_work(system_wq, &chg->work, 0);
 	power_supply_changed(chg->psy);
 
 	return IRQ_HANDLED;
@@ -606,6 +724,7 @@ static int max77843_charger_probe(struct platform_device *pdev)
 	chg->dev = &pdev->dev;
 	chg->regmap = max77843->regmap_chg;
 	chg->pmic_rev = 2;
+	chg->health = POWER_SUPPLY_HEALTH_GOOD;
 	mutex_init(&chg->lock);
 	platform_set_drvdata(pdev, chg);
 
@@ -622,7 +741,8 @@ static int max77843_charger_probe(struct platform_device *pdev)
 				     "failed to register power supply\n");
 
 	/* Cancelled before the power supply goes away */
-	ret = devm_work_autocancel(&pdev->dev, &chg->work, max77843_chg_work);
+	ret = devm_delayed_work_autocancel(&pdev->dev, &chg->work,
+					   max77843_chg_work);
 	if (ret)
 		return ret;
 
@@ -636,6 +756,9 @@ static int max77843_charger_probe(struct platform_device *pdev)
 		if (ret)
 			return dev_err_probe(&pdev->dev, ret,
 					     "cannot configure the charger\n");
+
+		/* Start the temperature checks if an input is present */
+		schedule_delayed_work(&chg->work, 0);
 	}
 
 	return max77843_chg_init_irq(chg, max77843->irq, max77843->regmap);
