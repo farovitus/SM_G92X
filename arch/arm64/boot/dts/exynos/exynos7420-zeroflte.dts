@@ -1164,7 +1164,9 @@
 /*
  * DSIM0 as S-Boot left it (4 lanes, command mode, MIC), for panel
  * commands only. The panel driver's backlight sends the brightness
- * (gamma, AOR, VINT) through it. Panel reset is gpr3-0, active low
+ * (gamma, AOR, ELVSS, VINT) through it. With the zeroflte compatible
+ * the value is the luminance in cd/m2, 2 to 360, set from the stock S6
+ * tables. Panel reset is gpr3-0, active low
  * (3.10: dsim gpios = <&gpr3 0 0x1>); there is no enable line. The
  * supplies (S2MPB02 LDO16 VCC_3.0V_LCD, VCC_DISPLAY_1.8V) stay as S-Boot
  * set them and are not described here, so Linux never switches them.
@@ -1182,7 +1184,7 @@
 		#size-cells = <0>;
 
 		panel@0 {
-			compatible = "samsung,s6e3ha2";
+			compatible = "samsung,s6e3ha2-zeroflte", "samsung,s6e3ha2";
 			reg = <0>;
 			reset-gpios = <&gpr3 0 GPIO_ACTIVE_LOW>;
 		};
