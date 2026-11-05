@@ -312,6 +312,25 @@
 		};
 	};
 
+	/*
+	 * Charging limits from the stock battery description, the same on
+	 * every G920F revision (rev 06-07 boards: exynos7420-zeroflte_eur_
+	 * battery_08/09.dtsi): float 4.35 V, fast charge 2 A, top-off
+	 * 275 mA, recharge at 4.30 V. Charging stops below 0 degC and from
+	 * 50 degC; below 10 degC and from 41 degC (battery swelling) the
+	 * charger node's alert limits apply.
+	 */
+	battery: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion";
+		constant-charge-voltage-max-microvolt = <4350000>;
+		constant-charge-current-max-microamp = <2000000>;
+		charge-term-current-microamp = <275000>;
+		re-charge-voltage-microvolt = <4300000>;
+		operating-range-celsius = <0 50>;
+		alert-celsius = <10 41>;
+	};
+
 	/* Bus for the MAX77843 MUIC/charger/fuel gauge (stock hsi2c_1 pins) */
 	i2c_max77843: i2c-max77843 {
 		compatible = "i2c-gpio";
@@ -340,8 +359,17 @@
 				compatible = "maxim,max77843-fuelgauge";
 			};
 
+			/*
+			 * The input limit follows the charger type the MUIC
+			 * detects. The alert limits are stock's swelling
+			 * current and float voltage.
+			 */
 			charger {
 				compatible = "maxim,max77843-charger";
+				monitored-battery = <&battery>;
+				extcon = <&muic>;
+				maxim,alert-charge-current-microamp = <1100000>;
+				maxim,alert-charge-voltage-microvolt = <4150000>;
 			};
 
 			/*
@@ -349,7 +377,7 @@
 			 * which routes D+/D- to the USB PHY when a USB host or
 			 * charger is attached and opens it on detach.
 			 */
-			extcon {
+			muic: extcon {
 				compatible = "maxim,max77843-muic";
 
 				connector {
