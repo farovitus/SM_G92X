@@ -128,18 +128,38 @@ static struct notifier_block exynos7_cpu_pm_nb = {
 
 static bool exynos7_poweroff_to_charger;
 
+/*
+ * A restart must not land in the off-charging screen, whatever reason
+ * userspace gives ("userrequested", the charger's own, ...). Like the
+ * stock kernels, set INFORM2 to skip it and INFORM3 to a normal boot on
+ * every restart. The syscon-reboot-mode nodes run after this notifier
+ * (lower priority) and replace INFORM3 for the modes they know, such as
+ * recovery and download.
+ */
+#define EXYNOS7_INFORM3			0x080c
+#define EXYNOS7_INFORM2_NO_LPM		0x12345678
+#define EXYNOS7_INFORM3_NORMAL		0x12345670
+
 static int exynos7_pmu_reboot_notify(struct notifier_block *nb,
 				     unsigned long action, void *data)
 {
-	if (action == SYS_POWER_OFF)
+	switch (action) {
+	case SYS_RESTART:
+		pmu_raw_writel(EXYNOS7_INFORM2_NO_LPM, EXYNOS7_INFORM2);
+		pmu_raw_writel(EXYNOS7_INFORM3_NORMAL, EXYNOS7_INFORM3);
+		break;
+	case SYS_POWER_OFF:
 		exynos7_poweroff_to_charger =
 			power_supply_is_system_supplied() > 0;
+		break;
+	}
 
 	return NOTIFY_DONE;
 }
 
 static struct notifier_block exynos7_pmu_reboot_nb = {
 	.notifier_call = exynos7_pmu_reboot_notify,
+	.priority = 1,
 };
 
 static int exynos7_pmu_power_off(struct sys_off_data *data)
