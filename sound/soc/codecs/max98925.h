@@ -10,6 +10,9 @@
 
 #define	MAX98925_VERSION	0x51
 #define	MAX98925_VERSION1	0x80
+/* The MAX98505 shares the register map; these are its own revisions. */
+#define	MAX98505_VERSION	0x8A
+#define	MAX98505_VERSION1	0x8B
 #define MAX98925_VBAT_DATA		0x00
 #define MAX98925_VBST_DATA		0x01
 #define MAX98925_LIVE_STATUS0		0x02

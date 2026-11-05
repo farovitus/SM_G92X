@@ -598,7 +598,13 @@ static int max98925_i2c_probe(struct i2c_client *i2c)
 		return ret;
 	}
 
-	if ((reg != MAX98925_VERSION) && (reg != MAX98925_VERSION1)) {
+	switch (reg) {
+	case MAX98925_VERSION:
+	case MAX98925_VERSION1:
+	case MAX98505_VERSION:
+	case MAX98505_VERSION1:
+		break;
+	default:
 		ret = -ENODEV;
 		dev_err(&i2c->dev, "Invalid revision (%d 0x%02X)\n",
 			ret, reg);
@@ -617,6 +623,7 @@ static int max98925_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id max98925_i2c_id[] = {
+	{ "max98505", 0 },
 	{ "max98925", 0 },
 	{ }
 };
@@ -624,6 +631,7 @@ MODULE_DEVICE_TABLE(i2c, max98925_i2c_id);
 
 #ifdef CONFIG_OF
 static const struct of_device_id max98925_of_match[] = {
+	{ .compatible = "maxim,max98505", },
 	{ .compatible = "maxim,max98925", },
 	{ }
 };
