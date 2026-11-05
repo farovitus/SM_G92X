@@ -14,6 +14,8 @@
 #include <linux/delay.h>
 #include <linux/cpu_pm.h>
 #include <linux/notifier.h>
+#include <linux/power_supply.h>
+#include <linux/reboot.h>
 #include <asm/cputype.h>
 
 #include <linux/soc/samsung/exynos-regs-pmu.h>
@@ -109,9 +111,55 @@ static struct notifier_block exynos7_cpu_pm_nb = {
 	.notifier_call = exynos7_cpu_pm_notify,
 };
 
+/*
+ * Power-off with a charger attached.
+ *
+ * Samsung's boot loader shows the off-charging screen only when it is
+ * started with a charger present and INFORM2 clear (INFORM2 = 0x12345678
+ * tells it to skip that screen; see reboot-mode-no-lpm in the board DT).
+ * Dropping PS_HOLD while external power is present does not power the
+ * phone off, so the stock kernels restart instead. Do the same: note at
+ * shutdown, while drivers can still be queried, whether external power is
+ * present, and if so restart from the power-off handler with INFORM2
+ * cleared. Without external power the syscon-poweroff handler drops
+ * PS_HOLD as usual.
+ */
+#define EXYNOS7_INFORM2			0x0808
+
+static bool exynos7_poweroff_to_charger;
+
+static int exynos7_pmu_reboot_notify(struct notifier_block *nb,
+				     unsigned long action, void *data)
+{
+	if (action == SYS_POWER_OFF)
+		exynos7_poweroff_to_charger =
+			power_supply_is_system_supplied() > 0;
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block exynos7_pmu_reboot_nb = {
+	.notifier_call = exynos7_pmu_reboot_notify,
+};
+
+static int exynos7_pmu_power_off(struct sys_off_data *data)
+{
+	if (!exynos7_poweroff_to_charger)
+		return NOTIFY_DONE;
+
+	pr_emerg("exynos-pmu: external power present, restarting to the charger screen\n");
+	pmu_raw_writel(0, EXYNOS7_INFORM2);
+	do_kernel_restart(NULL);
+
+	return NOTIFY_DONE;
+}
+
 static void exynos7_pmu_init(void)
 {
 	cpu_pm_register_notifier(&exynos7_cpu_pm_nb);
+	register_reboot_notifier(&exynos7_pmu_reboot_nb);
+	register_sys_off_handler(SYS_OFF_MODE_POWER_OFF, SYS_OFF_PRIO_HIGH,
+				 exynos7_pmu_power_off, NULL);
 }
 
 static const struct exynos_pmu_data exynos7_pmu_data = {
