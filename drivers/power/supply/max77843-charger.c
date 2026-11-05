@@ -3,16 +3,29 @@
  * Charger status driver for the Maxim MAX77843
  *
  * Reports input presence, charge state and the programmed current
- * limits from the CHG block (I2C 0x69) of the MAX77843 PMIC. The
- * charging configuration left by the bootloader is not changed.
+ * limits from the CHG block (I2C 0x69) of the MAX77843 PMIC, and programs
+ * the charger from the battery described by the "monitored-battery"
+ * phandle (simple-battery binding):
+ *
+ *   constant-charge-voltage-max-microvolt   float voltage      (CHG_CNFG_04)
+ *   constant-charge-current-max-microamp    fast-charge current (CHG_CNFG_02)
+ *   charge-term-current-microamp            top-off current    (CHG_CNFG_03)
+ *   re-charge-voltage-microvolt             restart threshold  (CHG_CNFG_01)
+ *
+ * Charging is enabled at probe and again on every input change. Without a
+ * monitored battery the driver stays read-only and leaves the boot loader's
+ * configuration alone.
  */
 
 #include <linux/bitfield.h>
+#include <linux/devm-helpers.h>
 #include <linux/interrupt.h>
+#include <linux/math64.h>
 #include <linux/mfd/max77693-common.h>
 #include <linux/mfd/max77843-private.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/pm_wakeup.h>
 #include <linux/power_supply.h>
@@ -28,11 +41,42 @@
 /* CHG_CNFG_09: input current limit */
 #define MAX77843_CHG_CHGIN_ILIM_MASK	GENMASK(6, 0)
 
+/* CHG_CNFG_00 (0xB7): operating mode and charger watchdog */
+#define MAX77843_CNFG00_CHG		BIT(0)
+#define MAX77843_CNFG00_OTG		BIT(1)
+#define MAX77843_CNFG00_BUCK		BIT(2)
+#define MAX77843_CNFG00_BOOST		BIT(3)
+#define MAX77843_CNFG00_WDTEN		BIT(4)
+/* CHG_CNFG_01 (0xB8): restart threshold below the float voltage */
+#define MAX77843_CNFG01_RSTRT_MASK	GENMASK(5, 4)
+/* CHG_CNFG_03 (0xBA): top-off current and top-off time */
+#define MAX77843_CNFG03_TO_ITH_MASK	GENMASK(2, 0)
+#define MAX77843_CNFG03_TO_TIME_MASK	GENMASK(5, 3)
+/* CHG_CNFG_04 (0xBB): float voltage, bits [5:0]; MINVSYS above */
+#define MAX77843_CHG_CV_MASK		0x3f
+/* CHG_CNFG_06 (0xBD): watchdog clear and write protection */
+#define MAX77843_CNFG06_WDTCLR_MASK	GENMASK(1, 0)
+#define MAX77843_CNFG06_WDTCLR		0x01
+#define MAX77843_CNFG06_CHGPROT_MASK	GENMASK(3, 2)
+
+/* TOPSYS PMICREV: the top-off current steps changed with revision 2 */
+#define MAX77843_PMICREV_MASK		GENMASK(2, 0)
+
+/* Stock top-off time: 70 minutes in top-off before the charger is done */
+#define MAX77843_CHG_TO_TIME_70MIN	7
+
+/* Input limit used until the charger type is known */
+#define MAX77843_CHG_DEFAULT_INPUT_UA	500000
+
 struct max77843_charger {
 	struct device *dev;
 	struct regmap *regmap;
 	struct power_supply *psy;
 	struct regmap_irq_chip_data *irq_data;
+	struct power_supply_battery_info *bat;
+	struct work_struct work;
+	struct mutex lock;		/* serialises max77843_chg_apply() */
+	unsigned int pmic_rev;
 };
 
 static int max77843_charger_online(struct max77843_charger *chg, int *val)
@@ -135,6 +179,210 @@ static int max77843_charger_input_limit(struct max77843_charger *chg,
 	return 0;
 }
 
+/* ---------------------------------------------------------------------- */
+/* Charger configuration                                                  */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * Register codes round towards the safe side: currents and voltages down.
+ * Float voltage, from the stock driver: 3.650 V + 25 mV per step up to
+ * 0x1b (4.325 V), 0x1c is 4.340 V, and from 0x1d (4.350 V) the 25 mV steps
+ * resume one code later.
+ */
+static unsigned int max77843_chg_cv_code(int uv)
+{
+	int mv = clamp(uv / 1000, 3650, 4700);
+
+	if (mv < 4340)
+		return (mv - 3650) / 25;
+	if (mv < 4350)
+		return 0x1c;
+	return (mv - 3650) / 25 + 1;
+}
+
+static unsigned int max77843_chg_cc_code(int ua)
+{
+	/* Codes 0 to 2 all select 100 mA, then 50 mA per step */
+	return clamp(ua / 50000, 2, MAX77843_CHG_FAST_CHG_CURRENT_MASK);
+}
+
+static unsigned int max77843_chg_input_code(int ua)
+{
+	/* 33.3 mA per step, codes 0 to 3 are 100 mA, 0x78 and up 4 A */
+	return clamp((int)div_s64((s64)ua * 3, 100000), 3, 0x78);
+}
+
+static unsigned int max77843_chg_topoff_code(struct max77843_charger *chg,
+					     int ua)
+{
+	if (chg->pmic_rev >= 2)
+		return clamp((ua - 125000) / 75000, 0, 7);
+	return clamp((ua - 100000) / 50000, 0, 7);
+}
+
+static unsigned int max77843_chg_restart_code(int cv_uv, int restart_uv)
+{
+	int drop = cv_uv - restart_uv;
+
+	/* 100, 150 or 200 mV below the float voltage, never above the request */
+	if (drop < 150000)
+		return 0;
+	if (drop < 200000)
+		return 1;
+	return 2;
+}
+
+static int max77843_chg_update(struct max77843_charger *chg, u8 reg,
+			       unsigned int mask, unsigned int val)
+{
+	int ret = regmap_update_bits(chg->regmap, reg, mask, val);
+
+	if (ret)
+		dev_err(chg->dev, "failed to write register 0x%02x: %d\n",
+			reg, ret);
+	return ret;
+}
+
+/*
+ * Unlock the protected configuration registers, clear the charger watchdog
+ * and keep it disabled: with the watchdog enabled and not cleared every
+ * 80 s the MAX77843 stops charging, and this driver has no periodic host
+ * to clear it in suspend.
+ */
+static int max77843_chg_unlock(struct max77843_charger *chg)
+{
+	int ret;
+
+	ret = max77843_chg_update(chg, MAX77843_CHG_REG_CHG_CNFG_06,
+				  MAX77843_CNFG06_CHGPROT_MASK |
+				  MAX77843_CNFG06_WDTCLR_MASK,
+				  MAX77843_CNFG06_CHGPROT_MASK |
+				  MAX77843_CNFG06_WDTCLR);
+	if (ret)
+		return ret;
+
+	return max77843_chg_update(chg, MAX77843_CHG_REG_CHG_CNFG_00,
+				   MAX77843_CNFG00_WDTEN, 0);
+}
+
+static int max77843_chg_apply(struct max77843_charger *chg)
+{
+	struct power_supply_battery_info *bat = chg->bat;
+	int cv_uv = bat->constant_charge_voltage_max_uv;
+	int cc_ua = bat->constant_charge_current_max_ua;
+	int input_ua = MAX77843_CHG_DEFAULT_INPUT_UA;
+	unsigned int mode;
+	int ret;
+
+	mutex_lock(&chg->lock);
+
+	ret = max77843_chg_unlock(chg);
+	if (ret)
+		goto out;
+
+	/* Input limit first, so the source is never asked for too much */
+	ret = max77843_chg_update(chg, MAX77843_CHG_REG_CHG_CNFG_09,
+				  MAX77843_CHG_CHGIN_ILIM_MASK,
+				  max77843_chg_input_code(input_ua));
+	if (ret)
+		goto out;
+
+	ret = max77843_chg_update(chg, MAX77843_CHG_REG_CHG_CNFG_02,
+				  MAX77843_CHG_FAST_CHG_CURRENT_MASK,
+				  max77843_chg_cc_code(cc_ua));
+	if (ret)
+		goto out;
+
+	ret = max77843_chg_update(chg, MAX77843_CHG_REG_CHG_CNFG_04,
+				  MAX77843_CHG_CV_MASK,
+				  max77843_chg_cv_code(cv_uv));
+	if (ret)
+		goto out;
+
+	/* Charger and buck on; OTG and boost off */
+	mode = MAX77843_CNFG00_CHG | MAX77843_CNFG00_BUCK;
+	ret = max77843_chg_update(chg, MAX77843_CHG_REG_CHG_CNFG_00,
+				  MAX77843_CNFG00_CHG | MAX77843_CNFG00_OTG |
+				  MAX77843_CNFG00_BUCK | MAX77843_CNFG00_BOOST,
+				  mode);
+	if (ret)
+		goto out;
+
+	dev_dbg(chg->dev, "input %d uA, fast charge %d uA, float %d uV\n",
+		input_ua, cc_ua, cv_uv);
+out:
+	mutex_unlock(&chg->lock);
+	return ret;
+}
+
+/* Settings that do not change with the input or the temperature */
+static int max77843_chg_init_hw(struct max77843_charger *chg)
+{
+	struct power_supply_battery_info *bat = chg->bat;
+	int ret;
+
+	ret = max77843_chg_unlock(chg);
+	if (ret)
+		return ret;
+
+	if (bat->charge_term_current_ua > 0) {
+		ret = max77843_chg_update(chg, MAX77843_CHG_REG_CHG_CNFG_03,
+				MAX77843_CNFG03_TO_ITH_MASK |
+				MAX77843_CNFG03_TO_TIME_MASK,
+				max77843_chg_topoff_code(chg,
+					bat->charge_term_current_ua) |
+				FIELD_PREP(MAX77843_CNFG03_TO_TIME_MASK,
+					   MAX77843_CHG_TO_TIME_70MIN));
+		if (ret)
+			return ret;
+	}
+
+	if (bat->charge_restart_voltage_uv > 0) {
+		ret = max77843_chg_update(chg, MAX77843_CHG_REG_CHG_CNFG_01,
+				MAX77843_CNFG01_RSTRT_MASK,
+				FIELD_PREP(MAX77843_CNFG01_RSTRT_MASK,
+					max77843_chg_restart_code(
+					bat->constant_charge_voltage_max_uv,
+					bat->charge_restart_voltage_uv)));
+		if (ret)
+			return ret;
+	}
+
+	return max77843_chg_apply(chg);
+}
+
+static void max77843_chg_work(struct work_struct *work)
+{
+	struct max77843_charger *chg = container_of(work,
+					struct max77843_charger, work);
+
+	max77843_chg_apply(chg);
+	power_supply_changed(chg->psy);
+}
+
+static void max77843_chg_get_battery(struct max77843_charger *chg)
+{
+	struct power_supply_battery_info *bat;
+	int ret;
+
+	ret = power_supply_get_battery_info(chg->psy, &bat);
+	if (ret) {
+		dev_warn(chg->dev,
+			 "no monitored-battery (%d), leaving the charger as the boot loader set it\n",
+			 ret);
+		return;
+	}
+
+	if (bat->constant_charge_voltage_max_uv <= 0 ||
+	    bat->constant_charge_current_max_ua <= 0) {
+		dev_warn(chg->dev,
+			 "monitored-battery lacks the constant charge voltage and current, not charging\n");
+		return;
+	}
+
+	chg->bat = bat;
+}
+
 static enum power_supply_property max77843_charger_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_STATUS,
@@ -197,6 +445,8 @@ static irqreturn_t max77843_charger_irq(int irq, void *data)
 	struct max77843_charger *chg = data;
 
 	pm_wakeup_event(chg->dev, 2000);
+	if (chg->bat)
+		schedule_work(&chg->work);
 	power_supply_changed(chg->psy);
 
 	return IRQ_HANDLED;
@@ -265,6 +515,8 @@ static int max77843_charger_probe(struct platform_device *pdev)
 	struct max77693_dev *max77843 = dev_get_drvdata(pdev->dev.parent);
 	struct power_supply_config psy_cfg = {};
 	struct max77843_charger *chg;
+	unsigned int reg;
+	int ret;
 
 	if (!max77843 || !max77843->regmap_chg)
 		return dev_err_probe(&pdev->dev, -ENODEV,
@@ -276,7 +528,12 @@ static int max77843_charger_probe(struct platform_device *pdev)
 
 	chg->dev = &pdev->dev;
 	chg->regmap = max77843->regmap_chg;
+	chg->pmic_rev = 2;
+	mutex_init(&chg->lock);
 	platform_set_drvdata(pdev, chg);
+
+	if (!regmap_read(max77843->regmap, MAX77843_SYS_REG_PMICREV, &reg))
+		chg->pmic_rev = reg & MAX77843_PMICREV_MASK;
 
 	psy_cfg.drv_data = chg;
 	psy_cfg.of_node = pdev->dev.of_node;
@@ -286,6 +543,19 @@ static int max77843_charger_probe(struct platform_device *pdev)
 	if (IS_ERR(chg->psy))
 		return dev_err_probe(&pdev->dev, PTR_ERR(chg->psy),
 				     "failed to register power supply\n");
+
+	/* Cancelled before the power supply goes away */
+	ret = devm_work_autocancel(&pdev->dev, &chg->work, max77843_chg_work);
+	if (ret)
+		return ret;
+
+	max77843_chg_get_battery(chg);
+	if (chg->bat) {
+		ret = max77843_chg_init_hw(chg);
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret,
+					     "cannot configure the charger\n");
+	}
 
 	return max77843_chg_init_irq(chg, max77843->irq, max77843->regmap);
 }

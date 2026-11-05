@@ -557,8 +557,9 @@ config CHARGER_MAX77843
 	depends on MFD_MAX77843
 	help
 	  Say Y to enable support for the battery charger of the Maxim
-	  MAX77843 PMIC. The driver reports input presence, charge state
-	  and the programmed current limits.
+	  MAX77843 PMIC. It reports the charger state and charges the
+	  battery described by the monitored-battery property with that
+	  battery's limits.
 
 config FUEL_GAUGE_MAX77843
 	tristate "Maxim MAX77843 fuel gauge driver"
