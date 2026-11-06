@@ -267,3 +267,9 @@ CONFIG_KSU=y
 # KernelSU finds sys_call_table, security_hook_heads and other data
 # symbols through kallsyms, as on GKI.
 CONFIG_KALLSYMS_ALL=y
+
+# Bus DVFS: exynos-bus scales the display bus and its BUCK5 rail from
+# the DECON's interconnect bandwidth request.
+CONFIG_ARM_EXYNOS_BUS_DEVFREQ=y
+CONFIG_INTERCONNECT_SAMSUNG=y
+CONFIG_INTERCONNECT_EXYNOS=y
