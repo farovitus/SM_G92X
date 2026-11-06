@@ -407,6 +407,19 @@ static u64 notrace sun50i_a64_read_cntvct_el0(void)
 }
 #endif
 
+#if defined(CONFIG_ARM_ARCH_TIMER_OOL_WORKAROUND) && defined(CONFIG_ARM64)
+/*
+ * Some firmware (Samsung Exynos 7420 S-Boot) enters the kernel at EL1 on
+ * every CPU without programming CNTVOFF_EL2, and EL1 cannot program it.
+ * Each CPU's virtual counter then carries its own offset. Read the
+ * physical counter, which is the SoC-global system count, instead.
+ */
+static u64 notrace cntvoff_unset_read_cntvct_el0(void)
+{
+	return arch_timer_read_cntpct_el0();
+}
+#endif
+
 #ifdef CONFIG_ARM_ARCH_TIMER_OOL_WORKAROUND
 DEFINE_PER_CPU(const struct arch_timer_erratum_workaround *, timer_unstable_counter_workaround);
 EXPORT_SYMBOL_GPL(timer_unstable_counter_workaround);
@@ -513,6 +526,25 @@ static const struct arch_timer_erratum_workaround ool_workarounds[] = {
 		.id = (void *)ARM64_WORKAROUND_1418040,
 		.desc = "ARM erratum 1418040",
 		.disable_compat_vdso = true,
+	},
+#endif
+#ifdef CONFIG_ARM64
+	/*
+	 * CNTVOFF_EL2 not configured by firmware. Only the counter read is
+	 * redirected; the timer itself keeps comparing against the CPU's own
+	 * virtual count, so the default set_next_event paths stay correct.
+	 */
+	{
+		.match_type = ate_match_dt,
+		.id = "arm,cpu-registers-not-fw-configured",
+		.desc = "firmware without CNTVOFF_EL2 setup",
+		.read_cntvct_el0 = cntvoff_unset_read_cntvct_el0,
+	},
+	{
+		.match_type = ate_match_dt,
+		.id = "use-physical-timer",
+		.desc = "firmware without CNTVOFF_EL2 setup (use-physical-timer)",
+		.read_cntvct_el0 = cntvoff_unset_read_cntvct_el0,
 	},
 #endif
 };
