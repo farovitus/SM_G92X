@@ -23,8 +23,10 @@
 #define SSP_HUB_MAX_CHANNELS	8
 /*
  * Largest scan record: the IIO core pads a record to its largest element,
- * so the 16-byte quaternion makes a 32-byte record, and
- * iio_push_to_buffers_with_timestamp() puts the time in its last 8 bytes.
+ * so the 16-byte quaternion makes a 32-byte record with the timestamp at
+ * byte 16, the next 8-byte boundary, where readers of the scan_elements
+ * ABI look for it. iio_push_to_buffers_with_timestamp() would put it in
+ * the last 8 bytes (24) instead, so the driver places it itself.
  */
 #define SSP_HUB_SCAN_SIZE	64
 
@@ -44,6 +46,7 @@ struct ssp_hub_sensor {
 	const struct ssp_hub_sensor_desc *desc;
 	u8 dst[SSP_HUB_MAX_CHANNELS];
 	u8 len[SSP_HUB_MAX_CHANNELS];
+	u8 ts_off;			/* timestamp offset in the record */
 };
 
 #define SSP_HUB_CHAN(_type, _mod, _chan, _idx, _sign, _bits, _repeat, _info) \
@@ -205,8 +208,10 @@ static int ssp_hub_process_data(struct iio_dev *indio_dev, void *buf,
 		memcpy(s->spd.buffer + s->dst[i], (u8 *)buf + desc->src[i],
 		       s->len[i]);
 
-	return iio_push_to_buffers_with_timestamp(indio_dev, s->spd.buffer,
-						  timestamp);
+	if (indio_dev->scan_timestamp)
+		memcpy(s->spd.buffer + s->ts_off, &timestamp, sizeof(timestamp));
+
+	return iio_push_to_buffers(indio_dev, s->spd.buffer);
 }
 
 static int ssp_hub_read_raw(struct iio_dev *indio_dev,
@@ -312,7 +317,8 @@ static int ssp_hub_sensor_probe(struct platform_device *pdev)
 	}
 
 	/* data, the s64 timestamp, padded as iio_compute_scan_bytes() does */
-	off = ALIGN(ALIGN(off, sizeof(s64)) + sizeof(s64), largest);
+	s->ts_off = ALIGN(off, sizeof(s64));
+	off = ALIGN(s->ts_off + sizeof(s64), largest);
 	if (WARN_ON(off > SSP_HUB_SCAN_SIZE))
 		return -EINVAL;
 
