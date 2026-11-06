@@ -104,6 +104,7 @@ struct stmfts_data {
 	bool led_status;
 	bool hover_enabled;
 	bool running;
+	bool powered;
 };
 
 static int stmfts_brightness_set(struct led_classdev *led_cdev,
@@ -454,8 +455,10 @@ static ssize_t stmfts_sysfs_read_status(struct device *dev,
 
 	err = i2c_smbus_read_i2c_block_data(sdata->client, STMFTS_READ_STATUS,
 					    sizeof(status), status);
-	if (err)
+	if (err < 0)
 		return err;
+	if (err != sizeof(status))
+		return -EIO;
 
 	return sprintf(buf, "%#02x\n", status[0]);
 }
@@ -541,9 +544,11 @@ static int stmfts_power_on(struct stmfts_data *sdata)
 	err = i2c_smbus_read_i2c_block_data(sdata->client, STMFTS_READ_INFO,
 					    sizeof(reg), reg);
 	if (err < 0)
-		return err;
-	if (err != sizeof(reg))
-		return -EIO;
+		goto err_regulators;
+	if (err != sizeof(reg)) {
+		err = -EIO;
+		goto err_regulators;
+	}
 
 	sdata->chip_id = be16_to_cpup((__be16 *)&reg[6]);
 	sdata->chip_ver = reg[0];
@@ -557,11 +562,11 @@ static int stmfts_power_on(struct stmfts_data *sdata)
 
 	err = stmfts_command(sdata, STMFTS_SYSTEM_RESET);
 	if (err)
-		return err;
+		goto err_irq;
 
 	err = stmfts_command(sdata, STMFTS_SLEEP_OUT);
 	if (err)
-		return err;
+		goto err_irq;
 
 	/* optional tuning */
 	err = stmfts_command(sdata, STMFTS_MS_CX_TUNING);
@@ -577,7 +582,7 @@ static int stmfts_power_on(struct stmfts_data *sdata)
 
 	err = stmfts_command(sdata, STMFTS_FULL_FORCE_CALIBRATION);
 	if (err)
-		return err;
+		goto err_irq;
 
 	/*
 	 * At this point no one is using the touchscreen
@@ -585,12 +590,27 @@ static int stmfts_power_on(struct stmfts_data *sdata)
 	 */
 	(void) i2c_smbus_write_byte(sdata->client, STMFTS_SLEEP_IN);
 
+	sdata->powered = true;
+
 	return 0;
+
+err_irq:
+	disable_irq(sdata->client->irq);
+err_regulators:
+	regulator_bulk_disable(ARRAY_SIZE(sdata->regulators),
+			       sdata->regulators);
+	return err;
 }
 
 static void stmfts_power_off(void *data)
 {
 	struct stmfts_data *sdata = data;
+
+	/* Nothing to undo after a failed power-on or a second power-off. */
+	if (!sdata->powered)
+		return;
+
+	sdata->powered = false;
 
 	disable_irq(sdata->client->irq);
 	regulator_bulk_disable(ARRAY_SIZE(sdata->regulators),
