@@ -474,6 +474,38 @@ static int modem_resume(struct device *dev)
 
 static DEFINE_SIMPLE_DEV_PM_OPS(modem_pm_ops, modem_suspend, modem_resume);
 
+/*
+ * cbd polls <device>/cp_status/value while the CP boot loader starts. The
+ * stock kernel made that path with gpio_export_link(); offer the same
+ * read-only file as an attribute group instead of the GPIO sysfs ABI.
+ */
+static ssize_t value_show(struct device *dev, struct device_attribute *attr,
+			  char *buf)
+{
+	struct modem_ctl *mc = dev_get_drvdata(dev);
+
+	if (!mc)
+		return -ENODEV;
+	return sysfs_emit(buf, "%d\n",
+			  gpiod_get_value_cansleep(mc->gpio_cp_status));
+}
+static DEVICE_ATTR_RO(value);
+
+static struct attribute *cp_status_attrs[] = {
+	&dev_attr_value.attr,
+	NULL
+};
+
+static const struct attribute_group cp_status_group = {
+	.name = "cp_status",
+	.attrs = cp_status_attrs,
+};
+
+static const struct attribute_group *modem_groups[] = {
+	&cp_status_group,
+	NULL
+};
+
 static const struct of_device_id modem_of_match[] = {
 	{ .compatible = "samsung,ss333-modem" },
 	{ }
@@ -487,6 +519,7 @@ static struct platform_driver modem_driver = {
 		.name = "mif_sipc5",
 		.pm = pm_sleep_ptr(&modem_pm_ops),
 		.of_match_table = modem_of_match,
+		.dev_groups = modem_groups,
 		/* io devices, net devices and IRQs cannot be torn down */
 		.suppress_bind_attrs = true,
 	},
