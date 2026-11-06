@@ -48,7 +48,16 @@
 #define CLK_SCLK_I2S1			14
 #define CLK_ACLK_PERIC0_66		15
 #define CLK_ACLK_PERIC1_66		16
-#define TOP0_NR_CLK			17
+#define CLK_MOUT_ACLK_DISP_400		17
+#define CLK_DOUT_ACLK_DISP_400		18
+#define CLK_ACLK_DISP_400		19
+#define CLK_MOUT_SCLK_DECON_INT_ECLK	20
+#define CLK_DOUT_SCLK_DECON_INT_ECLK	21
+#define CLK_SCLK_DECON_INT_ECLK		22
+#define CLK_MOUT_SCLK_DECON_VCLK	23
+#define CLK_DOUT_SCLK_DECON_VCLK	24
+#define CLK_SCLK_DECON_VCLK		25
+#define TOP0_NR_CLK			26
 
 /* TOP1 */
 #define DOUT_ACLK_FSYS1_200		1
@@ -117,7 +126,8 @@
 #define SCLK_I2S1			25
 #define SCLK_PCM1			26
 #define SCLK_SPDIF			27
-#define PERIC1_NR_CLK			28
+#define MOUT_ACLK_PERIC1_66_USER	28
+#define PERIC1_NR_CLK			29
 
 /* PERIS */
 #define PCLK_CHIPID			1
@@ -125,7 +135,8 @@
 #define PCLK_WDT			3
 #define PCLK_TMU			4
 #define SCLK_TMU			5
-#define PERIS_NR_CLK			6
+#define PCLK_MCT			6
+#define PERIS_NR_CLK			7
 
 /* FSYS0 */
 #define ACLK_MMC2			1
@@ -200,5 +211,36 @@
 #define PCLK_I2S			3
 #define PCLK_PCM			4
 #define ACLK_ADMA			5
-#define AUD_NR_CLK			6
+#define PCLK_UART			6
+#define SCLK_UART			7
+#define AUD_NR_CLK			8
+
+/* G3D */
+#define CLK_FOUT_G3D_PLL		1
+#define CLK_MOUT_ACLK_G3D_400		2
+#define CLK_DIV_ACLK_G3D		3
+#define CLK_DIV_PCLK_G3D		4
+#define CLK_ACLK_G3D			5
+#define CLK_PCLK_SYSREG_G3D		6
+#define CLK_PCLK_PMU_G3D		7
+#define G3D_NR_CLK			8
+
+/* DISP */
+#define CLK_FOUT_DISP_PLL		1
+#define CLK_MOUT_SUB_SCLK_DECON_INT_ECLK	2
+#define CLK_MOUT_SUB_SCLK_DECON_INT_VCLK	3
+#define CLK_DOUT_PCLK_DISP		4
+#define CLK_DOUT_SUB_SCLK_DECON_INT_ECLK	5
+#define CLK_DOUT_SUB_SCLK_DECON_INT_VCLK	6
+#define CLK_ACLK_DECON0			7
+#define CLK_PCLK_DECON0			8
+#define CLK_SCLK_DECON0_ECLK		9
+#define CLK_SCLK_DECON0_VCLK		10
+#define CLK_PCLK_DSIM0			11
+#define CLK_ACLK_DISP_RO_SYSMMU		12
+#define CLK_ACLK_DISP_RW_SYSMMU		13
+#define CLK_PCLK_DISP_RO_SYSMMU		14
+#define CLK_PCLK_DISP_RW_SYSMMU		15
+#define DISP_NR_CLK			16
+
 #endif /* _DT_BINDINGS_CLOCK_EXYNOS7_H */
