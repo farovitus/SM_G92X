@@ -94,6 +94,12 @@ static struct __exynos_ppmu_events {
 	PPMU_EVENT(d1-general),
 	PPMU_EVENT(d1-rt),
 
+	/* For Exynos7420 SoCs, which have four DREX channels */
+	PPMU_EVENT(d2-cpu),
+	PPMU_EVENT(d2-general),
+	PPMU_EVENT(d3-cpu),
+	PPMU_EVENT(d3-general),
+
 	/* For Exynos5422 SoC, deprecated (backwards compatible) */
 	PPMU_EVENT(dmc0_0),
 	PPMU_EVENT(dmc0_1),
