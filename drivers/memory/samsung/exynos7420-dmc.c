@@ -157,6 +157,7 @@
 
 /* memlat: sample period, clusters, ARMv8 common events it counts */
 #define MEMLAT_PERIOD_MS	10
+#define MEMLAT_BOOT_HOLD_MS	40000
 #define MEMLAT_CLUSTERS		2
 #define EV_INST_RETIRED		0x08
 #define EV_CPU_CYCLES		0x11
@@ -1289,10 +1290,18 @@ static int dmc_memlat_init(struct exynos7420_dmc *dmc)
 	INIT_DELAYED_WORK(&dmc->ml_work, dmc_memlat_work);
 	INIT_DEFERRABLE_WORK(&dmc->ml_idle_work, dmc_memlat_idle_work);
 
-	/* the top level until the counters run (see dmc_devfreq_init()) */
+	/*
+	 * Boot hold: the top level for MEMLAT_BOOT_HOLD_MS from probe, as
+	 * stock's boot_mif_qos did (40 s). It covers init, the first
+	 * frames and the modem boot over LLI (cbd at about 15-31 s), whose
+	 * DRAM traffic no PPMU port sampled here sees. A fixed time, not a
+	 * userspace signal, so a ROM that never sends one cannot leave DRAM
+	 * at the top.
+	 */
 	dmc->cpu_khz = levels[0].khz;
 	debugfs_create_file("memlat", 0400, dmc->debugfs, dmc, &memlat_fops);
-	queue_delayed_work(dmc->ml_wq, &dmc->ml_work, 0);
+	queue_delayed_work(dmc->ml_wq, &dmc->ml_work,
+			   msecs_to_jiffies(MEMLAT_BOOT_HOLD_MS));
 	return 0;
 }
 
@@ -1392,11 +1401,11 @@ static int dmc_devfreq_init(struct exynos7420_dmc *dmc)
 		dmc->saturation = 100;
 
 	/*
-	 * Hold the top level until the interconnect votes are in: with no
-	 * get_bw() the core keeps this node at INT_MAX until every provider
-	 * reaches sync_state, as stock started MIF at its maximum with the
-	 * cpufreq floors in place. A lower level while the CPUs run fast
-	 * hangs the SoC.
+	 * Start on the top level. With no get_bw() the icc core keeps this
+	 * node at INT_MAX until sync_state (the CPU OPP consumers probed),
+	 * and the memlat vote holds the top level for its boot hold
+	 * (dmc_memlat_init()). The deep levels under fast CPUs hung the boot
+	 * (test-82..84, test-182/183/185).
 	 */
 	dmc->floor_khz = levels[0].khz;
 	dmc->icc_khz = levels[0].khz;
