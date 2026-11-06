@@ -27,23 +27,30 @@
  * Demand: a devfreq device with simple_ondemand on the DREX PPMUs (CPU
  * and general port of each channel; the busiest channel counts), plus
  * minimum rates from interconnect votes. The driver is an interconnect
- * provider with one node: CPU OPPs carry the stock cpufreq->MIF floors as
- * opp-peak-kBps, and the display bus links to it. The GPU floor follows
- * the GPU devfreq's transition notifier and the stock G3D table
- * (samsung,gpu-mif-floors), not an interconnect path: a devfreq target()
- * runs under dev_pm_qos_mtx when a PM QoS limit (thermal) moves it, and
- * the exynos-bus interconnect provider takes that mutex under icc_lock,
- * so a GPU OPP with bandwidth deadlocks against the display's votes. For
- * the same reason the floor is applied inside this driver, never through
- * dev_pm_qos. A vote converts at 16
- * bytes per DRAM clock (four 16-bit LPDDR4 channels, double data rate).
- * The devfreq userspace governor switches by hand; debugfs
- * exynos7420-dmc/state shows the registers.
+ * provider with one node, which the display bus links to. The CPU floor
+ * is memlat: every 10 ms the per-CPU PMU counters give each busy core's
+ * clock (busy cycles per time) and its instructions per bus access; a
+ * core under the ceiling waits on or streams to DRAM and gets the stock
+ * cpufreq->MIF floor for its clock (samsung,mif-floors in the memlat
+ * child nodes); a compute-bound or idle core gets none. The vote runs
+ * from a work item, not in cpufreq. Under it, the CPU OPPs still vote
+ * DRAM through the interconnect from their clock (the board DT). The GPU
+ * floor follows the GPU devfreq's transition notifier and the stock G3D
+ * table (samsung,gpu-mif-floors), not an interconnect path: a devfreq
+ * target() runs under dev_pm_qos_mtx when a PM QoS limit (thermal) moves
+ * it, and the exynos-bus interconnect provider takes that mutex under
+ * icc_lock, so a GPU OPP with bandwidth deadlocks against the display's
+ * votes. For the same reason the floor is applied inside this driver,
+ * never through dev_pm_qos. A vote converts at 16 bytes per DRAM clock
+ * (four 16-bit LPDDR4 channels, double data rate). The devfreq userspace
+ * governor switches by hand; debugfs exynos7420-dmc/state shows the
+ * registers, exynos7420-dmc/memlat the CPU samples.
  */
 
 #include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
+#include <linux/cpumask.h>
 #include <linux/debugfs.h>
 #include <linux/devfreq.h>
 #include <linux/devfreq-event.h>
@@ -52,13 +59,17 @@
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/ktime.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/perf_event.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
 #include <linux/regulator/consumer.h>
+#include <linux/sched.h>
 #include <linux/seq_file.h>
+#include <linux/smp.h>
 #include <linux/workqueue.h>
 
 #define NR_CH			4
@@ -140,6 +151,29 @@
 #define DMC_ICC_ID		7420
 #define FLOOR_HOLD_MS		50
 #define MAX_EDEV		(2 * NR_CH)
+
+/* memlat: sample period, clusters, ARMv8 common events it counts */
+#define MEMLAT_PERIOD_MS	10
+#define MEMLAT_CLUSTERS		2
+#define EV_INST_RETIRED		0x08
+#define EV_CPU_CYCLES		0x11
+#define EV_BUS_ACCESS		0x19
+enum { ML_INST, ML_CYC, ML_BUS, ML_NR_EV };
+
+struct memlat_cpu {
+	struct perf_event *ev[ML_NR_EV];
+	u64 now[ML_NR_EV], last[ML_NR_EV];
+	u64 last_ns;
+	int cluster;			/* -1: not sampled */
+	u32 khz;			/* busy cycles per time, last span */
+	u32 ipb;			/* instructions per bus access */
+	u32 vote;			/* MIF kHz */
+};
+
+struct memlat_cluster {
+	u32 floor[NR_LEVELS][2];	/* CPU kHz, MIF kHz; ascending */
+	int nr_floor;
+};
 
 struct drex_timing {
 	u32 rfcpb, row, data, power, rdfetch, etc;
@@ -303,6 +337,7 @@ struct exynos7420_dmc {
 	struct icc_node *icc_node;
 	u32 icc_khz;			/* floor from interconnect votes */
 	u32 gpu_khz;			/* floor from the GPU clock */
+	u32 cpu_khz;			/* floor from memlat */
 	u32 floor_khz;			/* floor dmc_target() applies */
 	struct mutex floor_lock;
 	struct delayed_work floor_work;	/* applies a lower floor late */
@@ -313,12 +348,35 @@ struct exynos7420_dmc {
 	int gpu_tries;
 	u32 gpu_floor[NR_LEVELS][2];	/* GPU kHz, MIF kHz; ascending */
 	int nr_gpu_floor;
+
+	struct memlat_cluster ml_cluster[MEMLAT_CLUSTERS];
+	int nr_ml_cluster;
+	struct memlat_cpu *ml_cpu;	/* per possible CPU */
+	struct workqueue_struct *ml_wq;
+	struct delayed_work ml_work;	/* while any CPU is busy */
+	struct delayed_work ml_idle_work; /* deferrable, when all idle */
+	int ml_tries;
+	bool ml_running;
+	bool ml_stop;
 };
 
 /* /sys/module/exynos7420_dmc/parameters/trace */
 static bool trace;
 module_param(trace, bool, 0644);
 MODULE_PARM_DESC(trace, "log every level switch");
+
+/*
+ * /sys/module/exynos7420_dmc/parameters/memlat_ipb: a core below this
+ * many instructions per bus access waits on or streams to DRAM and
+ * votes its floor; 0 votes every busy core by its clock alone. Bus
+ * accesses count L2 read misses, streaming writes and write-backs; L2
+ * refills alone miss streaming stores (a memset read 2000-4000
+ * instructions per refill). Measured on SM-G920F: copies 8-15, ordinary
+ * system work 20-45, a compute loop over 10000.
+ */
+static unsigned int memlat_ipb = 100;
+module_param(memlat_ipb, uint, 0644);
+MODULE_PARM_DESC(memlat_ipb, "memory-bound below this many instructions per bus access (0: all)");
 
 static int wait_clear(void __iomem *reg, u32 mask, const char *what,
 		      struct device *dev)
@@ -702,9 +760,10 @@ static int state_show(struct seq_file *s, void *unused)
 		   clk_get_rate(dmc->dout_aclk_ccore_532),
 		   clk_get_rate(dmc->dout_aclk_ccore_133),
 		   dmc->cur_uv, regulator_get_voltage(dmc->vdd));
-	seq_printf(s, "load ppm %u %u %u %u, icc floor %u kHz, gpu floor %u kHz\n",
+	seq_printf(s, "load ppm %u %u %u %u, icc floor %u kHz, gpu floor %u kHz, cpu floor %u kHz\n",
 		   dmc->last_load[0], dmc->last_load[1], dmc->last_load[2],
-		   dmc->last_load[3], dmc->icc_khz, dmc->gpu_khz);
+		   dmc->last_load[3], dmc->icc_khz, dmc->gpu_khz,
+		   dmc->cpu_khz);
 	for (ch = 0; ch < NR_CH; ch++) {
 		void __iomem *d = dmc->drex[ch];
 
@@ -851,11 +910,15 @@ static int dmc_apply_floor(struct exynos7420_dmc *dmc, u32 khz)
 	return ret;
 }
 
+static u32 dmc_want(struct exynos7420_dmc *dmc)
+{
+	return max3(dmc->icc_khz, dmc->gpu_khz, dmc->cpu_khz);
+}
+
 /*
- * schedutil moves the CPUs often, and each move changes their vote; a
- * DRAM switch pauses traffic for about a millisecond. Raise the floor at
- * once (the OPP core votes before a CPU speeds up) but lower it only once
- * the lower vote has held for FLOOR_HOLD_MS.
+ * Votes move often and a DRAM switch pauses traffic for about a
+ * millisecond. Raise the floor at once but lower it only once the lower
+ * vote has held for FLOOR_HOLD_MS.
  */
 static int dmc_update_floor(struct exynos7420_dmc *dmc)
 {
@@ -863,7 +926,7 @@ static int dmc_update_floor(struct exynos7420_dmc *dmc)
 	int ret = 0;
 
 	mutex_lock(&dmc->floor_lock);
-	want = max(dmc->icc_khz, dmc->gpu_khz);
+	want = dmc_want(dmc);
 	if (want >= dmc->floor_khz) {
 		cancel_delayed_work(&dmc->floor_work);
 		if (want != dmc->floor_khz)
@@ -883,7 +946,7 @@ static void dmc_floor_work(struct work_struct *work)
 						  floor_work);
 
 	mutex_lock(&dmc->floor_lock);
-	dmc_apply_floor(dmc, max(dmc->icc_khz, dmc->gpu_khz));
+	dmc_apply_floor(dmc, dmc_want(dmc));
 	mutex_unlock(&dmc->floor_lock);
 }
 
@@ -972,6 +1035,279 @@ static void dmc_gpu_exit(struct exynos7420_dmc *dmc)
 		devfreq_unregister_notifier(dmc->gpu_df, &dmc->gpu_nb,
 					    DEVFREQ_TRANSITION_NOTIFIER);
 	dmc->gpu_df = NULL;
+}
+
+static u32 memlat_floor(struct memlat_cluster *cl, u32 khz)
+{
+	u32 mif = 0;
+	int i;
+
+	for (i = 0; i < cl->nr_floor; i++)
+		if (khz >= cl->floor[i][0])
+			mif = cl->floor[i][1];
+	return mif;
+}
+
+/* runs on the sampled CPU with interrupts off */
+static void memlat_read(void *info)
+{
+	struct memlat_cpu *c = info;
+	int i;
+
+	for (i = 0; i < ML_NR_EV; i++)
+		if (perf_event_read_local(c->ev[i], &c->now[i], NULL, NULL))
+			c->now[i] = c->last[i];
+}
+
+static void memlat_release(struct exynos7420_dmc *dmc)
+{
+	int cpu, i;
+
+	for_each_possible_cpu(cpu) {
+		struct memlat_cpu *c = &dmc->ml_cpu[cpu];
+
+		for (i = 0; i < ML_NR_EV; i++) {
+			if (!IS_ERR_OR_NULL(c->ev[i]))
+				perf_event_release_kernel(c->ev[i]);
+			c->ev[i] = NULL;
+		}
+	}
+}
+
+/*
+ * One counter set per CPU of a memlat cluster. The ARMv8 PMU driver
+ * probes after this one; until the counters exist the CPU floor stays at
+ * the top level, as it did from the static cpufreq floors.
+ */
+static int memlat_create(struct exynos7420_dmc *dmc)
+{
+	static const u64 config[ML_NR_EV] = {
+		[ML_INST] = EV_INST_RETIRED,
+		[ML_CYC] = EV_CPU_CYCLES,
+		[ML_BUS] = EV_BUS_ACCESS,
+	};
+	struct perf_event_attr attr = {
+		.type = PERF_TYPE_RAW,
+		.size = sizeof(attr),
+		.pinned = 1,
+	};
+	int cpu, i;
+
+	for_each_possible_cpu(cpu) {
+		struct memlat_cpu *c = &dmc->ml_cpu[cpu];
+
+		if (c->cluster < 0)
+			continue;
+		if (!cpu_online(cpu)) {
+			dev_warn(dmc->dev, "memlat: cpu%d offline, not sampled\n",
+				 cpu);
+			c->cluster = -1;
+			continue;
+		}
+		for (i = 0; i < ML_NR_EV; i++) {
+			attr.config = config[i];
+			c->ev[i] = perf_event_create_kernel_counter(&attr, cpu,
+								    NULL, NULL,
+								    NULL);
+			if (IS_ERR(c->ev[i])) {
+				int ret = PTR_ERR(c->ev[i]);
+
+				c->ev[i] = NULL;
+				memlat_release(dmc);
+				return ret;
+			}
+		}
+		c->last_ns = ktime_get_ns();
+	}
+	return 0;
+}
+
+/*
+ * Every MEMLAT_PERIOD_MS: for each busy CPU, its clock over the span
+ * since its last read (cycles do not count in WFI, so an idle share
+ * lowers it) and its instructions per bus access. Idle CPUs are skipped:
+ * no IPI wakes them, and their counts carry into the next read. While
+ * every CPU is idle and nothing votes, the work goes deferrable and
+ * stops waking the system.
+ */
+static void dmc_memlat_sample(struct exynos7420_dmc *dmc)
+{
+	u32 want = 0, ceil = READ_ONCE(memlat_ipb);
+	bool busy = false;
+	int cpu, self, i;
+
+	if (READ_ONCE(dmc->ml_stop))
+		return;
+	if (!dmc->ml_running) {
+		int ret = memlat_create(dmc);
+
+		if (ret) {
+			if (++dmc->ml_tries < 30) {
+				queue_delayed_work(dmc->ml_wq, &dmc->ml_work, HZ);
+			} else {
+				dev_warn(dmc->dev, "memlat: no PMU counters (%d), CPU floor stays at %u kHz\n",
+					 ret, dmc->cpu_khz);
+			}
+			return;
+		}
+		dmc->ml_running = true;
+		dev_info(dmc->dev, "memlat: sampling every %d ms, IPB ceiling %u\n",
+			 MEMLAT_PERIOD_MS, ceil);
+	}
+
+	self = raw_smp_processor_id();
+	for_each_online_cpu(cpu) {
+		struct memlat_cpu *c = &dmc->ml_cpu[cpu];
+		u64 now, d[ML_NR_EV];
+
+		if (c->cluster < 0)
+			continue;
+		if (idle_cpu(cpu)) {
+			c->vote = 0;
+			continue;
+		}
+		if (cpu != self)
+			busy = true;
+		if (smp_call_function_single(cpu, memlat_read, c, 1))
+			continue;
+		now = ktime_get_ns();
+		for (i = 0; i < ML_NR_EV; i++) {
+			d[i] = c->now[i] - c->last[i];
+			c->last[i] = c->now[i];
+		}
+		if (now <= c->last_ns)
+			continue;
+		c->khz = min_t(u64, mul_u64_u64_div_u64(d[ML_CYC], USEC_PER_SEC,
+							now - c->last_ns),
+			       U32_MAX);
+		c->last_ns = now;
+		c->ipb = d[ML_BUS] ? min_t(u64, div64_u64(d[ML_INST],
+							  d[ML_BUS]),
+					   U32_MAX) : U32_MAX;
+		c->vote = (!ceil || c->ipb < ceil) ?
+			  memlat_floor(&dmc->ml_cluster[c->cluster], c->khz) : 0;
+		want = max(want, c->vote);
+	}
+
+	if (want != dmc->cpu_khz) {
+		dmc->cpu_khz = want;
+		dmc_update_floor(dmc);
+	}
+	if (busy || want)
+		queue_delayed_work(dmc->ml_wq, &dmc->ml_work,
+				   msecs_to_jiffies(MEMLAT_PERIOD_MS));
+	else
+		queue_delayed_work(dmc->ml_wq, &dmc->ml_idle_work,
+				   msecs_to_jiffies(MEMLAT_PERIOD_MS));
+}
+
+static void dmc_memlat_work(struct work_struct *work)
+{
+	dmc_memlat_sample(container_of(to_delayed_work(work),
+				       struct exynos7420_dmc, ml_work));
+}
+
+static void dmc_memlat_idle_work(struct work_struct *work)
+{
+	dmc_memlat_sample(container_of(to_delayed_work(work),
+				       struct exynos7420_dmc, ml_idle_work));
+}
+
+static int memlat_show(struct seq_file *s, void *unused)
+{
+	struct exynos7420_dmc *dmc = s->private;
+	int cpu;
+
+	seq_printf(s, "running %d ipb ceiling %u cpu floor %u kHz\n",
+		   dmc->ml_running, READ_ONCE(memlat_ipb), dmc->cpu_khz);
+	for_each_possible_cpu(cpu) {
+		struct memlat_cpu *c = &dmc->ml_cpu[cpu];
+
+		if (c->cluster < 0)
+			continue;
+		seq_printf(s, "cpu%d cluster %d khz %u ipb %u vote %u\n",
+			   cpu, c->cluster, c->khz, c->ipb, c->vote);
+	}
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(memlat);
+
+/*
+ * memlat child nodes: cpus = <phandles>, samsung,mif-floors = <CPU kHz,
+ * MIF kHz> pairs, ascending. Without them the CPUs vote nothing.
+ */
+static int dmc_memlat_init(struct exynos7420_dmc *dmc)
+{
+	struct device *dev = dmc->dev;
+	struct device_node *child;
+	int cpu;
+
+	dmc->ml_cpu = devm_kcalloc(dev, nr_cpu_ids, sizeof(*dmc->ml_cpu),
+				   GFP_KERNEL);
+	if (!dmc->ml_cpu)
+		return -ENOMEM;
+	for_each_possible_cpu(cpu)
+		dmc->ml_cpu[cpu].cluster = -1;
+
+	for_each_available_child_of_node(dev->of_node, child) {
+		struct memlat_cluster *cl = &dmc->ml_cluster[dmc->nr_ml_cluster];
+		struct of_phandle_iterator it;
+		int n, ret;
+
+		if (!of_node_name_prefix(child, "memlat"))
+			continue;
+		if (dmc->nr_ml_cluster == MEMLAT_CLUSTERS) {
+			of_node_put(child);
+			return dev_err_probe(dev, -EINVAL, "memlat: too many clusters\n");
+		}
+		n = of_property_count_u32_elems(child, "samsung,mif-floors");
+		if (n <= 0 || n % 2 || n / 2 > NR_LEVELS) {
+			of_node_put(child);
+			return dev_err_probe(dev, -EINVAL, "memlat: bad %pOF\n", child);
+		}
+		of_property_read_u32_array(child, "samsung,mif-floors",
+					   &cl->floor[0][0], n);
+		cl->nr_floor = n / 2;
+
+		of_for_each_phandle(&it, ret, child, "cpus", NULL, 0) {
+			cpu = of_cpu_node_to_id(it.node);
+			if (cpu >= 0)
+				dmc->ml_cpu[cpu].cluster = dmc->nr_ml_cluster;
+		}
+		dmc->nr_ml_cluster++;
+	}
+	if (!dmc->nr_ml_cluster)
+		return 0;
+
+	dmc->ml_wq = alloc_workqueue("dmc-memlat",
+				     WQ_HIGHPRI | WQ_UNBOUND | WQ_FREEZABLE, 1);
+	if (!dmc->ml_wq)
+		return -ENOMEM;
+	INIT_DELAYED_WORK(&dmc->ml_work, dmc_memlat_work);
+	INIT_DEFERRABLE_WORK(&dmc->ml_idle_work, dmc_memlat_idle_work);
+
+	/* the top level until the counters run (see dmc_devfreq_init()) */
+	dmc->cpu_khz = levels[0].khz;
+	debugfs_create_file("memlat", 0400, dmc->debugfs, dmc, &memlat_fops);
+	queue_delayed_work(dmc->ml_wq, &dmc->ml_work, 0);
+	return 0;
+}
+
+static void dmc_memlat_exit(struct exynos7420_dmc *dmc)
+{
+	if (!dmc->ml_wq)
+		return;
+	/* the work requeues itself: stop it, then cancel both */
+	WRITE_ONCE(dmc->ml_stop, true);
+	do {
+		cancel_delayed_work_sync(&dmc->ml_work);
+		cancel_delayed_work_sync(&dmc->ml_idle_work);
+	} while (delayed_work_pending(&dmc->ml_work) ||
+		 delayed_work_pending(&dmc->ml_idle_work));
+	destroy_workqueue(dmc->ml_wq);
+	dmc->ml_wq = NULL;
+	memlat_release(dmc);
+	dmc->ml_running = false;
 }
 
 static int dmc_icc_set(struct icc_node *src, struct icc_node *dst)
@@ -1203,8 +1539,14 @@ static int exynos7420_dmc_probe(struct platform_device *pdev)
 	ret = dmc_icc_init(dmc);
 	if (ret)
 		goto err_floor;
-	if (dmc->df)
+	if (dmc->df) {
 		dmc_gpu_init(dmc);
+		ret = dmc_memlat_init(dmc);
+		if (ret) {
+			dev_warn(dev, "memlat: %d, CPU floor fixed at LV0\n", ret);
+			dmc->cpu_khz = levels[0].khz;
+		}
+	}
 
 	dev_info(dev, "LV%d, MIF PLL %lu Hz on %s, vdd_mif %d uV, switching %s\n",
 		 dmc->cur, pll_rate,
@@ -1224,6 +1566,7 @@ static void exynos7420_dmc_remove(struct platform_device *pdev)
 {
 	struct exynos7420_dmc *dmc = platform_get_drvdata(pdev);
 
+	dmc_memlat_exit(dmc);
 	dmc_gpu_exit(dmc);
 	icc_provider_deregister(&dmc->icc);
 	icc_nodes_remove(&dmc->icc);
@@ -1242,6 +1585,7 @@ static void exynos7420_dmc_shutdown(struct platform_device *pdev)
 
 	if (!dmc->df)
 		return;
+	dmc_memlat_exit(dmc);
 	dmc_gpu_exit(dmc);
 	devfreq_suspend_device(dmc->df);
 	cancel_delayed_work_sync(&dmc->floor_work);

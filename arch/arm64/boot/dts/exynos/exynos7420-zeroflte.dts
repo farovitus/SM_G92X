@@ -1680,6 +1680,32 @@
 				 <&ppmu_event0_d3_general>;
 		exynos,saturation-ratio = <100>;
 		#interconnect-cells = <0>;
+
+		/*
+		 * memlat: DRAM floor per CPU clock (busy cycles per time,
+		 * kHz; MIF kHz) for a core that waits on DRAM. The values
+		 * are the stock cpufreq bus tables; each step starts halfway
+		 * between two CPU OPPs, since a busy-cycle clock reads a
+		 * little under the OPP it runs at.
+		 */
+		memlat-atlas {
+			cpus = <&cpu_atlas0>, <&cpu_atlas1>,
+			       <&cpu_atlas2>, <&cpu_atlas3>;
+			samsung,mif-floors = <950000 543000>,
+					     <1150000 635000>,
+					     <1350000 836000>,
+					     <1550000 1026000>,
+					     <1750000 1264000>;
+		};
+
+		memlat-apollo {
+			cpus = <&cpu_apollo0>, <&cpu_apollo1>,
+			       <&cpu_apollo2>, <&cpu_apollo3>;
+			samsung,mif-floors = <650000 543000>,
+					     <850000 635000>,
+					     <1050000 836000>,
+					     <1250000 1026000>;
+		};
 	};
 };
 
