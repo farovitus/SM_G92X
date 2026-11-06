@@ -10,6 +10,7 @@
 #include <linux/bits.h>
 #include <linux/console.h>
 #include <linux/delay.h>
+#include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kmsg_dump.h>
@@ -22,9 +23,8 @@
 #include <linux/panic_notifier.h>
 #include <linux/pid_namespace.h>
 #include <linux/reboot.h>
-#include <linux/string.h>
 #include <linux/sched/debug.h>
-#include <linux/syscalls.h>
+#include <linux/string.h>
 #include <linux/timekeeping.h>
 #include <linux/workqueue.h>
 
@@ -196,10 +196,19 @@ static void ess_beat(struct work_struct *work)
 	show_state_filter(TASK_UNINTERRUPTIBLE);
 	if (ess_autorecovery && !ess_charger_mode &&
 	    ktime_get_boottime_seconds() >= ess_autorecovery) {
-		ksys_sync();
+		/*
+		 * A boot that never completed may be stuck on a lock that
+		 * device_shutdown() needs too (test-93/94: a devfreq/PM QoS
+		 * lock cycle held kernel_restart() there): sync in the
+		 * background, give it 3 s, then reset without the shutdown
+		 * callbacks.
+		 */
+		ess_set_target(ESS_TARGET_RECOVERY);
+		emergency_sync();
+		mdelay(3000);
 		ess_replay_kernel_log();
 		pr_emerg("dsh: restarting to recovery\n");
-		kernel_restart("recovery");
+		emergency_restart();
 	}
 	schedule_delayed_work(&ess_beat_work, 30 * HZ);
 }
