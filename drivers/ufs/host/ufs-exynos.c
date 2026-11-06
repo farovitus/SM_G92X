@@ -8,7 +8,9 @@
  *
  */
 
+#include <linux/arm-smccc.h>
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -43,6 +45,7 @@
 #define HCI_DATA_REORDER	0x60
 #define HCI_UNIPRO_APB_CLK_CTRL	0x68
 #define UNIPRO_APB_CLK(v, x)	(((v) & ~0xF) | ((x) & 0xF))
+#define UNIPRO_APB_CLK_DIV_MAX	0xF
 #define HCI_AXIDMA_RWDATA_BURST_LEN	0x6C
 #define HCI_GPIO_OUT		0x70
 #define HCI_ERR_EN_PA_LAYER	0x78
@@ -420,8 +423,11 @@ static int exynos_ufs_get_clk_info(struct exynos_ufs *ufs)
 	u8 div = 0;
 	int ret = 0;
 
-	if (list_empty(head))
+	if (list_empty(head)) {
+		dev_err(hba->dev, "no host clocks\n");
+		ret = -ENODEV;
 		goto out;
+	}
 
 	list_for_each_entry(clki, head, list) {
 		if (!IS_ERR(clki->clk)) {
@@ -440,17 +446,22 @@ static int exynos_ufs_get_clk_info(struct exynos_ufs *ufs)
 
 	ufs->mclk_rate = clk_get_rate(ufs->clk_unipro_main);
 	pclk_rate = clk_get_rate(ufs->clk_hci_core);
+	if (!ufs->mclk_rate || !pclk_rate) {
+		dev_err(hba->dev, "invalid clock rate (mclk %lu, core %lu)\n",
+			ufs->mclk_rate, pclk_rate);
+		ret = -EINVAL;
+		goto out;
+	}
+
 	f_min = ufs->pclk_avail_min;
 	f_max = ufs->pclk_avail_max;
 
 	if (ufs->opts & EXYNOS_UFS_OPT_HAS_APB_CLK_CTRL) {
-		do {
-			pclk_rate /= (div + 1);
-
-			if (pclk_rate <= f_max)
-				break;
+		/* Smallest divider that brings the core clock under f_max */
+		while (div < UNIPRO_APB_CLK_DIV_MAX &&
+		       pclk_rate / (div + 1) > f_max)
 			div++;
-		} while (pclk_rate >= f_min);
+		pclk_rate /= (div + 1);
 	}
 
 	if (unlikely(pclk_rate < f_min || pclk_rate > f_max)) {
@@ -708,9 +719,48 @@ static void exynos_ufs_establish_connt(struct exynos_ufs *ufs)
 	ufshcd_dme_set(hba, UIC_ARG_MIB(T_CONNECTIONSTATE), CPORT_CONNECTED);
 }
 
-static void exynos_ufs_config_smu(struct exynos_ufs *ufs)
+/*
+ * Exynos 7420: the secure monitor owns the UFSP (FMP/SMU) block, so it is
+ * configured through SMC calls instead of non-secure register writes.
+ */
+#define EXYNOS7420_SMC_CMD_FMP		0xC2001810
+#define EXYNOS7420_SMC_CMD_SMU		0xC2001820
+#define EXYNOS7420_FMP_SECURITY		0x8
+#define EXYNOS7420_UFS_FMP_BASE		0x15572000
+#define EXYNOS7420_FMP_DESC_OFF		0x0
+#define EXYNOS7420_FMP_SMU_INIT		0x0
+#define EXYNOS7420_FMP_SMU_OFF		0x0
+
+static int exynos7420_ufs_config_smu(struct exynos_ufs *ufs)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(EXYNOS7420_SMC_CMD_FMP, EXYNOS7420_FMP_SECURITY,
+		      EXYNOS7420_UFS_FMP_BASE, EXYNOS7420_FMP_DESC_OFF,
+		      0, 0, 0, 0, &res);
+	if (res.a0) {
+		dev_err(ufs->hba->dev, "FMP security SMC failed: %#lx\n",
+			res.a0);
+		return -EIO;
+	}
+
+	arm_smccc_smc(EXYNOS7420_SMC_CMD_SMU, EXYNOS7420_FMP_SMU_INIT,
+		      EXYNOS7420_FMP_SMU_OFF, 0, 0, 0, 0, 0, &res);
+	if (res.a0) {
+		dev_err(ufs->hba->dev, "SMU init SMC failed: %#lx\n", res.a0);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+static int exynos_ufs_config_smu(struct exynos_ufs *ufs)
 {
 	u32 reg, val;
+
+	if (of_device_is_compatible(ufs->hba->dev->of_node,
+				    "samsung,exynos7420-ufs"))
+		return exynos7420_ufs_config_smu(ufs);
 
 	exynos_ufs_disable_auto_ctrl_hcc_save(ufs, &val);
 
@@ -723,6 +773,8 @@ static void exynos_ufs_config_smu(struct exynos_ufs *ufs)
 	ufsp_writel(ufs, 0xf1, UFSPSCTRL0);
 
 	exynos_ufs_auto_ctrl_hcc_restore(ufs, &val);
+
+	return 0;
 }
 
 static void exynos_ufs_config_sync_pattern_mask(struct exynos_ufs *ufs,
@@ -967,11 +1019,19 @@ static int exynos_ufs_setup_clocks(struct ufs_hba *hba, bool on,
 	if (!ufs)
 		return 0;
 
-	if (on && status == PRE_CHANGE) {
+	/*
+	 * The internal clock controls live in the HCI. Touch them only while
+	 * the HCI is clocked: after the external clocks are enabled, and
+	 * before they are disabled. An unclocked access hangs the bus on 7420.
+	 */
+	if (!ufs->clk_hci_core || !__clk_is_enabled(ufs->clk_hci_core))
+		return 0;
+
+	if (on && status == POST_CHANGE) {
 		if (ufs->opts & EXYNOS_UFS_OPT_BROKEN_AUTO_CLK_CTRL)
 			exynos_ufs_disable_auto_ctrl_hcc(ufs);
 		exynos_ufs_ungate_clks(ufs);
-	} else if (!on && status == POST_CHANGE) {
+	} else if (!on && status == PRE_CHANGE) {
 		exynos_ufs_gate_clks(ufs);
 		if (ufs->opts & EXYNOS_UFS_OPT_BROKEN_AUTO_CLK_CTRL)
 			exynos_ufs_enable_auto_ctrl_hcc(ufs);
@@ -983,6 +1043,7 @@ static int exynos_ufs_setup_clocks(struct ufs_hba *hba, bool on,
 static int exynos_ufs_pre_link(struct ufs_hba *hba)
 {
 	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
+	int ret;
 
 	/* hci */
 	exynos_ufs_config_intr(ufs, DFES_DEF_L2_ERRS, UNIPRO_L2);
@@ -990,20 +1051,23 @@ static int exynos_ufs_pre_link(struct ufs_hba *hba)
 	exynos_ufs_config_intr(ufs, DFES_DEF_L4_ERRS, UNIPRO_L4);
 	exynos_ufs_set_unipro_pclk_div(ufs);
 
-	exynos_ufs_setup_clocks(hba, true, PRE_CHANGE);
-
 	/* unipro */
 	exynos_ufs_config_unipro(ufs);
 
-	if (ufs->drv_data->pre_link)
-		ufs->drv_data->pre_link(ufs);
-
 	/* m-phy */
-	exynos_ufs_phy_init(ufs);
+	ret = exynos_ufs_phy_init(ufs);
+	if (ret)
+		return ret;
 	if (!(ufs->opts & EXYNOS_UFS_OPT_SKIP_CONFIG_PHY_ATTR)) {
 		exynos_ufs_config_phy_time_attr(ufs);
 		exynos_ufs_config_phy_cap_attr(ufs);
 	}
+
+	/* ungate the internal clocks; the external ones are running */
+	exynos_ufs_setup_clocks(hba, true, POST_CHANGE);
+
+	if (ufs->drv_data->pre_link)
+		return ufs->drv_data->pre_link(ufs);
 
 	return 0;
 }
@@ -1193,7 +1257,11 @@ static int exynos_ufs_init(struct ufs_hba *hba)
 	if (ret)
 		goto out;
 	exynos_ufs_specify_phy_time_attr(ufs);
-	exynos_ufs_config_smu(ufs);
+
+	ret = exynos_ufs_config_smu(ufs);
+	if (ret)
+		goto out;
+
 	return 0;
 
 out:
@@ -1407,13 +1475,16 @@ static int exynos_ufs_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op,
 static int exynos_ufs_resume(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 {
 	struct exynos_ufs *ufs = ufshcd_get_variant(hba);
+	int ret;
 
-	if (!ufshcd_is_link_active(hba))
-		phy_power_on(ufs->phy);
+	if (!ufshcd_is_link_active(hba)) {
+		ret = phy_power_on(ufs->phy);
+		if (ret)
+			return ret;
+	}
 
-	exynos_ufs_config_smu(ufs);
-
-	return 0;
+	/* UFSP setup does not survive the system suspend power level */
+	return exynos_ufs_config_smu(ufs);
 }
 
 static int exynosauto_ufs_vh_link_startup_notify(struct ufs_hba *hba,
