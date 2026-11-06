@@ -13,6 +13,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/uaccess.h>
 
+#include <drm/drm_aperture.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
@@ -240,6 +241,14 @@ static int exynos_drm_bind(struct device *dev)
 	struct drm_device *drm;
 	unsigned int clone_mask;
 	int ret;
+
+	/*
+	 * Drop a firmware framebuffer driver (simpledrm on the bootloader
+	 * framebuffer), so this is the only DRM device that does KMS.
+	 */
+	ret = drm_aperture_remove_framebuffers(&exynos_drm_driver);
+	if (ret)
+		return ret;
 
 	drm = drm_dev_alloc(&exynos_drm_driver, dev);
 	if (IS_ERR(drm))
