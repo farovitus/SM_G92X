@@ -4963,7 +4963,9 @@ static int ufshcd_link_startup(struct ufs_hba *hba)
 
 link_startup:
 	do {
-		ufshcd_vops_link_startup_notify(hba, PRE_CHANGE);
+		ret = ufshcd_vops_link_startup_notify(hba, PRE_CHANGE);
+		if (ret)
+			goto out;
 
 		ret = ufshcd_dme_link_startup(hba);
 
@@ -9346,8 +9348,10 @@ static int ufshcd_setup_clocks(struct ufs_hba *hba, bool on)
 out:
 	if (ret) {
 		list_for_each_entry(clki, head, list) {
-			if (!IS_ERR_OR_NULL(clki->clk) && clki->enabled)
+			if (!IS_ERR_OR_NULL(clki->clk) && clki->enabled) {
 				clk_disable_unprepare(clki->clk);
+				clki->enabled = false;
+			}
 		}
 	} else if (!ret && on) {
 		spin_lock_irqsave(hba->host->host_lock, flags);
