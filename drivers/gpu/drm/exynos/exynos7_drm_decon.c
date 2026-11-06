@@ -14,6 +14,7 @@
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/sizes.h>
 
 #include <video/of_display_timing.h>
 #include <video/of_videomode.h>
@@ -37,6 +38,9 @@
 
 #define WINDOWS_NR	2
 
+/* Identity map size when S-Boot scans below the /chosen framebuffer */
+#define BOOT_FB_FALLBACK_SIZE	SZ_64M
+
 struct decon_context {
 	struct device			*dev;
 	struct drm_device		*drm_dev;
@@ -53,6 +57,11 @@ struct decon_context {
 	bool				i80_if;
 	wait_queue_head_t		wait_vsync_queue;
 	atomic_t			wait_vsync_event;
+
+	/* bootloader framebuffer from /chosen, kept in scanout at handover */
+	phys_addr_t			boot_fb_base;
+	size_t				boot_fb_size;
+	bool				iommu_ready;
 
 	struct drm_encoder *encoder;
 };
@@ -220,7 +229,9 @@ static void decon_commit(struct exynos_drm_crtc *crtc)
 	 * fields of register with prefix '_F' would be updated
 	 * at vsync(same as dma start)
 	 */
-	val = VIDCON0_ENVID | VIDCON0_ENVID_F;
+	/* keep the i80 and output path bits the bootloader set up */
+	val = readl(ctx->regs + VIDCON0);
+	val |= VIDCON0_ENVID | VIDCON0_ENVID_F;
 	writel(val, ctx->regs + VIDCON0);
 
 	clkdiv = decon_calc_clkdiv(ctx, mode);
@@ -245,7 +256,10 @@ static int decon_enable_vblank(struct exynos_drm_crtc *crtc)
 
 		val |= VIDINTCON0_INT_ENABLE;
 
-		if (!ctx->i80_if) {
+		if (ctx->i80_if) {
+			/* frame done is the only frame event in command mode */
+			val |= VIDINTCON0_INT_I80_EN;
+		} else {
 			val |= VIDINTCON0_INT_FRAME;
 			val &= ~VIDINTCON0_FRAMESEL0_MASK;
 			val |= VIDINTCON0_FRAMESEL0_VSYNC;
@@ -266,7 +280,9 @@ static void decon_disable_vblank(struct exynos_drm_crtc *crtc)
 		val = readl(ctx->regs + VIDINTCON0);
 
 		val &= ~VIDINTCON0_INT_ENABLE;
-		if (!ctx->i80_if)
+		if (ctx->i80_if)
+			val &= ~VIDINTCON0_INT_I80_EN;
+		else
 			val &= ~VIDINTCON0_INT_FRAME;
 
 		writel(val, ctx->regs + VIDINTCON0);
@@ -392,9 +408,15 @@ static void decon_update_plane(struct exynos_drm_crtc *crtc,
 	 * is set.
 	 */
 
-	/* buffer start address */
+	/*
+	 * buffer start address: the hardware cycles through all three buffer
+	 * slots, and a stale address in one of them shows as flicker between
+	 * old and new frames.
+	 */
 	val = (unsigned long)exynos_drm_fb_dma_addr(fb, 0);
 	writel(val, ctx->regs + VIDW_BUF_START(win));
+	writel(val, ctx->regs + VIDW_BUF_START1(win));
+	writel(val, ctx->regs + VIDW_BUF_START2(win));
 
 	padding = (pitch / cpp) - fb->width;
 
@@ -482,6 +504,32 @@ static void decon_disable_plane(struct exynos_drm_crtc *crtc,
 	writel(val, ctx->regs + DECON_UPDATE);
 }
 
+/*
+ * Start one frame transfer to a command mode (i80) panel. The panel has no
+ * free-running timing, so nothing reaches it until a frame is triggered.
+ */
+static void decon_i80_trigger(struct decon_context *ctx)
+{
+	u32 val;
+
+	val = readl(ctx->regs + TRIGCON);
+	val &= ~(TRIGCON_HWTRIG_INV_I80_RGB | TRIGCON_HWTRIGEN_I80_RGB |
+		 TRIGCON_HWTRIGMASK_DISPIF0 | TRIGCON_HWTRIGMASK_DISPIF1);
+	writel(val, ctx->regs + TRIGCON);
+
+	val |= TRIGCON_SWTRIGEN_I80_RGB | TRIGCON_SWTRIGCMD_I80_RGB |
+	       TRIGCON_HWTRIGEN_I80_RGB | TRIGCON_HWTRIGMASK_DISPIF0 |
+	       TRIGCON_HWTRIGMASK_DISPIF1 | TRIGCON_HWTRIG_AUTO_MASK;
+	writel(val, ctx->regs + TRIGCON);
+
+	/* latch the shadow registers */
+	writel(DECON_UPDATE_STANDALONE_F, ctx->regs + DECON_UPDATE);
+
+	val = readl(ctx->regs + TRIGCON);
+	val |= TRIGCON_SWTRIGCMD_I80_RGB;
+	writel(val, ctx->regs + TRIGCON);
+}
+
 static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
@@ -489,12 +537,28 @@ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
 
 	for (i = 0; i < WINDOWS_NR; i++)
 		decon_shadow_protect_win(ctx, i, false);
+
+	/*
+	 * Arm the event before the transfer starts: in i80 mode the frame
+	 * done interrupt of this transfer is the vblank that completes it.
+	 */
 	exynos_crtc_handle_event(crtc);
+
+	if (ctx->i80_if)
+		decon_i80_trigger(ctx);
 }
 
 static void decon_init(struct decon_context *ctx)
 {
 	u32 val;
+
+	/*
+	 * In i80 mode keep what the bootloader set up (DSIM link, panel
+	 * timing, trigger setup): a software reset drops it and the panel
+	 * stops updating.
+	 */
+	if (ctx->i80_if)
+		return;
 
 	writel(VIDCON0_SWRESET, ctx->regs + VIDCON0);
 
@@ -509,6 +573,45 @@ static void decon_init(struct decon_context *ctx)
 		writel(VIDCON1_VCLK_HOLD, ctx->regs + VIDCON1(0));
 }
 
+/*
+ * Take over the scanout the bootloader left running: map what DECON is
+ * still fetching 1:1 in its IOMMU domain, then turn translation on. Doing
+ * it the other way round faults every fetch.
+ */
+static void decon_iommu_takeover(struct decon_context *ctx)
+{
+	phys_addr_t base = 0;
+	size_t size = 0;
+	unsigned int win;
+	int ret;
+
+	for (win = 0; win < WINDOWS_NR; win++) {
+		u32 addr = readl(ctx->regs + VIDW_BUF_START(win));
+
+		if (addr && (!base || addr < base))
+			base = addr;
+	}
+
+	if (ctx->boot_fb_size && (!base || ctx->boot_fb_base <= base)) {
+		base = ctx->boot_fb_base;
+		size = ctx->boot_fb_size;
+	} else if (base) {
+		size = BOOT_FB_FALLBACK_SIZE;
+	}
+
+	if (size) {
+		ret = exynos_iommu_map_identity(ctx->dev, base, size);
+		if (ret == -ENODEV)
+			dev_dbg(ctx->dev, "no IOMMU domain, scanout not mapped\n");
+		else if (ret)
+			dev_err(ctx->dev, "failed to map scanout %pa: %d\n",
+				&base, ret);
+	}
+
+	exynos_iommu_master_ready(ctx->dev);
+	ctx->iommu_ready = true;
+}
+
 static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
@@ -519,6 +622,13 @@ static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
 		DRM_DEV_ERROR(ctx->dev, "failed to enable DECON device.\n");
 		return;
 	}
+
+	/*
+	 * Once only: later resumes enable translation from the SysMMU's own
+	 * runtime PM, and the window registers then hold IOVAs.
+	 */
+	if (ctx->i80_if && !ctx->iommu_ready)
+		decon_iommu_takeover(ctx);
 
 	decon_init(ctx);
 
@@ -576,14 +686,13 @@ static irqreturn_t decon_irq_handler(int irq, void *dev_id)
 	if (!drm_dev_has_vblank(ctx->drm_dev))
 		goto out;
 
-	if (!ctx->i80_if) {
-		drm_crtc_handle_vblank(&ctx->crtc->base);
+	/* in i80 mode the end of a frame transfer stands in for vsync */
+	drm_crtc_handle_vblank(&ctx->crtc->base);
 
-		/* set wait vsync event to zero and wake up queue. */
-		if (atomic_read(&ctx->wait_vsync_event)) {
-			atomic_set(&ctx->wait_vsync_event, 0);
-			wake_up(&ctx->wait_vsync_queue);
-		}
+	/* set wait vsync event to zero and wake up queue. */
+	if (atomic_read(&ctx->wait_vsync_event)) {
+		atomic_set(&ctx->wait_vsync_event, 0);
+		wake_up(&ctx->wait_vsync_queue);
 	}
 out:
 	return IRQ_HANDLED;
@@ -623,11 +732,15 @@ static int decon_bind(struct device *dev, struct device *master, void *data)
 		return PTR_ERR(ctx->crtc);
 	}
 
-	if (ctx->encoder)
-		exynos_dpi_bind(drm_dev, ctx->encoder);
+	if (ctx->encoder) {
+		ret = exynos_dpi_bind(drm_dev, ctx->encoder);
+		if (ret) {
+			decon_ctx_remove(ctx);
+			return ret;
+		}
+	}
 
 	return 0;
-
 }
 
 static void decon_unbind(struct device *dev, struct device *master,
@@ -647,6 +760,36 @@ static const struct component_ops decon_component_ops = {
 	.bind	= decon_bind,
 	.unbind = decon_unbind,
 };
+
+/* The framebuffer the bootloader scans out, as described in /chosen */
+static void decon_get_boot_fb(struct decon_context *ctx)
+{
+	struct device_node *chosen, *np;
+	const __be32 *reg;
+	u64 size;
+
+	chosen = of_find_node_by_path("/chosen");
+	if (!chosen)
+		return;
+
+	for_each_child_of_node(chosen, np) {
+		if (!of_device_is_compatible(np, "simple-framebuffer") ||
+		    !of_device_is_available(np))
+			continue;
+
+		/* /chosen may lack ranges: read the address untranslated */
+		reg = of_get_address(np, 0, &size, NULL);
+		if (reg && size) {
+			ctx->boot_fb_base = of_read_number(reg,
+							   of_n_addr_cells(np));
+			ctx->boot_fb_size = size;
+			of_node_put(np);
+			break;
+		}
+	}
+
+	of_node_put(chosen);
+}
 
 static int decon_probe(struct platform_device *pdev)
 {
@@ -668,6 +811,9 @@ static int decon_probe(struct platform_device *pdev)
 	if (i80_if_timings)
 		ctx->i80_if = true;
 	of_node_put(i80_if_timings);
+
+	if (ctx->i80_if)
+		decon_get_boot_fb(ctx);
 
 	ctx->regs = of_iomap(dev->of_node, 0);
 	if (!ctx->regs)

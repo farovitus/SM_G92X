@@ -223,6 +223,7 @@
 
 #define VIDINTCON0_WAKEUP_MASK			(0x3f << 26)
 #define VIDINTCON0_INTEXTRAEN			(1 << 21)
+#define VIDINTCON0_INT_I80_EN			(1 << 17)
 
 #define VIDINTCON0_FRAMESEL0_SHIFT		15
 #define VIDINTCON0_FRAMESEL0_MASK		(0x3 << 15)
@@ -325,6 +326,17 @@
 
 /* LINECNT OP THRSHOLD*/
 #define LINECNT_OP_THRESHOLD			0x630
+
+/* TRIGCON: i80 (command mode) frame trigger control */
+#define TRIGCON					0x6B0
+
+#define TRIGCON_HWTRIG_AUTO_MASK		(1 << 6)
+#define TRIGCON_HWTRIGMASK_DISPIF1		(1 << 5)
+#define TRIGCON_HWTRIGMASK_DISPIF0		(1 << 4)
+#define TRIGCON_HWTRIGEN_I80_RGB		(1 << 3)
+#define TRIGCON_HWTRIG_INV_I80_RGB		(1 << 2)
+#define TRIGCON_SWTRIGCMD_I80_RGB		(1 << 1)
+#define TRIGCON_SWTRIGEN_I80_RGB		(1 << 0)
 
 /* CRCCTRL */
 #define CRCCTRL					0x6C8
