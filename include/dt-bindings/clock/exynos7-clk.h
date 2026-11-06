@@ -29,7 +29,12 @@
 #define SCLK_CC_PLL_A			19
 #define ACLK_CCORE_133			20
 #define ACLK_PERIS_66			21
-#define TOPC_NR_CLK			22
+#define DOUT_ACLK_BUS0_532		22
+#define DOUT_ACLK_BUS1_532		23
+#define DOUT_ACLK_BUS1_200		24
+#define DOUT_ACLK_IMEM_266		25
+#define DOUT_PCLK_BUS01_133		26
+#define TOPC_NR_CLK			27
 
 /* TOP0 */
 #define DOUT_ACLK_PERIC1		1
