@@ -222,16 +222,16 @@ CONFIG_CMDLINE="stack_depot_disable=on cgroup_disable=pressure kasan.stacktrace=
 # CONFIG_KASAN is not set
 # CONFIG_ARM64_MTE is not set
 
-# Bring-up: framebuffer console through simpledrm. Not enabled on the
-# command line: the command-mode panel never shows it, and drawing every
-# message on one CPU slowed Android's boot several-fold. Add console=tty0
-# to use it. The large Terminus font keeps a photo readable (90x80).
-CONFIG_VT=y
-CONFIG_VT_CONSOLE=y
-CONFIG_DRM_FBDEV_EMULATION=y
-CONFIG_FRAMEBUFFER_CONSOLE=y
-CONFIG_FONTS=y
-CONFIG_FONT_TER16x32=y
+# No VT, framebuffer console or DRM fbdev emulation, as in GKI: Android
+# draws through KMS only. The fbdev client made the kernel's own modeset
+# at about 1 s, which replaced S-Boot's splash with its black buffer
+# (and fbcon's cursor) until the boot animation. Without it the
+# command-mode panel keeps the splash until the composer's first commit.
+# For an on-screen log during bring-up, set CONFIG_VT,
+# CONFIG_DRM_FBDEV_EMULATION and CONFIG_FRAMEBUFFER_CONSOLE again and
+# add console=tty0.
+# CONFIG_VT is not set
+# CONFIG_DRM_FBDEV_EMULATION is not set
 # Room for the console: UBSAN's inline bounds checks cost about 1 MB.
 # CONFIG_UBSAN is not set
 CONFIG_LEDS_MAX77843=y
