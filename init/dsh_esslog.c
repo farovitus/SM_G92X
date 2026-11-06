@@ -7,13 +7,19 @@
  * /proc/last_kmsg after a forced restart. S-Boot passes console=ram, so
  * the console takes that name and is enabled by it.
  */
+#include <linux/bits.h>
 #include <linux/console.h>
+#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kmsg_dump.h>
 #include <linux/kstrtox.h>
 #include <linux/minmax.h>
 #include <linux/moduleparam.h>
+#include <linux/notifier.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/panic_notifier.h>
 #include <linux/pid_namespace.h>
 #include <linux/reboot.h>
 #include <linux/string.h>
@@ -84,15 +90,60 @@ console_initcall(ess_console_init);
  * so it is left alone.
  */
 static unsigned int ess_autorecovery;
-module_param_named(autorecovery, ess_autorecovery, uint, 0644);
+
+/*
+ * S-Boot reads the restart target from PMU INFORM3 on every reset, not
+ * only on a kernel restart, and skips the charger screen when INFORM2
+ * holds 0x12345678 (the same values as the board's syscon-reboot-mode
+ * nodes). A test boot arms recovery there as soon as it can, so a panic,
+ * a watchdog reset or a hang that ends in a reset all land in TWRP,
+ * where adb works and a new kernel can be flashed. S-Boot ignores INFORM3
+ * after a watchdog reset, so the boot that follows one restarts into
+ * recovery itself through PMU SWRESET. Writing 0 to the
+ * autorecovery parameter restores the normal target and any other value
+ * arms recovery again; a panic always goes to recovery.
+ */
+#define ESS_PMU_SWRESET		0x400
+#define ESS_PMU_RST_STAT	0x404
+#define ESS_RST_A57_WDT		BIT(23)
+#define ESS_PMU_INFORM2		0x808
+#define ESS_PMU_INFORM3		0x80c
+#define ESS_TARGET_NORMAL	0x12345670
+#define ESS_TARGET_RECOVERY	0x12345674
+#define ESS_NO_LPM		0x12345678
+
+static void __iomem *ess_pmu;
+static bool ess_charger_mode;
+
+static void ess_set_target(u32 target)
+{
+	if (!ess_pmu)
+		return;
+	writel(ESS_NO_LPM, ess_pmu + ESS_PMU_INFORM2);
+	writel(target, ess_pmu + ESS_PMU_INFORM3);
+}
+
+static int ess_autorecovery_set(const char *val, const struct kernel_param *kp)
+{
+	int ret = param_set_uint(val, kp);
+
+	if (!ret && !ess_charger_mode)
+		ess_set_target(ess_autorecovery ? ESS_TARGET_RECOVERY :
+				  ESS_TARGET_NORMAL);
+	return ret;
+}
+
+static const struct kernel_param_ops ess_autorecovery_ops = {
+	.set	= ess_autorecovery_set,
+	.get	= param_get_uint,
+};
+module_param_cb(autorecovery, &ess_autorecovery_ops, &ess_autorecovery, 0644);
 
 static int __init ess_autorecovery_setup(char *s)
 {
 	return !kstrtouint(s, 0, &ess_autorecovery);
 }
 __setup("dsh_autorecovery=", ess_autorecovery_setup);
-
-static bool ess_charger_mode;
 
 static int __init ess_bootmode_setup(char *s)
 {
@@ -152,6 +203,49 @@ static void ess_beat(struct work_struct *work)
 	}
 	schedule_delayed_work(&ess_beat_work, 30 * HZ);
 }
+
+static int ess_panic(struct notifier_block *nb, unsigned long ev, void *p)
+{
+	ess_set_target(ESS_TARGET_RECOVERY);
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block ess_panic_nb = {
+	.notifier_call	= ess_panic,
+	.priority	= INT_MAX,
+};
+
+static int __init ess_rescue_init(void)
+{
+	struct device_node *np;
+	u32 rst;
+
+	/* Only test boots, which set dsh_autorecovery, are rescued. */
+	if (!ess_autorecovery)
+		return 0;
+	np = of_find_compatible_node(NULL, NULL, "samsung,exynos7-pmu");
+	if (!np)
+		return -ENODEV;
+	ess_pmu = of_iomap(np, 0);
+	of_node_put(np);
+	if (!ess_pmu)
+		return -ENOMEM;
+	if (ess_charger_mode)
+		goto out;
+	ess_set_target(ESS_TARGET_RECOVERY);
+	rst = readl(ess_pmu + ESS_PMU_RST_STAT);
+	pr_info("dsh: last reset 0x%08x\n", rst);
+	if (rst & ESS_RST_A57_WDT) {
+		pr_emerg("dsh: watchdog reset, restarting to recovery\n");
+		writel(1, ess_pmu + ESS_PMU_SWRESET);
+		mdelay(1000);
+	}
+out:
+	atomic_notifier_chain_register(&panic_notifier_list, &ess_panic_nb);
+	pr_info("dsh: resets go to recovery until the boot completes\n");
+	return 0;
+}
+early_initcall(ess_rescue_init);
 
 static int __init ess_beat_init(void)
 {
