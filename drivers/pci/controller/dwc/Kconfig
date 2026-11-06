@@ -308,6 +308,16 @@ config PCI_EXYNOS
 	  hardware and therefore the driver re-uses the DesignWare core
 	  functions to implement the driver.
 
+config PCI_EXYNOS7420
+	tristate "Samsung Exynos 7420 PCIe controller"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	depends on PCI_MSI
+	select PCIE_DW_HOST
+	help
+	  Enables support for the DesignWare-based PCIe controller and
+	  embedded combo PHY in the Samsung Exynos 7420 SoC in host mode.
+	  On the Galaxy S6 (SM-G920F) it connects the BCM4358 Wi-Fi.
+
 config PCIE_FU740
 	bool "SiFive FU740 PCIe controller"
 	depends on PCI_MSI
