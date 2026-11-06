@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config MIPI_LLI
+	bool "Exynos7420 MIPI-LLI modem link"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	depends on OF && OF_RESERVED_MEM
+	select MFD_SYSCON
+	select REGMAP_MMIO
+	help
+	  MIPI Low Latency Interface host controller and combo M-PHY of the
+	  Exynos7420. It maps the CP's IPC memory into the AP-side LLI window
+	  and carries the sideband signals between AP and CP. Used by the
+	  SS333 modem driver on the Galaxy S6 (SM-G920F/SM-G925F).

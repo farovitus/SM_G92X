@@ -606,4 +606,5 @@ source "drivers/misc/uacce/Kconfig"
 source "drivers/misc/pvpanic/Kconfig"
 source "drivers/misc/mchp_pci1xxxx/Kconfig"
 source "drivers/misc/bcm4773/Kconfig"
+source "drivers/misc/mipi-lli/Kconfig"
 endmenu

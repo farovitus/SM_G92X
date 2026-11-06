@@ -71,3 +71,4 @@ obj-$(CONFIG_UID_SYS_STATS)	+= uid_sys_stats.o
 obj-$(CONFIG_PKVM_SMC_FILTER)  += pkvm-smc/
 obj-$(CONFIG_SAMSUNG_MDNIE_COMPAT)	+= samsung-mdnie-compat.o
 obj-$(CONFIG_BCM4773)		+= bcm4773/
+obj-$(CONFIG_MIPI_LLI)		+= mipi-lli/
