@@ -335,7 +335,7 @@ static const struct samsung_div_clock top0_div_clks[] __initconst = {
 	DIV(DOUT_ACLK_PERIC0, "dout_aclk_peric0_66", "mout_aclk_peric0_66",
 		DIV_TOP03, 20, 6),
 	DIV(CLK_DOUT_ACLK_DISP_400, "dout_aclk_disp_400", "mout_aclk_disp_400",
-		DIV_TOP03, 28, 1),
+		DIV_TOP03, 28, 4),
 
 	DIV(CLK_DOUT_SCLK_DECON_VCLK, "dout_sclk_decon_vclk",
 		"mout_sclk_decon_vclk", DIV_TOP0_DISP, 20, 4),
