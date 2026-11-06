@@ -3,6 +3,8 @@
  *  Copyright (C) 2014, Samsung Electronics Co. Ltd. All Rights Reserved.
  */
 
+#include <asm/unaligned.h>
+
 #include "ssp.h"
 
 #define SSP_DEV (data->dev)
@@ -21,6 +23,10 @@
 #define SSP_MSG2AP_INST_META_DATA		0x05
 #define SSP_MSG2AP_INST_TIME_SYNC		0x06
 #define SSP_MSG2AP_INST_RESET			0x07
+#define SSP_MSG2AP_INST_GYRO_CAL		0x08
+#define SSP_MSG2AP_GYRO_CAL_START		0x43
+#define SSP_MSG2AP_GYRO_CAL_STOP		0x44
+#define SSP_MSG2AP_GYRO_CAL_EVENT		0x45
 
 #define SSP_UNIMPLEMENTED -1
 
@@ -300,14 +306,116 @@ static int ssp_handle_big_data(struct ssp_data *data, char *dataframe, int *idx)
 	return 0;
 }
 
+/* Galaxy S6 data frame: hub id, le16 count, count x (sample + hub time) */
+static int ssp_parse_counted(struct ssp_data *data, char *frame, int *idx,
+			     int len)
+{
+	const struct ssp_sensorhub_info *info = data->sensorhub_info;
+	struct ssp_sensor_data *spd = NULL;
+	struct iio_dev *indio_dev = NULL;
+	unsigned int hub, size, count;
+	int type;
+
+	if (len - *idx < 3)
+		return -EPROTO;
+
+	hub = (u8)frame[(*idx)++];
+	count = get_unaligned_le16(&frame[*idx]);
+	*idx += 2;
+
+	if (hub >= info->num_hub_ids || !info->frame_sizes[hub]) {
+		dev_err(SSP_DEV, "unknown hub sensor %u\n", hub);
+		return -EPROTO;
+	}
+
+	size = info->frame_sizes[hub] + SSP_TIME_SIZE;
+	if (!count || count * size > len - *idx) {
+		dev_err(SSP_DEV, "bad frame, sensor %u count %u\n", hub, count);
+		return -EPROTO;
+	}
+
+	type = data->hub_to_type[hub];
+	if (type >= 0)
+		indio_dev = data->sensor_devs[type];
+	if (indio_dev)
+		spd = iio_priv(indio_dev);
+
+	for (; count; count--, *idx += size) {
+		if (!spd || !spd->process_data)
+			continue;
+		if (info->ap_timestamp)
+			memset(&frame[*idx + size - SSP_TIME_SIZE], 0,
+			       SSP_TIME_SIZE);
+		spd->process_data(indio_dev, &frame[*idx], data->timestamp);
+	}
+
+	return 0;
+}
+
+static int ssp_parse_s6_inst(struct ssp_data *data, char *frame, int *idx,
+			     int len, u8 inst)
+{
+	unsigned int skip;
+
+	switch (inst) {
+	case SSP_MSG2AP_INST_BYPASS_DATA:
+		return ssp_parse_counted(data, frame, idx, len);
+	case SSP_MSG2AP_INST_LIBRARY_DATA:
+		if (len - *idx < 2)
+			return -EPROTO;
+		skip = get_unaligned_le16(&frame[*idx]) + 2;
+		break;
+	case SSP_MSG2AP_INST_META_DATA:
+		/* flush complete: what, hub sensor id */
+		skip = 2;
+		break;
+	case SSP_MSG2AP_INST_GYRO_CAL:
+		/* new gyro offsets, 3 x s16; userspace owns calibration */
+		skip = 6;
+		break;
+	case SSP_MSG2AP_GYRO_CAL_START:
+	case SSP_MSG2AP_GYRO_CAL_STOP:
+	case SSP_MSG2AP_GYRO_CAL_EVENT:
+		skip = 0;
+		break;
+	default:
+		dev_err(SSP_DEV, "unknown hub instruction 0x%02x\n", inst);
+		return -EPROTO;
+	}
+
+	if (skip > len - *idx)
+		return -EPROTO;
+	*idx += skip;
+
+	return 0;
+}
+
 static int ssp_parse_dataframe(struct ssp_data *data, char *dataframe, int len)
 {
-	int idx, sd;
+	const struct ssp_sensorhub_info *info = data->sensorhub_info;
+	int idx, sd, ret;
 	struct ssp_sensor_data *spd;
 	struct iio_dev **indio_devs = data->sensor_devs;
 
+	if (info->ap_timestamp)
+		data->timestamp = ktime_get_boottime_ns();
+
 	for (idx = 0; idx < len;) {
-		switch (dataframe[idx++]) {
+		u8 inst = dataframe[idx++];
+
+		if (info->frame_count &&
+		    inst != SSP_MSG2AP_INST_DEBUG_DATA &&
+		    inst != SSP_MSG2AP_INST_BIG_DATA &&
+		    inst != SSP_MSG2AP_INST_TIME_SYNC &&
+		    inst != SSP_MSG2AP_INST_RESET) {
+			ret = ssp_parse_s6_inst(data, dataframe, &idx, len,
+						inst);
+			if (ret)
+				return ret;
+			continue;
+		}
+
+		switch (inst) {
 		case SSP_MSG2AP_INST_BYPASS_DATA:
 			if (idx >= len)
 				return -EPROTO;
@@ -358,7 +466,7 @@ static int ssp_parse_dataframe(struct ssp_data *data, char *dataframe, int len)
 		}
 	}
 
-	if (data->time_syncing)
+	if (data->time_syncing && !info->ap_timestamp)
 		data->timestamp = ktime_get_real_ns();
 
 	return 0;
@@ -381,13 +489,12 @@ int ssp_irq_msg(struct ssp_data *data)
 
 	length = le16_to_cpu(data->header_buffer[1]);
 	msg_options = le16_to_cpu(data->header_buffer[0]);
+	msg_type = SSP_GET_MESSAGE_TYPE(msg_options);
 
-	if (length == 0) {
+	if (length == 0 && msg_type != SSP_AP2HUB_WRITE) {
 		dev_err(SSP_DEV, "length received from mcu is 0\n");
 		return -EINVAL;
 	}
-
-	msg_type = SSP_GET_MESSAGE_TYPE(msg_options);
 
 	switch (msg_type) {
 	case SSP_AP2HUB_READ:
@@ -411,6 +518,15 @@ int ssp_irq_msg(struct ssp_data *data)
 			 * but the slave should not send such ones - it is to
 			 * check but let's handle this
 			 */
+			dev_err(SSP_DEV, "No match error %x\n", msg_options);
+
+			/* On the S6 a write request carries no payload. */
+			if (msg_type == SSP_AP2HUB_WRITE &&
+			    data->sensorhub_info->frame_count) {
+				ret = -EPROTO;
+				goto _unlock;
+			}
+
 			buffer = kmalloc(length, GFP_KERNEL | GFP_DMA);
 			if (!buffer) {
 				ret = -ENOMEM;
@@ -423,9 +539,6 @@ int ssp_irq_msg(struct ssp_data *data)
 				ret = -EPROTO;
 
 			kfree(buffer);
-
-			dev_err(SSP_DEV, "No match error %x\n",
-				msg_options);
 
 			goto _unlock;
 		}
@@ -512,28 +625,53 @@ int ssp_command(struct ssp_data *data, char command, int arg)
 	return ret;
 }
 
+/**
+ * ssp_hub_id() - hub firmware id of a sensor type
+ * @data:	sensorhub structure
+ * @type:	SSP sensor type
+ *
+ * Returns the id or -ENODEV if this hub has no such sensor.
+ */
+int ssp_hub_id(struct ssp_data *data, enum ssp_sensor_type type)
+{
+	const u8 *ids = data->sensorhub_info->hub_ids;
+
+	if (!ids)
+		return type;
+
+	return ids[type] == SSP_NO_HUB_ID ? -ENODEV : ids[type];
+}
+
 int ssp_send_instruction(struct ssp_data *data, u8 inst, u8 sensor_type,
 			 u8 *send_buf, u8 length)
 {
-	int ret;
+	int ret, hub_id;
+	u8 id;
 	struct ssp_msg *msg;
+
+	hub_id = ssp_hub_id(data, sensor_type);
+	if (hub_id < 0)
+		return hub_id;
+	id = hub_id;
 
 	if (data->fw_dl_state == SSP_FW_DL_STATE_DOWNLOADING) {
 		dev_err(SSP_DEV, "%s - Skip Inst! DL state = %d\n",
 			__func__, data->fw_dl_state);
 		return -EBUSY;
-	} else if (!(data->available_sensors & BIT(sensor_type)) &&
+	} else if (!(data->available_sensors & BIT(id)) &&
 		   (inst <= SSP_MSG2SSP_INST_CHANGE_DELAY)) {
 		dev_err(SSP_DEV, "%s - Bypass Inst Skip! - %u\n",
 			__func__, sensor_type);
 		return -EIO; /* just fail */
 	}
 
-	msg = ssp_create_msg(inst, length + 2, SSP_AP2HUB_WRITE, 0);
+	msg = ssp_create_msg(inst, length + (data->sensorhub_info->short_inst ?
+					     1 : 2),
+			     SSP_AP2HUB_WRITE, 0);
 	if (!msg)
 		return -ENOMEM;
 
-	ssp_fill_buffer(msg, 0, &sensor_type, 1);
+	ssp_fill_buffer(msg, 0, &id, 1);
 	ssp_fill_buffer(msg, 1, send_buf, length);
 
 	ssp_dbg("%s - Inst = 0x%x, Sensor Type = 0x%x, data = %u\n",
@@ -564,10 +702,39 @@ int ssp_get_chipid(struct ssp_data *data)
 	return ret < 0 ? ret : buffer;
 }
 
+/**
+ * ssp_write_cmd() - send a command with a payload the hub reads
+ * @data:	sensorhub structure
+ * @cmd:	SSP_MSG2SSP_AP_* command
+ * @buf:	payload
+ * @len:	payload length, not 0
+ *
+ * Returns 0 or negative value in case of error
+ */
+int ssp_write_cmd(struct ssp_data *data, u8 cmd, const void *buf, u8 len)
+{
+	struct ssp_msg *msg;
+	int ret;
+
+	msg = ssp_create_msg(cmd, len, SSP_AP2HUB_WRITE, 0);
+	if (!msg)
+		return -ENOMEM;
+
+	ssp_fill_buffer(msg, 0, buf, len);
+
+	ret = ssp_spi_sync(data, msg, 1000);
+	ssp_clean_msg(msg);
+
+	return ret;
+}
+
 int ssp_set_magnetic_matrix(struct ssp_data *data)
 {
 	int ret;
 	struct ssp_msg *msg;
+
+	if (!data->sensorhub_info->mag_length)
+		return 0;
 
 	msg = ssp_create_msg(SSP_MSG2SSP_AP_SET_MAGNETIC_STATIC_MATRIX,
 			     data->sensorhub_info->mag_length, SSP_AP2HUB_WRITE,

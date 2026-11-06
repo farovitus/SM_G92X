@@ -24,4 +24,14 @@ config IIO_SSP_SENSORHUB
 	  To compile this driver as a module, choose M here: the
 	  module will be called sensorhub.
 
+config IIO_SSP_SENSORHUB_BCM4773
+	bool "Sensorhub behind a Broadcom BCM4773 (Galaxy S6)"
+	depends on IIO_SSP_SENSORHUB && OF
+	depends on BCM4773=y || BCM4773=IIO_SSP_SENSORHUB
+	help
+	  Say yes here for the Galaxy S6 and S6 edge, whose sensor hub
+	  firmware runs on the BCM4773 GNSS chip and talks to the AP through
+	  the BCM4773 bridge. The hub starts once userspace (lhd) has loaded
+	  the chip's firmware.
+
 endmenu

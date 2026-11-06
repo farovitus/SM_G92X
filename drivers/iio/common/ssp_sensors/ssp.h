@@ -26,6 +26,8 @@
 #define SSP_DEFAULT_RETRIES		3
 #define SSP_DATA_PACKET_SIZE		960
 #define SSP_HEADER_BUFFER_SIZE		4
+#define SSP_MAX_HUB_IDS			32
+#define SSP_NO_HUB_ID			0xff
 
 enum {
 	SSP_KERNEL_BINARY = 0,
@@ -94,6 +96,7 @@ enum {
 #define SSP_MSG2SSP_AP_START_BIG_DATA			0xfb
 #define SSP_MSG2SSP_AP_SET_MAGNETIC_STATIC_MATRIX	0xfd
 #define SSP_MSG2SSP_AP_SENSOR_TILT			0xea
+#define SSP_MSG2SSP_AP_GLASS_TYPE			0xec
 #define SSP_MSG2SSP_AP_MCU_SET_TIME			0xfe
 #define SSP_MSG2SSP_AP_MCU_GET_TIME			0xff
 
@@ -139,12 +142,44 @@ struct ssp_bus_ops {
 
 extern const struct ssp_bus_ops ssp_spi_bus_ops;
 
+/**
+ * struct ssp_sensorhub_info - sensorhub firmware variant
+ * @fw_name:		firmware file
+ * @fw_crashed_name:	firmware file after a crash
+ * @fw_rev:		required firmware revision, 0: not checked
+ * @mag_table:		magnetometer matrix sent at init, if any
+ * @mag_length:		size of @mag_table, 0 for none
+ * @hub_ids:		hub sensor id for each enum ssp_sensor_type,
+ *			SSP_NO_HUB_ID if absent; NULL when they are the same
+ * @frame_sizes:	sample size, without time, by hub sensor id, 0 if
+ *			unknown; only used with @frame_count
+ * @num_hub_ids:	entries in @frame_sizes
+ * @frame_count:	the Galaxy S6 frame format: a data frame carries a
+ *			le16 sample count, and the hub sends META, gyro
+ *			calibration and length-prefixed library frames
+ * @ap_timestamp:	stamp samples on arrival (CLOCK_BOOTTIME), ignore the
+ *			hub time
+ * @short_inst:		instruction length is the payload plus the sensor
+ *			byte, without padding
+ * @no_dump_check:	firmware does not know SSP_MSG2SSP_AP_MCU_DUMP_CHECK
+ * @resync_enabled:	after a hub reset re-add only the enabled sensors
+ * @setup:		board setup, after the sensor scan
+ */
 struct ssp_sensorhub_info {
 	char *fw_name;
 	char *fw_crashed_name;
 	unsigned int fw_rev;
-	const u8 * const mag_table;
-	const unsigned int mag_length;
+	const u8 *mag_table;
+	unsigned int mag_length;
+	const u8 *hub_ids;
+	const u8 *frame_sizes;
+	unsigned int num_hub_ids;
+	bool frame_count;
+	bool ap_timestamp;
+	bool short_inst;
+	bool no_dump_check;
+	bool resync_enabled;
+	int (*setup)(struct ssp_data *data);
 };
 
 /* ssp_msg options bit */
@@ -195,6 +230,14 @@ struct ssp_sensorhub_info {
  * @pending_list:	pending list for messages queued to be sent/read
  * @sensor_devs:	registered IIO devices table
  * @enable_refcount:	enable reference count for wdt (watchdog timer)
+ * @hub_to_type:	enum ssp_sensor_type by hub sensor id, -1 if none
+ * @hub:		BCM4773 bridge device, for that bus
+ * @work_rx:		drains the bridge byte stream
+ * @work_ready:		(re)initialises the hub when its firmware comes up
+ * @hub_ready:		the bridge reports the hub firmware running
+ * @glass_type:		cover glass variant
+ * @prox_thresh:	proximity high and low thresholds
+ * @mag_matrix:		magnetometer matrix from the device tree, 9 x le16
  * @header_buffer:	cache aligned buffer for packet header
  */
 struct ssp_data {
@@ -243,11 +286,38 @@ struct ssp_data {
 
 	struct iio_dev *sensor_devs[SSP_SENSOR_MAX];
 	atomic_t enable_refcount;
+	s8 hub_to_type[SSP_MAX_HUB_IDS];
+
+	/* Hub behind the BCM4773 bridge */
+	struct device *hub;
+	struct work_struct work_rx;
+	struct work_struct work_ready;
+	bool hub_ready;
+	u32 glass_type;
+	u32 prox_thresh[2];
+	u8 mag_matrix[18];
 
 	__le16 header_buffer[SSP_HEADER_BUFFER_SIZE / sizeof(__le16)] __aligned(IIO_DMA_MINALIGN);
 };
 
+extern const struct dev_pm_ops ssp_pm_ops;
+
 void ssp_clean_pending_list(struct ssp_data *data);
+void ssp_data_init(struct ssp_data *data);
+void ssp_data_release(struct ssp_data *data);
+void ssp_enable_mcu(struct ssp_data *data, bool enable);
+int ssp_initialize_mcu(struct ssp_data *data);
+void ssp_resync_sensors(struct ssp_data *data);
+int ssp_write_cmd(struct ssp_data *data, u8 cmd, const void *buf, u8 len);
+int ssp_hub_id(struct ssp_data *data, enum ssp_sensor_type type);
+
+#ifdef CONFIG_IIO_SSP_SENSORHUB_BCM4773
+int ssp_bbd_register(void);
+void ssp_bbd_unregister(void);
+#else
+static inline int ssp_bbd_register(void) { return 0; }
+static inline void ssp_bbd_unregister(void) { }
+#endif
 
 int ssp_command(struct ssp_data *data, char command, int arg);
 

@@ -81,7 +81,7 @@ static void ssp_sync_available_sensors(struct ssp_data *data)
 			"SSP_MSG2SSP_AP_MCU_SET_DUMPMODE failed\n");
 }
 
-static void ssp_enable_mcu(struct ssp_data *data, bool enable)
+void ssp_enable_mcu(struct ssp_data *data, bool enable)
 {
 	dev_info(data->dev, "current shutdown = %d, old = %d\n", enable,
 		 data->shut_down);
@@ -346,7 +346,7 @@ static irqreturn_t ssp_irq_thread_fn(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int ssp_initialize_mcu(struct ssp_data *data)
+int ssp_initialize_mcu(struct ssp_data *data)
 {
 	int ret;
 
@@ -380,11 +380,49 @@ static int ssp_initialize_mcu(struct ssp_data *data)
 		return -EIO;
 	}
 
+	if (data->sensorhub_info->setup) {
+		ret = data->sensorhub_info->setup(data);
+		if (ret < 0) {
+			dev_err(data->dev, "%s - board setup failed %d\n",
+				__func__, ret);
+			return ret;
+		}
+	}
+
 	data->cur_firm_rev = ssp_get_firmware_rev(data);
 	dev_info(data->dev, "MCU Firm Rev : New = %8u\n",
 		 data->cur_firm_rev);
 
+	if (data->sensorhub_info->no_dump_check)
+		return 0;
+
 	return ssp_command(data, SSP_MSG2SSP_AP_MCU_DUMP_CHECK, 0);
+}
+
+/**
+ * ssp_resync_sensors() - re-add the enabled sensors after a hub restart
+ * @data:	sensorhub structure
+ */
+void ssp_resync_sensors(struct ssp_data *data)
+{
+	struct ssp_instruction to_send;
+	int i, ret;
+
+	for (i = 0; i < SSP_SENSOR_MAX; ++i) {
+		if (!(data->sensor_enable & BIT(i)))
+			continue;
+
+		to_send.a = cpu_to_le32(data->delay_buf[i]);
+		to_send.b = cpu_to_le32(data->batch_latency_buf[i]);
+		to_send.c = data->batch_opt_buf[i];
+
+		ret = ssp_send_instruction(data,
+					   SSP_MSG2SSP_INST_BYPASS_SENSOR_ADD,
+					   i, (u8 *)&to_send, sizeof(to_send));
+		if (ret < 0)
+			dev_err(data->dev, "Resync sensor %d fail %d\n", i,
+				ret);
+	}
 }
 
 /*
@@ -401,7 +439,10 @@ static void ssp_refresh_task(struct work_struct *work)
 	data->reset_cnt++;
 
 	if (ssp_initialize_mcu(data) >= 0) {
-		ssp_sync_available_sensors(data);
+		if (data->sensorhub_info->resync_enabled)
+			ssp_resync_sensors(data);
+		else
+			ssp_sync_available_sensors(data);
 		if (data->last_ap_state != 0)
 			ssp_command(data, data->last_ap_state, 0);
 
@@ -463,6 +504,63 @@ static struct ssp_data *ssp_parse_dt(struct device *dev)
 }
 
 /**
+ * ssp_data_init() - set up the bus independent state
+ * @data:	sensorhub structure, with sensorhub_info set
+ */
+void ssp_data_init(struct ssp_data *data)
+{
+	int i, id;
+
+	data->fw_dl_state = SSP_FW_DL_STATE_NONE;
+
+	mutex_init(&data->comm_lock);
+
+	for (i = 0; i < SSP_SENSOR_MAX; ++i) {
+		data->delay_buf[i] = SSP_DEFAULT_POLLING_DELAY;
+		data->batch_latency_buf[i] = 0;
+		data->batch_opt_buf[i] = 0;
+		data->check_status[i] = SSP_INITIALIZATION_STATE;
+	}
+
+	data->delay_buf[SSP_BIO_HRM_LIB] = 100;
+
+	memset(data->hub_to_type, -1, sizeof(data->hub_to_type));
+	for (i = 0; i < SSP_SENSOR_MAX; ++i) {
+		id = ssp_hub_id(data, i);
+		if (id >= 0 && id < SSP_MAX_HUB_IDS)
+			data->hub_to_type[id] = i;
+	}
+
+	data->time_syncing = true;
+
+	mutex_init(&data->pending_lock);
+	INIT_LIST_HEAD(&data->pending_list);
+
+	atomic_set(&data->enable_refcount, 0);
+
+	INIT_WORK(&data->work_wdt, ssp_wdt_work_func);
+	INIT_DELAYED_WORK(&data->work_refresh, ssp_refresh_task);
+
+	timer_setup(&data->wdt_timer, ssp_wdt_timer_func, 0);
+}
+
+/**
+ * ssp_data_release() - stop the watchdog and the refresh work
+ * @data:	sensorhub structure
+ */
+void ssp_data_release(struct ssp_data *data)
+{
+	ssp_clean_pending_list(data);
+	cancel_delayed_work_sync(&data->work_refresh);
+
+	del_timer_sync(&data->wdt_timer);
+	cancel_work_sync(&data->work_wdt);
+
+	mutex_destroy(&data->comm_lock);
+	mutex_destroy(&data->pending_lock);
+}
+
+/**
  * ssp_register_consumer() - registers iio consumer in ssp framework
  *
  * @indio_dev:	consumer iio device
@@ -478,7 +576,7 @@ EXPORT_SYMBOL_NS(ssp_register_consumer, IIO_SSP_SENSORS);
 
 static int ssp_probe(struct spi_device *spi)
 {
-	int ret, i;
+	int ret;
 	struct ssp_data *data;
 
 	data = ssp_parse_dt(&spi->dev);
@@ -502,34 +600,12 @@ static int ssp_probe(struct spi_device *spi)
 		goto err_setup_spi;
 	}
 
-	data->fw_dl_state = SSP_FW_DL_STATE_NONE;
 	data->dev = &spi->dev;
 	data->irq = spi->irq;
 	data->bus = &ssp_spi_bus_ops;
 	spi_set_drvdata(spi, data);
 
-	mutex_init(&data->comm_lock);
-
-	for (i = 0; i < SSP_SENSOR_MAX; ++i) {
-		data->delay_buf[i] = SSP_DEFAULT_POLLING_DELAY;
-		data->batch_latency_buf[i] = 0;
-		data->batch_opt_buf[i] = 0;
-		data->check_status[i] = SSP_INITIALIZATION_STATE;
-	}
-
-	data->delay_buf[SSP_BIO_HRM_LIB] = 100;
-
-	data->time_syncing = true;
-
-	mutex_init(&data->pending_lock);
-	INIT_LIST_HEAD(&data->pending_list);
-
-	atomic_set(&data->enable_refcount, 0);
-
-	INIT_WORK(&data->work_wdt, ssp_wdt_work_func);
-	INIT_DELAYED_WORK(&data->work_refresh, ssp_refresh_task);
-
-	timer_setup(&data->wdt_timer, ssp_wdt_timer_func, 0);
+	ssp_data_init(data);
 
 	ret = request_threaded_irq(data->irq, NULL,
 				   ssp_irq_thread_fn,
@@ -585,16 +661,8 @@ static void ssp_remove(struct spi_device *spi)
 	ssp_enable_mcu(data, false);
 	ssp_disable_wdt_timer(data);
 
-	ssp_clean_pending_list(data);
-
 	free_irq(data->irq, data);
-	cancel_delayed_work_sync(&data->work_refresh);
-
-	del_timer_sync(&data->wdt_timer);
-	cancel_work_sync(&data->work_wdt);
-
-	mutex_destroy(&data->comm_lock);
-	mutex_destroy(&data->pending_lock);
+	ssp_data_release(data);
 
 	mfd_remove_devices(&spi->dev);
 }
@@ -602,7 +670,7 @@ static void ssp_remove(struct spi_device *spi)
 static int ssp_suspend(struct device *dev)
 {
 	int ret;
-	struct ssp_data *data = spi_get_drvdata(to_spi_device(dev));
+	struct ssp_data *data = dev_get_drvdata(dev);
 
 	data->last_resume_state = SSP_MSG2SSP_AP_STATUS_SUSPEND;
 
@@ -614,12 +682,21 @@ static int ssp_suspend(struct device *dev)
 		dev_err(data->dev,
 			"%s SSP_MSG2SSP_AP_STATUS_SUSPEND failed\n", __func__);
 
+		/*
+		 * Without an interrupt line the hub sits behind a bridge
+		 * that resends last_resume_state once the hub is back; do
+		 * not hold the system awake for it.
+		 */
+		if (!data->irq)
+			return 0;
+
 		ssp_enable_wdt_timer(data);
 		return ret;
 	}
 
 	data->time_syncing = false;
-	disable_irq(data->irq);
+	if (data->irq)
+		disable_irq(data->irq);
 
 	return 0;
 }
@@ -627,9 +704,10 @@ static int ssp_suspend(struct device *dev)
 static int ssp_resume(struct device *dev)
 {
 	int ret;
-	struct ssp_data *data = spi_get_drvdata(to_spi_device(dev));
+	struct ssp_data *data = dev_get_drvdata(dev);
 
-	enable_irq(data->irq);
+	if (data->irq)
+		enable_irq(data->irq);
 
 	if (atomic_read(&data->enable_refcount) > 0)
 		ssp_enable_wdt_timer(data);
@@ -639,6 +717,11 @@ static int ssp_resume(struct device *dev)
 		dev_err(data->dev,
 			"%s SSP_MSG2SSP_AP_STATUS_RESUME failed\n", __func__);
 		ssp_disable_wdt_timer(data);
+		/* as in suspend: the bridge path resyncs on hub ready */
+		if (!data->irq) {
+			data->last_resume_state = SSP_MSG2SSP_AP_STATUS_RESUME;
+			return 0;
+		}
 		return ret;
 	}
 
@@ -648,7 +731,8 @@ static int ssp_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(ssp_pm_ops, ssp_suspend, ssp_resume);
+EXPORT_NS_GPL_SIMPLE_DEV_PM_OPS(ssp_pm_ops, ssp_suspend, ssp_resume,
+				IIO_SSP_SENSORS);
 
 static struct spi_driver ssp_driver = {
 	.probe = ssp_probe,
@@ -660,7 +744,28 @@ static struct spi_driver ssp_driver = {
 	},
 };
 
-module_spi_driver(ssp_driver);
+static int __init ssp_init(void)
+{
+	int ret;
+
+	ret = spi_register_driver(&ssp_driver);
+	if (ret)
+		return ret;
+
+	ret = ssp_bbd_register();
+	if (ret)
+		spi_unregister_driver(&ssp_driver);
+
+	return ret;
+}
+module_init(ssp_init);
+
+static void __exit ssp_exit(void)
+{
+	ssp_bbd_unregister();
+	spi_unregister_driver(&ssp_driver);
+}
+module_exit(ssp_exit);
 
 MODULE_DESCRIPTION("ssp sensorhub driver");
 MODULE_AUTHOR("Samsung Electronics");
