@@ -327,6 +327,139 @@
 		};
 	};
 
+	/*
+	 * Internal bus (INT, BUCK4), as on Exynos 5433 TM2: bus0 is the parent,
+	 * driven by the general-port PPMUs of the four DREX channels (the
+	 * non-CPU traffic; stock used the same counters for INT), and the other
+	 * INT clocks follow it by OPP index.
+	 *
+	 * Every rate divides the 400 MHz bus0 PLL half that S-Boot selects
+	 * (1600 MHz / 4); the muxes never change. 400 MHz is S-Boot's level and
+	 * stock INT_LV7, 200 and 100 MHz are LV10 and LV11, with the same child
+	 * clocks as stock. Voltages are the stock INT ASV table v15 entries for
+	 * this chip's group (int_asv_group 0x999, ASV9): 712.5 mV for 400 MHz,
+	 * 650 mV below. Stock's 532/560 MHz levels need 793.75 mV and another
+	 * PLL; they are left out. MFC, MSCL, VPP and the other INT clocks keep
+	 * their S-Boot rates. G925F needs its own values.
+	 */
+	bus_int: bus-int {
+		compatible = "samsung,exynos-bus";
+		clocks = <&clock_topc DOUT_ACLK_BUS0_532>;
+		clock-names = "bus";
+		devfreq-events = <&ppmu_event0_d0_general>,
+				 <&ppmu_event0_d1_general>,
+				 <&ppmu_event0_d2_general>,
+				 <&ppmu_event0_d3_general>;
+		vdd-supply = <&vdd_int>;
+		exynos,saturation-ratio = <10>;
+		operating-points-v2 = <&bus_int_opp_table>;
+	};
+
+	bus_int_opp_table: opp-table-bus-int {
+		compatible = "operating-points-v2";
+
+		opp-100000000 {
+			opp-hz = /bits/ 64 <100000000>;
+			opp-microvolt = <650000 650000 1000000>;
+		};
+		opp-200000000 {
+			opp-hz = /bits/ 64 <200000000>;
+			opp-microvolt = <650000 650000 1000000>;
+		};
+		opp-400000000 {
+			opp-hz = /bits/ 64 <400000000>;
+			opp-microvolt = <712500 712500 1000000>;
+		};
+	};
+
+	bus_int_bus1: bus-int-bus1 {
+		compatible = "samsung,exynos-bus";
+		clocks = <&clock_topc DOUT_ACLK_BUS1_532>;
+		clock-names = "bus";
+		devfreq = <&bus_int>;
+		operating-points-v2 = <&bus_int_bus1_opp_table>;
+	};
+
+	bus_int_bus1_opp_table: opp-table-bus-int-bus1 {
+		compatible = "operating-points-v2";
+
+		opp-100000000 {
+			opp-hz = /bits/ 64 <100000000>;
+		};
+		opp-200000000 {
+			opp-hz = /bits/ 64 <200000000>;
+		};
+		opp-400000000 {
+			opp-hz = /bits/ 64 <400000000>;
+		};
+	};
+
+	bus_int_bus1_200: bus-int-bus1-200 {
+		compatible = "samsung,exynos-bus";
+		clocks = <&clock_topc DOUT_ACLK_BUS1_200>;
+		clock-names = "bus";
+		devfreq = <&bus_int>;
+		operating-points-v2 = <&bus_int_bus1_200_opp_table>;
+	};
+
+	bus_int_bus1_200_opp_table: opp-table-bus-int-bus1-200 {
+		compatible = "operating-points-v2";
+
+		opp-80000000 {
+			opp-hz = /bits/ 64 <80000000>;
+		};
+		opp-100000000 {
+			opp-hz = /bits/ 64 <100000000>;
+		};
+		opp-200000000 {
+			opp-hz = /bits/ 64 <200000000>;
+		};
+	};
+
+	bus_int_imem: bus-int-imem {
+		compatible = "samsung,exynos-bus";
+		clocks = <&clock_topc DOUT_ACLK_IMEM_266>;
+		clock-names = "bus";
+		devfreq = <&bus_int>;
+		operating-points-v2 = <&bus_int_imem_opp_table>;
+	};
+
+	bus_int_imem_opp_table: opp-table-bus-int-imem {
+		compatible = "operating-points-v2";
+
+		opp-80000000 {
+			opp-hz = /bits/ 64 <80000000>;
+		};
+		opp-100000000 {
+			opp-hz = /bits/ 64 <100000000>;
+		};
+		opp-200000000 {
+			opp-hz = /bits/ 64 <200000000>;
+		};
+	};
+
+	bus_int_pclk: bus-int-pclk {
+		compatible = "samsung,exynos-bus";
+		clocks = <&clock_topc DOUT_PCLK_BUS01_133>;
+		clock-names = "bus";
+		devfreq = <&bus_int>;
+		operating-points-v2 = <&bus_int_pclk_opp_table>;
+	};
+
+	bus_int_pclk_opp_table: opp-table-bus-int-pclk {
+		compatible = "operating-points-v2";
+
+		opp-25000000 {
+			opp-hz = /bits/ 64 <25000000>;
+		};
+		opp-50000000 {
+			opp-hz = /bits/ 64 <50000000>;
+		};
+		opp-100000000 {
+			opp-hz = /bits/ 64 <100000000>;
+		};
+	};
+
 	/* Bus for the MAX77843 MUIC/charger/fuel gauge (stock hsi2c_1 pins) */
 	i2c_max77843: i2c-max77843 {
 		compatible = "i2c-gpio";
@@ -1208,6 +1341,51 @@
 			compatible = "samsung,s6e3ha2-zeroflte", "samsung,s6e3ha2";
 			reg = <0>;
 			reset-gpios = <&gpr3 0 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	/* INT bus load: general-port PPMUs of the four DREX channels */
+	ppmu_d0_general: ppmu@10830000 {
+		compatible = "samsung,exynos-ppmu-v2";
+		reg = <0x10830000 0x300>;
+
+		events {
+			ppmu_event0_d0_general: ppmu-event0-d0-general {
+				event-name = "ppmu-event0-d0-general";
+			};
+		};
+	};
+
+	ppmu_d1_general: ppmu@10930000 {
+		compatible = "samsung,exynos-ppmu-v2";
+		reg = <0x10930000 0x300>;
+
+		events {
+			ppmu_event0_d1_general: ppmu-event0-d1-general {
+				event-name = "ppmu-event0-d1-general";
+			};
+		};
+	};
+
+	ppmu_d2_general: ppmu@10a30000 {
+		compatible = "samsung,exynos-ppmu-v2";
+		reg = <0x10a30000 0x300>;
+
+		events {
+			ppmu_event0_d2_general: ppmu-event0-d2-general {
+				event-name = "ppmu-event0-d2-general";
+			};
+		};
+	};
+
+	ppmu_d3_general: ppmu@10b30000 {
+		compatible = "samsung,exynos-ppmu-v2";
+		reg = <0x10b30000 0x300>;
+
+		events {
+			ppmu_event0_d3_general: ppmu-event0-d3-general {
+				event-name = "ppmu-event0-d3-general";
+			};
 		};
 	};
 };
