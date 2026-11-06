@@ -596,6 +596,8 @@ static const struct samsung_mux_clock top1_mux_clks[] __initconst = {
 
 	MUX(0, "mout_sclk_phy_fsys0_26m", mout_top1_group1,
 		MUX_SEL_TOP1_FSYS0, 0, 2),
+	MUX(0, "mout_sclk_phy_fsys0", mout_top1_group1,
+		MUX_SEL_TOP1_FSYS0, 8, 2),
 	MUX(0, "mout_sclk_mmc2", mout_top1_group1, MUX_SEL_TOP1_FSYS0, 16, 2),
 	MUX(0, "mout_sclk_usbdrd300", mout_top1_group1,
 		MUX_SEL_TOP1_FSYS0, 28, 2),
@@ -624,6 +626,10 @@ static const struct samsung_div_clock top1_div_clks[] __initconst = {
 		"mout_sclk_ufsunipro20",
 		DIV_TOP1_FSYS1, 16, 6),
 
+	DIV(DOUT_SCLK_PHY_FSYS0_26M, "dout_sclk_phy_fsys0_26m",
+		"mout_sclk_phy_fsys0_26m", DIV_TOP1_FSYS0, 0, 6),
+	DIV(DOUT_SCLK_PHY_FSYS0, "dout_sclk_phy_fsys0",
+		"mout_sclk_phy_fsys0", DIV_TOP1_FSYS0, 8, 6),
 	DIV(DOUT_SCLK_MMC2, "dout_sclk_mmc2", "mout_sclk_mmc2",
 		DIV_TOP1_FSYS0, 16, 10),
 	DIV(0, "dout_sclk_usbdrd300", "mout_sclk_usbdrd300",
@@ -639,6 +645,12 @@ static const struct samsung_div_clock top1_div_clks[] __initconst = {
 };
 
 static const struct samsung_gate_clock top1_gate_clks[] __initconst = {
+	/* MIPI-LLI / combo PHY (modem) reference clocks for CMU_FSYS0 */
+	GATE(CLK_SCLK_PHY_FSYS0_26M, "top_sclk_phy_fsys0_26m",
+		"dout_sclk_phy_fsys0_26m", ENABLE_SCLK_TOP1_FSYS0, 0,
+		CLK_SET_RATE_PARENT, 0),
+	GATE(CLK_SCLK_PHY_FSYS0, "top_sclk_phy_fsys0", "dout_sclk_phy_fsys0",
+		ENABLE_SCLK_TOP1_FSYS0, 8, CLK_SET_RATE_PARENT, 0),
 	GATE(CLK_SCLK_MMC2, "sclk_mmc2", "dout_sclk_mmc2",
 		ENABLE_SCLK_TOP1_FSYS0, 16, CLK_SET_RATE_PARENT, 0),
 	GATE(0, "sclk_usbdrd300", "dout_sclk_usbdrd300",
@@ -999,10 +1011,14 @@ CLK_OF_DECLARE(exynos7_clk_peris, "samsung,exynos7-clock-peris",
 #define MUX_SEL_FSYS00			0x0200
 #define MUX_SEL_FSYS01			0x0204
 #define MUX_SEL_FSYS02			0x0208
+#define MUX_SEL_FSYS03			0x020C
+#define DIV_FSYS0			0x0600
 #define ENABLE_ACLK_FSYS00		0x0800
 #define ENABLE_ACLK_FSYS01		0x0804
+#define ENABLE_PCLK_FSYS0		0x0900
 #define ENABLE_SCLK_FSYS01		0x0A04
 #define ENABLE_SCLK_FSYS02		0x0A08
+#define ENABLE_SCLK_FSYS03		0x0A0C
 #define ENABLE_SCLK_FSYS04		0x0A10
 
 /*
@@ -1017,20 +1033,34 @@ PNAME(mout_phyclk_usbdrd300_udrd30_phyclk_user_p)	= { "fin_pll",
 PNAME(mout_phyclk_usbdrd300_udrd30_pipe_pclk_user_p)	= { "fin_pll",
 				"phyclk_usbdrd300_udrd30_pipe_pclk" };
 
+/* MIPI-LLI (modem link) and its combo M-PHY */
+PNAME(mout_sclk_phy_fsys0_user_p)	= { "fin_pll", "top_sclk_phy_fsys0" };
+PNAME(mout_phyclk_lli_tx0_user_p)	= { "fin_pll", "phyclk_lli_tx0" };
+PNAME(mout_phyclk_lli_rx0_user_p)	= { "fin_pll", "phyclk_lli_rx0" };
+PNAME(mout_fsys0_phyclk_sel0_p)		= { "fin_pll", "fin_pll_26m",
+					    "top_sclk_phy_fsys0_26m" };
+
 /* fixed rate clocks used in the FSYS0 block */
 static const struct samsung_fixed_rate_clock fixed_rate_clks_fsys0[] __initconst = {
 	FRATE(0, "phyclk_usbdrd300_udrd30_phyclock", NULL, 0, 60000000),
 	FRATE(0, "phyclk_usbdrd300_udrd30_pipe_pclk", NULL, 0, 125000000),
+	/* LLI M-PHY symbol clocks, driven by the PHY */
+	FRATE(PHYCLK_LLI_TX0, "phyclk_lli_tx0", NULL, 0, 150000000),
+	FRATE(PHYCLK_LLI_RX0, "phyclk_lli_rx0", NULL, 0, 150000000),
 };
 
 static const unsigned long fsys0_clk_regs[] __initconst = {
 	MUX_SEL_FSYS00,
 	MUX_SEL_FSYS01,
 	MUX_SEL_FSYS02,
+	MUX_SEL_FSYS03,
+	DIV_FSYS0,
 	ENABLE_ACLK_FSYS00,
 	ENABLE_ACLK_FSYS01,
+	ENABLE_PCLK_FSYS0,
 	ENABLE_SCLK_FSYS01,
 	ENABLE_SCLK_FSYS02,
+	ENABLE_SCLK_FSYS03,
 	ENABLE_SCLK_FSYS04,
 };
 
@@ -1049,9 +1079,61 @@ static const struct samsung_mux_clock fsys0_mux_clks[] __initconst = {
 	MUX(0, "mout_phyclk_usbdrd300_udrd30_phyclk_user",
 		mout_phyclk_usbdrd300_udrd30_phyclk_user_p,
 		MUX_SEL_FSYS02, 28, 1),
+
+	MUX(MOUT_FSYS0_PHYCLK_SEL0, "mout_fsys0_phyclk_sel0",
+		mout_fsys0_phyclk_sel0_p, MUX_SEL_FSYS00, 20, 2),
+	MUX(MOUT_SCLK_PHY_FSYS0_USER, "mout_sclk_phy_fsys0_user",
+		mout_sclk_phy_fsys0_user_p, MUX_SEL_FSYS01, 16, 1),
+	MUX(MOUT_PHYCLK_LLI_RX0_USER, "mout_phyclk_lli_rx0_user",
+		mout_phyclk_lli_rx0_user_p, MUX_SEL_FSYS03, 16, 1),
+	MUX(MOUT_PHYCLK_LLI_TX0_USER, "mout_phyclk_lli_tx0_user",
+		mout_phyclk_lli_tx0_user_p, MUX_SEL_FSYS03, 20, 1),
+};
+
+static const struct samsung_div_clock fsys0_div_clks[] __initconst = {
+	DIV(0, "dout_pclk_combo_phy_modem", "mout_aclk_fsys0_200_user",
+		DIV_FSYS0, 8, 2),
 };
 
 static const struct samsung_gate_clock fsys0_gate_clks[] __initconst = {
+	/* MIPI-LLI and modem combo PHY */
+	GATE(ACLK_AXIUS_LLISFRX_LLIBE, "aclk_axius_llisfrx_llibe",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS00, 13, 0, 0),
+	GATE(ACLK_AXIUS_LLISFRX_LLILL, "aclk_axius_llisfrx_llill",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS00, 14, 0, 0),
+	GATE(ACLK_AXIUS_LLI_LL, "aclk_axius_lli_ll",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS00, 16, 0, 0),
+	GATE(ACLK_AXIUS_LLI_BE, "aclk_axius_lli_be",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS00, 17, 0, 0),
+	GATE(ACLK_XIU_LLISFRX, "aclk_xiu_llisfrx",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS00, 22, 0, 0),
+	GATE(ACLK_XIU_MODEMX, "aclk_xiu_modemx",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS00, 24, 0, 0),
+	GATE(ACLK_COMBO_PHY_MODEM_PCS_PCLK, "aclk_combo_phy_modem_pcs_pclk",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS01, 18, 0, 0),
+	GATE(ACLK_LLI_SVC_REM, "aclk_lli_svc_rem",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS01, 19, 0, 0),
+	GATE(ACLK_LLI_SVC_LOC, "aclk_lli_svc_loc",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS01, 20, 0, 0),
+	GATE(ACLK_LLI_BE_TARG, "aclk_lli_be_targ",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS01, 21, 0, 0),
+	GATE(ACLK_LLI_BE_INIT, "aclk_lli_be_init",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS01, 22, 0, 0),
+	GATE(ACLK_LLI_LL_TARG, "aclk_lli_ll_targ",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS01, 23, 0, 0),
+	GATE(ACLK_LLI_LL_INIT, "aclk_lli_ll_init",
+		"mout_aclk_fsys0_200_user", ENABLE_ACLK_FSYS01, 24, 0, 0),
+	GATE(PCLK_ASYNC_COMBO_PHY_MODEM, "pclk_async_combo_phy_modem",
+		"dout_pclk_combo_phy_modem", ENABLE_PCLK_FSYS0, 23, 0, 0),
+	GATE(SCLK_PHY_FSYS0, "sclk_phy_fsys0", "mout_sclk_phy_fsys0_user",
+		ENABLE_SCLK_FSYS01, 16, 0, 0),
+	GATE(PHYCLK_LLI_RX0_SYMBOL_USER, "user_phyclk_lli_rx0_symbol",
+		"mout_phyclk_lli_rx0_user", ENABLE_SCLK_FSYS03, 16, 0, 0),
+	GATE(PHYCLK_LLI_TX0_SYMBOL_USER, "user_phyclk_lli_tx0_symbol",
+		"mout_phyclk_lli_tx0_user", ENABLE_SCLK_FSYS03, 20, 0, 0),
+	GATE(SCLK_COMBO_PHY_MODEM_26M, "sclk_combo_phy_modem_26m",
+		"mout_fsys0_phyclk_sel0", ENABLE_SCLK_FSYS04, 8, 0, 0),
+
 	GATE(ACLK_PDMA1, "aclk_pdma1", "mout_aclk_fsys0_200_user",
 			ENABLE_ACLK_FSYS00, 3, 0, 0),
 	GATE(ACLK_PDMA0, "aclk_pdma0", "mout_aclk_fsys0_200_user",
@@ -1090,6 +1172,8 @@ static const struct samsung_cmu_info fsys0_cmu_info __initconst = {
 	.nr_fixed_clks		= ARRAY_SIZE(fixed_rate_clks_fsys0),
 	.mux_clks		= fsys0_mux_clks,
 	.nr_mux_clks		= ARRAY_SIZE(fsys0_mux_clks),
+	.div_clks		= fsys0_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(fsys0_div_clks),
 	.gate_clks		= fsys0_gate_clks,
 	.nr_gate_clks		= ARRAY_SIZE(fsys0_gate_clks),
 	.nr_clk_ids		= FSYS0_NR_CLK,
