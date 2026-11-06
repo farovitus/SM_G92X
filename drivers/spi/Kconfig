@@ -429,6 +429,18 @@ config SPI_NXP_FLEXSPI
 	  This controller does not support generic SPI messages and only
 	  supports the high-level SPI memory interface.
 
+config SPI_EXYNOS_GPIO
+	tristate "Bit-banged SPI on a Samsung GPIO bank"
+	depends on PINCTRL_SAMSUNG && GPIOLIB
+	help
+	  Bit-banged SPI host for boards whose SPI controller cannot be
+	  used, with SCK, MOSI and MISO on one Samsung pin bank. It writes
+	  the bank's data register once per clock edge, about 1.5 times
+	  as fast as SPI_GPIO on the Exynos 7420.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called spi-exynos-gpio.
+
 config SPI_GPIO
 	tristate "GPIO-based bitbanging SPI Master"
 	depends on GPIOLIB || COMPILE_TEST
