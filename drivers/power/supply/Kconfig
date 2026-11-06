@@ -560,6 +560,14 @@ config CHARGER_MAX77843
 	  MAX77843 PMIC. The driver reports input presence, charge state
 	  and the programmed current limits.
 
+config FUEL_GAUGE_MAX77843
+	tristate "Maxim MAX77843 fuel gauge driver"
+	depends on MFD_MAX77843
+	help
+	  Say Y to enable support for the ModelGauge m3 fuel gauge of the
+	  Maxim MAX77843 PMIC. The gauge is read only; its configuration
+	  is left as the bootloader programmed it.
+
 config CHARGER_MAX77976
 	tristate "Maxim MAX77976 battery charger driver"
 	depends on I2C
