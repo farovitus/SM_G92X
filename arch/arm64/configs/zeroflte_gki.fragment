@@ -287,3 +287,9 @@ CONFIG_BOOTPARAM_HARDLOCKUP_PANIC=y
 # watchdog fed) panics too.
 CONFIG_BOOTPARAM_HUNG_TASK_PANIC=y
 CONFIG_DEFAULT_HUNG_TASK_TIMEOUT=60
+
+# Shannon 333 modem: MIPI-LLI shared-memory IPC and the SS333 modem
+# interface (umts_* nodes, rmnet0-7). The CP bootloader goes over the
+# spi-gpio bus enabled above.
+CONFIG_MIPI_LLI=y
+CONFIG_SEC_MODEM_SS333=y
