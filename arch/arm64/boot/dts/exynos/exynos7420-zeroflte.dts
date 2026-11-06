@@ -1890,3 +1890,392 @@
 		};
 	};
 };
+
+/*
+ * Shannon 333 modem (CP): MIPI-LLI shared-memory IPC, SPI bootloader link.
+ *
+ * Hardware facts from the stock tw70-stock sources that every
+ * zeroflte_eur_open revision includes:
+ *   exynos7420-zerolte_modem-shannon_ds.dtsi  GPIOs, pin settings, SPI2 pins,
+ *                                             LLI and M-PHY settings
+ *   modem-ss333-ds-pdata.dtsi                 modem and the 18 io devices
+ *   exynos7420-zero_common.dtsi               8 MiB mipi-lli-shmem carve-out
+ *
+ * The bootloader goes over spi-gpio on the stock SPI2 pins (gpd5-0..3):
+ * the hardware SPI controllers are clocked from CMU_PERIC1, which this
+ * board cannot touch. The modem driver keeps the stock name "mif_sipc5".
+ */
+/ {
+	reserved-memory {
+		/* CP IPC window; LLI remap needs size = alignment = 2^n */
+		modem_ipc_mem: modem-ipc {
+			compatible = "samsung,exynos7420-lli-shmem";
+			size = <0x0 0x800000>;
+			alignment = <0x0 0x800000>;
+			no-map;
+		};
+	};
+};
+
+&mipi_lli {
+	memory-region = <&modem_ipc_mem>;
+	/* stock ss333: HS-G2 rate A, CP reference clock, no scrambler/automode */
+	samsung,mphy-init-gear = <2 2 1>;
+	samsung,mphy-shared-refclk;
+	status = "okay";
+};
+
+&pinctrl_alive {
+	/* phone_active gpa2-7, cp2ap_wakeup gpa3-1, cp_status gpa1-0 */
+	modem_eint: modem-eint-pins {
+		samsung,pins = "gpa2-7", "gpa3-1", "gpa1-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+
+	modem_cp_dump_int: modem-cp-dump-int-pins {
+		samsung,pins = "gpa1-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+
+	modem_ipc_int2cp: modem-ipc-int2cp-pins {
+		samsung,pins = "gpa1-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
+&pinctrl_bus1 {
+	/* cp_on, ap_dump_int, pda_active, ap2cp_status, ap2cp_wakeup, cp_reset */
+	modem_ctrl_out: modem-ctrl-out-pins {
+		samsung,pins = "gpf5-0", "gpf5-1", "gpf3-3", "gpf0-4", "gpf4-2",
+			       "gpf1-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
+&pinctrl_bus0 {
+	/* stock SPI2: clk gpd5-0, cs gpd5-1, miso gpd5-2 (pull-down), mosi gpd5-3 */
+	modem_spi_out: modem-spi-out-pins {
+		samsung,pins = "gpd5-0", "gpd5-1", "gpd5-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+
+	modem_spi_miso: modem-spi-miso-pins {
+		samsung,pins = "gpd5-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+	};
+};
+
+/ {
+	spi-modem-boot {
+		compatible = "spi-gpio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		sck-gpios = <&gpd5 0 GPIO_ACTIVE_HIGH>;
+		miso-gpios = <&gpd5 2 GPIO_ACTIVE_HIGH>;
+		mosi-gpios = <&gpd5 3 GPIO_ACTIVE_HIGH>;
+		cs-gpios = <&gpd5 1 GPIO_ACTIVE_LOW>;
+		num-chipselects = <1>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&modem_spi_out &modem_spi_miso>;
+
+		modem-boot@0 {
+			compatible = "samsung,ss333-spi-boot";
+			reg = <0>;
+			spi-max-frequency = <100000>;
+		};
+	};
+
+	modem {
+		compatible = "samsung,ss333-modem";
+		pinctrl-names = "default";
+		pinctrl-0 = <&modem_ctrl_out &modem_eint &modem_cp_dump_int
+			     &modem_ipc_int2cp>;
+
+		samsung,modem-name = "ss333";
+		samsung,modem-net = <0>;
+		samsung,modem-type = <15>;		/* SEC_SS333 */
+		samsung,use-handover = <0>;
+		samsung,ipc-version = <50>;		/* SIPC 5.0 */
+		samsung,link-types = <0x408>;		/* LLI | SPI */
+		samsung,link-name = "lli";
+		/* DUMP/BOOT_ALIGNED, MEM_DUMP, MEM_BOOT, DPRAM_MAGIC, SBD_IPC */
+		samsung,link-attrs = <0x3c9>;
+
+		cp-on-gpios = <&gpf5 0 GPIO_ACTIVE_HIGH>;
+		cp-reset-gpios = <&gpf1 1 GPIO_ACTIVE_HIGH>;
+		pda-active-gpios = <&gpf3 3 GPIO_ACTIVE_HIGH>;
+		phone-active-gpios = <&gpa2 7 GPIO_ACTIVE_HIGH>;
+		cp-status-gpios = <&gpa1 0 GPIO_ACTIVE_HIGH>;
+		ipc-int2cp-gpios = <&gpa1 1 GPIO_ACTIVE_HIGH>;
+		ap-dump-int-gpios = <&gpf5 1 GPIO_ACTIVE_HIGH>;
+		cp-dump-int-gpios = <&gpa1 3 GPIO_ACTIVE_HIGH>;
+
+		link-pm {
+			/* cp2ap_status is gpa1-0, the cp-status line above */
+			cp2ap-wakeup-gpios = <&gpa3 1 GPIO_ACTIVE_HIGH>;
+			ap2cp-wakeup-gpios = <&gpf4 2 GPIO_ACTIVE_HIGH>;
+			ap2cp-status-gpios = <&gpf0 4 GPIO_ACTIVE_HIGH>;
+		};
+
+		/*
+		 * format: 0 FMT, 1 RAW, 3 MULTI_RAW, 4 BOOT, 5 DUMP
+		 * io-type: 0 misc, 1 net, 2 dummy
+		 * attrs: 0x02 SIPC5, 0x80 SBD_IPC, 0x100 NO_LINK_HEADER,
+		 *        0x200 NO_CHECK_MAXQ (enum iodev_attr_bit)
+		 */
+		iodevs {
+			umts-ipc0 {
+				iod,name = "umts_ipc0";
+				iod,id = <235>;
+				iod,format = <0>;
+				iod,io-type = <0>;
+				iod,links = <0x400>;
+				iod,attrs = <0x82>;
+				iod,app = "RIL";
+				iod,ul-num-buffers = <16>;
+				iod,ul-buffer-size = <4096>;
+				iod,dl-num-buffers = <32>;
+				iod,dl-buffer-size = <4096>;
+			};
+
+			umts-ipc1 {
+				iod,name = "umts_ipc1";
+				iod,id = <236>;
+				iod,format = <0>;
+				iod,io-type = <0>;
+				iod,links = <0x400>;
+				iod,attrs = <0x82>;
+				iod,app = "RIL";
+				iod,ul-num-buffers = <16>;
+				iod,ul-buffer-size = <4096>;
+				iod,dl-num-buffers = <32>;
+				iod,dl-buffer-size = <4096>;
+			};
+
+			umts-rfs0 {
+				iod,name = "umts_rfs0";
+				iod,id = <245>;
+				iod,format = <1>;
+				iod,io-type = <0>;
+				iod,links = <0x400>;
+				iod,attrs = <0x82>;
+				iod,app = "RFS";
+				iod,ul-num-buffers = <16>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <512>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			umts-csd {
+				iod,name = "umts_csd";
+				iod,id = <1>;
+				iod,format = <1>;
+				iod,io-type = <0>;
+				iod,links = <0x400>;
+				iod,attrs = <0x82>;
+				iod,app = "CSVT";
+				iod,ul-num-buffers = <32>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <64>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			umts-router {
+				iod,name = "umts_router";
+				iod,id = <25>;
+				iod,format = <1>;
+				iod,io-type = <0>;
+				iod,links = <0x400>;
+				iod,attrs = <0x82>;
+				iod,app = "Data Router";
+				iod,ul-num-buffers = <16>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <16>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			umts-dm0 {
+				iod,name = "umts_dm0";
+				iod,id = <28>;
+				iod,format = <1>;
+				iod,io-type = <0>;
+				iod,links = <0x400>;
+				iod,attrs = <0x82>;
+				iod,app = "DIAG";
+				iod,ul-num-buffers = <16>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <128>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			ipc-loopback0 {
+				iod,name = "ipc_loopback0";
+				iod,id = <244>;
+				iod,format = <0>;
+				iod,io-type = <0>;
+				iod,links = <0x400>;
+				iod,attrs = <0x82>;
+				iod,app = "CLD";
+				iod,ul-num-buffers = <16>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <32>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			rmnet0 {
+				iod,name = "rmnet0";
+				iod,id = <10>;
+				iod,format = <1>;
+				iod,io-type = <1>;
+				iod,links = <0x400>;
+				iod,attrs = <0x180>;
+				iod,app = "NET";
+				iod,ul-num-buffers = <256>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <512>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			rmnet1 {
+				iod,name = "rmnet1";
+				iod,id = <11>;
+				iod,format = <1>;
+				iod,io-type = <1>;
+				iod,links = <0x400>;
+				iod,attrs = <0x180>;
+				iod,app = "NET";
+				iod,ul-num-buffers = <256>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <512>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			rmnet2 {
+				iod,name = "rmnet2";
+				iod,id = <12>;
+				iod,format = <1>;
+				iod,io-type = <1>;
+				iod,links = <0x400>;
+				iod,attrs = <0x180>;
+				iod,app = "NET";
+				iod,ul-num-buffers = <50>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <100>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			rmnet3 {
+				iod,name = "rmnet3";
+				iod,id = <13>;
+				iod,format = <1>;
+				iod,io-type = <1>;
+				iod,links = <0x400>;
+				iod,attrs = <0x180>;
+				iod,app = "NET";
+				iod,ul-num-buffers = <50>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <100>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			rmnet4 {
+				iod,name = "rmnet4";
+				iod,id = <14>;
+				iod,format = <1>;
+				iod,io-type = <1>;
+				iod,links = <0x400>;
+				iod,attrs = <0x180>;
+				iod,app = "NET";
+				iod,ul-num-buffers = <128>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <256>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			rmnet5 {
+				iod,name = "rmnet5";
+				iod,id = <15>;
+				iod,format = <1>;
+				iod,io-type = <1>;
+				iod,links = <0x400>;
+				iod,attrs = <0x180>;
+				iod,app = "NET";
+				iod,ul-num-buffers = <128>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <256>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			rmnet6 {
+				iod,name = "rmnet6";
+				iod,id = <16>;
+				iod,format = <1>;
+				iod,io-type = <1>;
+				iod,links = <0x400>;
+				iod,attrs = <0x180>;
+				iod,app = "NET";
+				iod,ul-num-buffers = <50>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <100>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			rmnet7 {
+				iod,name = "rmnet7";
+				iod,id = <17>;
+				iod,format = <1>;
+				iod,io-type = <1>;
+				iod,links = <0x400>;
+				iod,attrs = <0x180>;
+				iod,app = "NET";
+				iod,ul-num-buffers = <50>;
+				iod,ul-buffer-size = <2048>;
+				iod,dl-num-buffers = <100>;
+				iod,dl-buffer-size = <2048>;
+			};
+
+			multipdp {
+				iod,name = "multipdp";
+				iod,id = <0>;
+				iod,format = <3>;
+				iod,io-type = <2>;
+				iod,links = <0x400>;
+				iod,attrs = <0x2>;
+				iod,app = "RIL";
+			};
+
+			umts-boot0 {
+				iod,name = "umts_boot0";
+				iod,id = <215>;
+				iod,format = <4>;
+				iod,io-type = <0>;
+				iod,links = <0x408>;
+				/* LLI; cbd switches to SPI with IOCTL_MODEM_SET_TX_LINK */
+				iod,tx-link = <10>;
+				iod,attrs = <0x2>;
+				iod,app = "CBD";
+			};
+
+			umts-ramdump0 {
+				iod,name = "umts_ramdump0";
+				iod,id = <225>;
+				iod,format = <5>;
+				iod,io-type = <0>;
+				iod,links = <0x400>;
+				iod,attrs = <0x202>;
+				iod,app = "CBD";
+			};
+		};
+	};
+};
