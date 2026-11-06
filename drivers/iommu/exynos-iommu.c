@@ -20,6 +20,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/sizes.h>
 #include <linux/slab.h>
 
 typedef u32 sysmmu_iova_t;
@@ -234,6 +235,7 @@ struct exynos_iommu_owner {
 	struct list_head controllers;	/* list of sysmmu_drvdata.owner_node */
 	struct iommu_domain *domain;	/* domain this device is attached */
 	struct mutex rpm_lock;		/* for runtime pm of all sysmmus */
+	bool ready;			/* master allows translation */
 };
 
 /*
@@ -302,6 +304,8 @@ struct sysmmu_drvdata {
 
 	/* v7 fields */
 	bool has_vcr;			/* virtual machine control register */
+
+	bool wait_master;		/* enable only once the owner is ready */
 };
 
 #define SYSMMU_REG(data, reg) ((data)->sfrbase + (data)->variant->reg)
@@ -414,6 +418,24 @@ static const struct sysmmu_variant sysmmu_v7_vm_variant = {
 	.fault_info	= 0x1004,
 
 	.get_fault_info	= exynos_sysmmu_v7_get_fault_info,
+};
+
+/*
+ * SoCs whose SysMMU must not be touched in probe: the block sits in a power
+ * domain no driver here owns, and an unclocked access hangs the bus. The
+ * version comes from match data instead of the VERSION register.
+ */
+struct sysmmu_match_data {
+	unsigned int version;
+	const struct sysmmu_variant *variant;
+	bool wait_master;	/* translate only after master_ready */
+};
+
+/* Exynos 7420: SysMMU v6.x, v5 register layout */
+static const struct sysmmu_match_data exynos7420_sysmmu_data = {
+	.version	= MAKE_MMU_VER(6, 0),
+	.variant	= &sysmmu_v5_variant,
+	.wait_master	= true,
 };
 
 static struct exynos_iommu_domain *to_exynos_domain(struct iommu_domain *dom)
@@ -547,10 +569,11 @@ static void show_fault_information(struct sysmmu_drvdata *data,
 {
 	sysmmu_pte_t *ent;
 
-	dev_err(data->sysmmu, "%s: [%s] %s FAULT occurred at %#x\n",
-		dev_name(data->master),
-		fault->type == IOMMU_FAULT_READ ? "READ" : "WRITE",
-		fault->name, fault->addr);
+	dev_err_ratelimited(data->sysmmu,
+			    "%s: [%s] %s FAULT occurred at %#x\n",
+			    dev_name(data->master),
+			    fault->type == IOMMU_FAULT_READ ? "READ" : "WRITE",
+			    fault->name, fault->addr);
 	dev_dbg(data->sysmmu, "Page table base: %pa\n", &data->pgtable);
 	ent = section_entry(phys_to_virt(data->pgtable), fault->addr);
 	dev_dbg(data->sysmmu, "\tLv1 entry: %#x\n", *ent);
@@ -584,8 +607,11 @@ static irqreturn_t exynos_sysmmu_irq(int irq, void *dev_id)
 		ret = report_iommu_fault(&data->domain->domain, data->master,
 					 fault.addr, fault.type);
 	}
+	/* Log and resume: a panic here leaves no usable log on 7420 boards */
 	if (ret)
-		panic("Unrecoverable System MMU Fault!");
+		dev_err_ratelimited(data->sysmmu,
+				    "unhandled fault at %#x, resuming\n",
+				    fault.addr);
 
 out:
 	writel(1 << itype, SYSMMU_REG(data, int_clear));
@@ -644,6 +670,12 @@ static void __sysmmu_enable_vid(struct sysmmu_drvdata *data)
 static void __sysmmu_enable(struct sysmmu_drvdata *data)
 {
 	unsigned long flags;
+
+	/* Register access without the bus clocks hangs the interconnect */
+	if (!data->clk && (!data->aclk || !data->pclk)) {
+		dev_err(data->sysmmu, "bus clocks missing, not enabling\n");
+		return;
+	}
 
 	__sysmmu_enable_clocks(data);
 
@@ -722,6 +754,7 @@ static const struct iommu_ops exynos_iommu_ops;
 
 static int exynos_sysmmu_probe(struct platform_device *pdev)
 {
+	const struct sysmmu_match_data *match;
 	int irq, ret;
 	struct device *dev = &pdev->dev;
 	struct sysmmu_drvdata *data;
@@ -771,7 +804,14 @@ static int exynos_sysmmu_probe(struct platform_device *pdev)
 	data->sysmmu = dev;
 	spin_lock_init(&data->lock);
 
-	__sysmmu_get_version(data);
+	match = of_device_get_match_data(dev);
+	if (match) {
+		data->version = match->version;
+		data->variant = match->variant;
+		data->wait_master = match->wait_master;
+	} else {
+		__sysmmu_get_version(data);
+	}
 
 	ret = iommu_device_sysfs_add(&data->iommu, &pdev->dev, NULL,
 				     dev_name(data->sysmmu));
@@ -811,11 +851,16 @@ static int exynos_sysmmu_probe(struct platform_device *pdev)
 
 	ret = iommu_device_register(&data->iommu, &exynos_iommu_ops, dev);
 	if (ret)
-		goto err_dma_set_mask;
+		goto err_iommu_register;
 
 	return 0;
 
+err_iommu_register:
+	pm_runtime_disable(dev);
+	if (dma_dev == dev)
+		dma_dev = NULL;
 err_dma_set_mask:
+	platform_set_drvdata(pdev, NULL);
 	iommu_device_sysfs_remove(&data->iommu);
 	return ret;
 }
@@ -829,7 +874,7 @@ static int __maybe_unused exynos_sysmmu_suspend(struct device *dev)
 		struct exynos_iommu_owner *owner = dev_iommu_priv_get(master);
 
 		mutex_lock(&owner->rpm_lock);
-		if (data->domain) {
+		if (data->domain && data->active) {
 			dev_dbg(data->sysmmu, "saving state\n");
 			__sysmmu_disable(data);
 		}
@@ -847,7 +892,7 @@ static int __maybe_unused exynos_sysmmu_resume(struct device *dev)
 		struct exynos_iommu_owner *owner = dev_iommu_priv_get(master);
 
 		mutex_lock(&owner->rpm_lock);
-		if (data->domain) {
+		if (data->domain && owner->ready && !data->active) {
 			dev_dbg(data->sysmmu, "restoring state\n");
 			__sysmmu_enable(data);
 		}
@@ -863,6 +908,10 @@ static const struct dev_pm_ops sysmmu_pm_ops = {
 };
 
 static const struct of_device_id sysmmu_of_match[] = {
+	{
+		.compatible	= "samsung,exynos7420-sysmmu",
+		.data		= &exynos7420_sysmmu_data,
+	},
 	{ .compatible	= "samsung,exynos-sysmmu", },
 	{ },
 };
@@ -996,7 +1045,7 @@ static void exynos_iommu_detach_device(struct iommu_domain *iommu_domain,
 
 	list_for_each_entry(data, &owner->controllers, owner_node) {
 		pm_runtime_get_noresume(data->sysmmu);
-		if (pm_runtime_active(data->sysmmu))
+		if (pm_runtime_active(data->sysmmu) && data->active)
 			__sysmmu_disable(data);
 		pm_runtime_put(data->sysmmu);
 	}
@@ -1026,6 +1075,7 @@ static int exynos_iommu_attach_device(struct iommu_domain *iommu_domain,
 	struct sysmmu_drvdata *data;
 	phys_addr_t pagetable = virt_to_phys(domain->pgtable);
 	unsigned long flags;
+	bool ready = true;
 
 	if (!has_sysmmu(dev))
 		return -ENODEV;
@@ -1046,9 +1096,20 @@ static int exynos_iommu_attach_device(struct iommu_domain *iommu_domain,
 	owner->domain = iommu_domain;
 	spin_unlock_irqrestore(&domain->lock, flags);
 
+	/*
+	 * On SoCs that need it, translation stays off until the master calls
+	 * exynos_iommu_master_ready(): the hardware may still be scanning out
+	 * a bootloader buffer that is not mapped in this domain yet.
+	 */
+	list_for_each_entry(data, &owner->controllers, owner_node)
+		if (data->wait_master)
+			ready = false;
+	owner->ready = ready;
+
 	list_for_each_entry(data, &owner->controllers, owner_node) {
 		pm_runtime_get_noresume(data->sysmmu);
-		if (pm_runtime_active(data->sysmmu))
+		if (owner->ready && !data->active &&
+		    pm_runtime_active(data->sysmmu))
 			__sysmmu_enable(data);
 		pm_runtime_put(data->sysmmu);
 	}
@@ -1445,7 +1506,7 @@ static int exynos_iommu_of_xlate(struct device *dev,
 	data = platform_get_drvdata(sysmmu);
 	put_device(&sysmmu->dev);
 	if (!data)
-		return -ENODEV;
+		return -EPROBE_DEFER;
 
 	if (!owner) {
 		owner = kzalloc(sizeof(*owner), GFP_KERNEL);
@@ -1466,6 +1527,62 @@ static int exynos_iommu_of_xlate(struct device *dev,
 
 	return 0;
 }
+
+/**
+ * exynos_iommu_master_ready() - allow translation for a master's SysMMUs
+ * @master: the device behind the SysMMUs
+ *
+ * Marks the master ready and enables every SysMMU of it that has a domain
+ * and is not active yet. The master must be powered and runtime active.
+ * Call it only after everything the master is still fetching has been
+ * mapped, see exynos_iommu_map_identity().
+ */
+void exynos_iommu_master_ready(struct device *master)
+{
+	struct exynos_iommu_owner *owner = dev_iommu_priv_get(master);
+	struct sysmmu_drvdata *data;
+
+	if (!owner)
+		return;
+
+	mutex_lock(&owner->rpm_lock);
+	owner->ready = true;
+	list_for_each_entry(data, &owner->controllers, owner_node)
+		if (data->domain && !data->active)
+			__sysmmu_enable(data);
+	mutex_unlock(&owner->rpm_lock);
+}
+EXPORT_SYMBOL_GPL(exynos_iommu_master_ready);
+
+/**
+ * exynos_iommu_map_identity() - map a physical range 1:1 for a master
+ * @master: the device behind the SysMMUs
+ * @phys: start of the range
+ * @size: size of the range
+ *
+ * Maps [@phys, @phys + @size), widened to 2 MiB boundaries, at IOVA == PA
+ * read/write into the master's current domain. Used to keep a buffer the
+ * bootloader left in scanout reachable once translation is turned on.
+ *
+ * Return: 0 on success, -ENODEV if @master has no SysMMU or domain, or the
+ * error from iommu_map().
+ */
+int exynos_iommu_map_identity(struct device *master, phys_addr_t phys,
+			      size_t size)
+{
+	struct exynos_iommu_owner *owner = dev_iommu_priv_get(master);
+	phys_addr_t start, end;
+
+	if (!owner || !owner->domain)
+		return -ENODEV;
+
+	start = ALIGN_DOWN(phys, SZ_2M);
+	end = ALIGN(phys + size, SZ_2M);
+
+	return iommu_map(owner->domain, start, start, end - start,
+			 IOMMU_READ | IOMMU_WRITE, GFP_KERNEL);
+}
+EXPORT_SYMBOL_GPL(exynos_iommu_map_identity);
 
 static const struct iommu_ops exynos_iommu_ops = {
 	.domain_alloc = exynos_iommu_domain_alloc,
