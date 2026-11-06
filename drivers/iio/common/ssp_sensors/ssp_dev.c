@@ -59,14 +59,6 @@ static const struct mfd_cell sensorhub_sensor_devs[] = {
 	},
 };
 
-static void ssp_toggle_mcu_reset_gpio(struct ssp_data *data)
-{
-	gpiod_set_value(data->mcu_reset_gpiod, 0);
-	usleep_range(1000, 1200);
-	gpiod_set_value(data->mcu_reset_gpiod, 1);
-	msleep(50);
-}
-
 static void ssp_sync_available_sensors(struct ssp_data *data)
 {
 	int i, ret;
@@ -75,7 +67,7 @@ static void ssp_sync_available_sensors(struct ssp_data *data)
 		if (data->available_sensors & BIT(i)) {
 			ret = ssp_enable_sensor(data, i, data->delay_buf[i]);
 			if (ret < 0) {
-				dev_err(&data->spi->dev,
+				dev_err(data->dev,
 					"Sync sensor nr: %d fail\n", i);
 				continue;
 			}
@@ -85,25 +77,29 @@ static void ssp_sync_available_sensors(struct ssp_data *data)
 	ret = ssp_command(data, SSP_MSG2SSP_AP_MCU_SET_DUMPMODE,
 			  data->mcu_dump_mode);
 	if (ret < 0)
-		dev_err(&data->spi->dev,
+		dev_err(data->dev,
 			"SSP_MSG2SSP_AP_MCU_SET_DUMPMODE failed\n");
 }
 
 static void ssp_enable_mcu(struct ssp_data *data, bool enable)
 {
-	dev_info(&data->spi->dev, "current shutdown = %d, old = %d\n", enable,
+	dev_info(data->dev, "current shutdown = %d, old = %d\n", enable,
 		 data->shut_down);
 
 	if (enable && data->shut_down) {
 		data->shut_down = false;
-		enable_irq(data->spi->irq);
-		enable_irq_wake(data->spi->irq);
+		if (data->irq) {
+			enable_irq(data->irq);
+			enable_irq_wake(data->irq);
+		}
 	} else if (!enable && !data->shut_down) {
 		data->shut_down = true;
-		disable_irq(data->spi->irq);
-		disable_irq_wake(data->spi->irq);
+		if (data->irq) {
+			disable_irq(data->irq);
+			disable_irq_wake(data->irq);
+		}
 	} else {
-		dev_warn(&data->spi->dev, "current shutdown = %d, old = %d\n",
+		dev_warn(data->dev, "current shutdown = %d, old = %d\n",
 			 enable, data->shut_down);
 	}
 }
@@ -120,7 +116,7 @@ static int ssp_check_fwbl(struct ssp_data *data)
 		data->cur_firm_rev = ssp_get_firmware_rev(data);
 		if (data->cur_firm_rev == SSP_INVALID_REVISION ||
 		    data->cur_firm_rev == SSP_INVALID_REVISION2) {
-			dev_warn(&data->spi->dev,
+			dev_warn(data->dev,
 				 "Invalid revision, trying %d time\n", retries);
 		} else {
 			break;
@@ -129,11 +125,11 @@ static int ssp_check_fwbl(struct ssp_data *data)
 
 	if (data->cur_firm_rev == SSP_INVALID_REVISION ||
 	    data->cur_firm_rev == SSP_INVALID_REVISION2) {
-		dev_err(&data->spi->dev, "SSP_INVALID_REVISION\n");
+		dev_err(data->dev, "SSP_INVALID_REVISION\n");
 		return SSP_FW_DL_STATE_NEED_TO_SCHEDULE;
 	}
 
-	dev_info(&data->spi->dev,
+	dev_info(data->dev,
 		 "MCU Firm Rev : Old = %8u, New = %8u\n",
 		 data->cur_firm_rev,
 		 data->sensorhub_info->fw_rev);
@@ -148,7 +144,7 @@ static void ssp_reset_mcu(struct ssp_data *data)
 {
 	ssp_enable_mcu(data, false);
 	ssp_clean_pending_list(data);
-	ssp_toggle_mcu_reset_gpio(data);
+	data->bus->reset(data);
 	ssp_enable_mcu(data, true);
 }
 
@@ -156,7 +152,7 @@ static void ssp_wdt_work_func(struct work_struct *work)
 {
 	struct ssp_data *data = container_of(work, struct ssp_data, work_wdt);
 
-	dev_err(&data->spi->dev, "%s - Sensor state: 0x%x, RC: %u, CC: %u\n",
+	dev_err(data->dev, "%s - Sensor state: 0x%x, RC: %u, CC: %u\n",
 		__func__, data->available_sensors, data->reset_cnt,
 		data->com_fail_cnt);
 
@@ -234,7 +230,7 @@ int ssp_enable_sensor(struct ssp_data *data, enum ssp_sensor_type type,
 					   type,
 					   (u8 *)&to_send, sizeof(to_send));
 		if (ret < 0) {
-			dev_err(&data->spi->dev, "Enabling sensor failed\n");
+			dev_err(data->dev, "Enabling sensor failed\n");
 			data->check_status[type] = SSP_NO_SENSOR_STATE;
 			goto derror;
 		}
@@ -247,7 +243,7 @@ int ssp_enable_sensor(struct ssp_data *data, enum ssp_sensor_type type,
 					   SSP_MSG2SSP_INST_CHANGE_DELAY, type,
 					   (u8 *)&to_send, sizeof(to_send));
 		if (ret < 0) {
-			dev_err(&data->spi->dev,
+			dev_err(data->dev,
 				"Changing sensor delay failed\n");
 			goto derror;
 		}
@@ -290,7 +286,7 @@ int ssp_change_delay(struct ssp_data *data, enum ssp_sensor_type type,
 	ret = ssp_send_instruction(data, SSP_MSG2SSP_INST_CHANGE_DELAY, type,
 				   (u8 *)&to_send, sizeof(to_send));
 	if (ret < 0) {
-		dev_err(&data->spi->dev, "Changing sensor delay failed\n");
+		dev_err(data->dev, "Changing sensor delay failed\n");
 		return ret;
 	}
 
@@ -321,7 +317,7 @@ int ssp_disable_sensor(struct ssp_data *data, enum ssp_sensor_type type)
 					   type, (u8 *)&command,
 					   sizeof(command));
 		if (ret < 0) {
-			dev_err(&data->spi->dev, "Remove sensor fail\n");
+			dev_err(data->dev, "Remove sensor fail\n");
 			return ret;
 		}
 
@@ -358,13 +354,13 @@ static int ssp_initialize_mcu(struct ssp_data *data)
 
 	ret = ssp_get_chipid(data);
 	if (ret != SSP_DEVICE_ID) {
-		dev_err(&data->spi->dev, "%s - MCU %s ret = %d\n", __func__,
+		dev_err(data->dev, "%s - MCU %s ret = %d\n", __func__,
 			ret < 0 ? "is not working" : "identification failed",
 			ret);
 		return ret < 0 ? ret : -ENODEV;
 	}
 
-	dev_info(&data->spi->dev, "MCU device ID = %d\n", ret);
+	dev_info(data->dev, "MCU device ID = %d\n", ret);
 
 	/*
 	 * needs clarification, for now do not want to export all transfer
@@ -372,20 +368,20 @@ static int ssp_initialize_mcu(struct ssp_data *data)
 	 */
 	ret = ssp_set_magnetic_matrix(data);
 	if (ret < 0) {
-		dev_err(&data->spi->dev,
+		dev_err(data->dev,
 			"%s - ssp_set_magnetic_matrix failed\n", __func__);
 		return ret;
 	}
 
 	data->available_sensors = ssp_get_sensor_scanning_info(data);
 	if (data->available_sensors == 0) {
-		dev_err(&data->spi->dev,
+		dev_err(data->dev,
 			"%s - ssp_get_sensor_scanning_info failed\n", __func__);
 		return -EIO;
 	}
 
 	data->cur_firm_rev = ssp_get_firmware_rev(data);
-	dev_info(&data->spi->dev, "MCU Firm Rev : New = %8u\n",
+	dev_info(data->dev, "MCU Firm Rev : New = %8u\n",
 		 data->cur_firm_rev);
 
 	return ssp_command(data, SSP_MSG2SSP_AP_MCU_DUMP_CHECK, 0);
@@ -400,7 +396,7 @@ static void ssp_refresh_task(struct work_struct *work)
 	struct ssp_data *data = container_of((struct delayed_work *)work,
 					     struct ssp_data, work_refresh);
 
-	dev_info(&data->spi->dev, "refreshing\n");
+	dev_info(data->dev, "refreshing\n");
 
 	data->reset_cnt++;
 
@@ -507,7 +503,9 @@ static int ssp_probe(struct spi_device *spi)
 	}
 
 	data->fw_dl_state = SSP_FW_DL_STATE_NONE;
-	data->spi = spi;
+	data->dev = &spi->dev;
+	data->irq = spi->irq;
+	data->bus = &ssp_spi_bus_ops;
 	spi_set_drvdata(spi, data);
 
 	mutex_init(&data->comm_lock);
@@ -533,7 +531,7 @@ static int ssp_probe(struct spi_device *spi)
 
 	timer_setup(&data->wdt_timer, ssp_wdt_timer_func, 0);
 
-	ret = request_threaded_irq(data->spi->irq, NULL,
+	ret = request_threaded_irq(data->irq, NULL,
 				   ssp_irq_thread_fn,
 				   IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 				   "SSP_Int", data);
@@ -546,7 +544,7 @@ static int ssp_probe(struct spi_device *spi)
 	data->shut_down = false;
 
 	/* just to avoid unbalanced irq set wake up */
-	enable_irq_wake(data->spi->irq);
+	enable_irq_wake(data->irq);
 
 	data->fw_dl_state = ssp_check_fwbl(data);
 	if (data->fw_dl_state == SSP_FW_DL_STATE_NONE) {
@@ -564,7 +562,7 @@ static int ssp_probe(struct spi_device *spi)
 	return 0;
 
 err_read_reg:
-	free_irq(data->spi->irq, data);
+	free_irq(data->irq, data);
 err_setup_irq:
 	mutex_destroy(&data->pending_lock);
 	mutex_destroy(&data->comm_lock);
@@ -581,7 +579,7 @@ static void ssp_remove(struct spi_device *spi)
 	struct ssp_data *data = spi_get_drvdata(spi);
 
 	if (ssp_command(data, SSP_MSG2SSP_AP_STATUS_SHUTDOWN, 0) < 0)
-		dev_err(&data->spi->dev,
+		dev_err(data->dev,
 			"SSP_MSG2SSP_AP_STATUS_SHUTDOWN failed\n");
 
 	ssp_enable_mcu(data, false);
@@ -589,7 +587,7 @@ static void ssp_remove(struct spi_device *spi)
 
 	ssp_clean_pending_list(data);
 
-	free_irq(data->spi->irq, data);
+	free_irq(data->irq, data);
 	cancel_delayed_work_sync(&data->work_refresh);
 
 	del_timer_sync(&data->wdt_timer);
@@ -613,7 +611,7 @@ static int ssp_suspend(struct device *dev)
 
 	ret = ssp_command(data, SSP_MSG2SSP_AP_STATUS_SUSPEND, 0);
 	if (ret < 0) {
-		dev_err(&data->spi->dev,
+		dev_err(data->dev,
 			"%s SSP_MSG2SSP_AP_STATUS_SUSPEND failed\n", __func__);
 
 		ssp_enable_wdt_timer(data);
@@ -621,7 +619,7 @@ static int ssp_suspend(struct device *dev)
 	}
 
 	data->time_syncing = false;
-	disable_irq(data->spi->irq);
+	disable_irq(data->irq);
 
 	return 0;
 }
@@ -631,14 +629,14 @@ static int ssp_resume(struct device *dev)
 	int ret;
 	struct ssp_data *data = spi_get_drvdata(to_spi_device(dev));
 
-	enable_irq(data->spi->irq);
+	enable_irq(data->irq);
 
 	if (atomic_read(&data->enable_refcount) > 0)
 		ssp_enable_wdt_timer(data);
 
 	ret = ssp_command(data, SSP_MSG2SSP_AP_STATUS_RESUME, 0);
 	if (ret < 0) {
-		dev_err(&data->spi->dev,
+		dev_err(data->dev,
 			"%s SSP_MSG2SSP_AP_STATUS_RESUME failed\n", __func__);
 		ssp_disable_wdt_timer(data);
 		return ret;

@@ -5,7 +5,7 @@
 
 #include "ssp.h"
 
-#define SSP_DEV (&data->spi->dev)
+#define SSP_DEV (data->dev)
 #define SSP_GET_MESSAGE_TYPE(data) (data & (3 << SSP_RW))
 
 /*
@@ -174,6 +174,50 @@ static int ssp_check_lines(struct ssp_data *data, bool state)
 	return 0;
 }
 
+static int ssp_spi_send_header(struct ssp_data *data, const void *buf,
+			       size_t len)
+{
+	int status;
+
+	status = ssp_check_lines(data, false);
+	if (status < 0)
+		return status;
+
+	status = spi_write(to_spi_device(data->dev), buf, len);
+	if (status < 0) {
+		gpiod_set_value_cansleep(data->ap_mcu_gpiod, 1);
+		dev_err(SSP_DEV, "%s spi_write fail\n", __func__);
+		return status;
+	}
+
+	return ssp_check_lines(data, true);
+}
+
+static int ssp_spi_read(struct ssp_data *data, void *buf, size_t len)
+{
+	return spi_read(to_spi_device(data->dev), buf, len);
+}
+
+static int ssp_spi_write(struct ssp_data *data, const void *buf, size_t len)
+{
+	return spi_write(to_spi_device(data->dev), buf, len);
+}
+
+static void ssp_spi_reset(struct ssp_data *data)
+{
+	gpiod_set_value(data->mcu_reset_gpiod, 0);
+	usleep_range(1000, 1200);
+	gpiod_set_value(data->mcu_reset_gpiod, 1);
+	msleep(50);
+}
+
+const struct ssp_bus_ops ssp_spi_bus_ops = {
+	.send_header = ssp_spi_send_header,
+	.read = ssp_spi_read,
+	.write = ssp_spi_write,
+	.reset = ssp_spi_reset,
+};
+
 static int ssp_do_transfer(struct ssp_data *data, struct ssp_msg *msg,
 			   struct completion *done, int timeout)
 {
@@ -191,24 +235,14 @@ static int ssp_do_transfer(struct ssp_data *data, struct ssp_msg *msg,
 
 	mutex_lock(&data->comm_lock);
 
-	status = ssp_check_lines(data, false);
-	if (status < 0)
-		goto _error_locked;
-
-	status = spi_write(data->spi, msg->buffer, SSP_HEADER_SIZE);
-	if (status < 0) {
-		gpiod_set_value_cansleep(data->ap_mcu_gpiod, 1);
-		dev_err(SSP_DEV, "%s spi_write fail\n", __func__);
-		goto _error_locked;
-	}
-
+	/* Queue first: the answer may arrive before send_header returns. */
 	if (!use_no_irq) {
 		mutex_lock(&data->pending_lock);
 		list_add_tail(&msg->list, &data->pending_list);
 		mutex_unlock(&data->pending_lock);
 	}
 
-	status = ssp_check_lines(data, true);
+	status = data->bus->send_header(data, msg->buffer, SSP_HEADER_SIZE);
 	if (status < 0) {
 		if (!use_no_irq) {
 			mutex_lock(&data->pending_lock);
@@ -337,7 +371,7 @@ int ssp_irq_msg(struct ssp_data *data)
 	u16 length, msg_options;
 	struct ssp_msg *msg = NULL, *iter, *n;
 
-	ret = spi_read(data->spi, data->header_buffer, SSP_HEADER_BUFFER_SIZE);
+	ret = data->bus->read(data, data->header_buffer, SSP_HEADER_BUFFER_SIZE);
 	if (ret < 0) {
 		dev_err(SSP_DEV, "header read fail\n");
 		return ret;
@@ -382,7 +416,7 @@ int ssp_irq_msg(struct ssp_data *data)
 			}
 
 			/* got dead packet so it is always an error */
-			ret = spi_read(data->spi, buffer, length);
+			ret = data->bus->read(data, buffer, length);
 			if (ret >= 0)
 				ret = -EPROTO;
 
@@ -395,14 +429,14 @@ int ssp_irq_msg(struct ssp_data *data)
 		}
 
 		if (msg_type == SSP_AP2HUB_READ)
-			ret = spi_read(data->spi,
-				       &msg->buffer[SSP_HEADER_SIZE_ALIGNED],
-				       msg->length);
+			ret = data->bus->read(data,
+					      &msg->buffer[SSP_HEADER_SIZE_ALIGNED],
+					      msg->length);
 
 		if (msg_type == SSP_AP2HUB_WRITE) {
-			ret = spi_write(data->spi,
-					&msg->buffer[SSP_HEADER_SIZE_ALIGNED],
-					msg->length);
+			ret = data->bus->write(data,
+					       &msg->buffer[SSP_HEADER_SIZE_ALIGNED],
+					       msg->length);
 			if (msg_options & SSP_AP2HUB_RETURN) {
 				msg->options =
 					SSP_AP2HUB_READ | SSP_AP2HUB_RETURN;
@@ -424,9 +458,9 @@ _unlock:
 		if (!buffer)
 			return -ENOMEM;
 
-		ret = spi_read(data->spi, buffer, length);
+		ret = data->bus->read(data, buffer, length);
 		if (ret < 0) {
-			dev_err(SSP_DEV, "spi read fail\n");
+			dev_err(SSP_DEV, "frame read fail\n");
 			kfree(buffer);
 			break;
 		}

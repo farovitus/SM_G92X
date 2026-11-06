@@ -120,6 +120,25 @@ enum {
 #define SSP_MSG_ACK		0x80	/* ACK from SSP to AP */
 #define SSP_MSG_NAK		0x70	/* NAK from SSP to AP */
 
+struct ssp_data;
+
+/**
+ * struct ssp_bus_ops - how the hub core reaches the sensorhub
+ * @send_header:	start a transaction with its header; the hub answers
+ *			through ssp_irq_msg()
+ * @read:		read @len bytes of what the hub sent
+ * @write:		send a payload the hub asked for
+ * @reset:		reset the hub
+ */
+struct ssp_bus_ops {
+	int (*send_header)(struct ssp_data *data, const void *buf, size_t len);
+	int (*read)(struct ssp_data *data, void *buf, size_t len);
+	int (*write)(struct ssp_data *data, const void *buf, size_t len);
+	void (*reset)(struct ssp_data *data);
+};
+
+extern const struct ssp_bus_ops ssp_spi_bus_ops;
+
 struct ssp_sensorhub_info {
 	char *fw_name;
 	char *fw_crashed_name;
@@ -140,7 +159,9 @@ struct ssp_sensorhub_info {
 
 /**
  * struct ssp_data - ssp platformdata structure
- * @spi:		spi device
+ * @dev:		hub device
+ * @irq:		hub interrupt, 0 when the bus signals data itself
+ * @bus:		bus operations
  * @sensorhub_info:	info about sensorhub board specific features
  * @wdt_timer:		watchdog timer
  * @work_wdt:		watchdog work
@@ -177,7 +198,9 @@ struct ssp_sensorhub_info {
  * @header_buffer:	cache aligned buffer for packet header
  */
 struct ssp_data {
-	struct spi_device *spi;
+	struct device *dev;
+	int irq;
+	const struct ssp_bus_ops *bus;
 	const struct ssp_sensorhub_info *sensorhub_info;
 	struct timer_list wdt_timer;
 	struct work_struct work_wdt;
