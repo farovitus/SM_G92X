@@ -52,6 +52,21 @@
 				};
 
 				/*
+				 * DRAM controller and PHY (MIF). S-Boot leaves
+				 * 825 mV, its 1552 MHz level; the DRAM controller
+				 * driver sets it from its OPPs. The range is
+				 * 3.10's, the ramp as for BUCK4.
+				 */
+				vdd_mif: BUCK1 {
+					regulator-name = "vdd_mif";
+					regulator-min-microvolt = <500000>;
+					regulator-max-microvolt = <1000000>;
+					regulator-ramp-delay = <6000>;
+					regulator-always-on;
+					regulator-boot-on;
+				};
+
+				/*
 				 * Internal bus (INT). S-Boot leaves 712.5 mV, its
 				 * 400 MHz level; the INT bus sets it from its
 				 * OPPs. The range is 3.10's, the ramp as for
