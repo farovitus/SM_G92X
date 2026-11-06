@@ -1,0 +1,140 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/gnss/brcm,bcm4773.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Broadcom BCM4773 GNSS receiver and sensor hub
+
+maintainers:
+  - FAROVITUS <farovitus@gmail.com>
+
+description: |
+  The BCM4773 is a GNSS receiver with a second core that runs a sensor
+  hub: on the Samsung Galaxy S6 the accelerometer, gyroscope,
+  magnetometer, barometer and light/proximity sensors hang off it. The
+  host reaches it over SPI with Broadcom's SSI protocol. The chip has no
+  flash; its RAM firmware is loaded at every power-up by userspace.
+
+  SSI framing uses three lines besides SPI: mcu-req (host asks the chip to
+  wake), mcu-resp (chip is awake) and host-req (chip has data, also the
+  interrupt).
+
+allOf:
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
+
+properties:
+  compatible:
+    const: brcm,bcm4773
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description: host-req, level high.
+
+  spi-max-frequency: true
+  spi-cpha: true
+  spi-cpol: true
+
+  enable-gpios:
+    maxItems: 1
+    description: Power line, pin NSTANDBY; asserted to run.
+
+  host-req-gpios:
+    maxItems: 1
+    description: Chip has data for the host.
+
+  mcu-req-gpios:
+    maxItems: 1
+    description: Host requests an SSI burst.
+
+  mcu-resp-gpios:
+    maxItems: 1
+    description: Chip acknowledges mcu-req.
+
+  sensorhub:
+    type: object
+    additionalProperties: false
+    description: The sensor hub running on the chip.
+
+    properties:
+      compatible:
+        const: samsung,zeroflte-sensorhub
+
+      samsung,acc-position:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        maximum: 7
+        description: Mounting orientation index of the accelerometer and
+          gyroscope, as the hub firmware numbers them.
+
+      samsung,mag-position:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        maximum: 7
+        description: Mounting orientation index of the magnetometer.
+
+      samsung,glass-type:
+        $ref: /schemas/types.yaml#/definitions/uint32
+        description: Cover glass variant, for the light sensor coefficients.
+
+      samsung,prox-thresholds:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        items:
+          - description: high (near) threshold
+          - description: low (far) threshold
+
+      samsung,mag-matrix:
+        $ref: /schemas/types.yaml#/definitions/int32-array
+        minItems: 9
+        maxItems: 9
+        description: Magnetometer soft-iron matrix, row-major, as signed
+          16-bit factory values.
+
+    required:
+      - compatible
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - enable-gpios
+  - host-req-gpios
+  - mcu-req-gpios
+  - mcu-resp-gpios
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    spi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        gnss@0 {
+            compatible = "brcm,bcm4773";
+            reg = <0>;
+            spi-max-frequency = <26000000>;
+            spi-cpha;
+            spi-cpol;
+            interrupt-parent = <&gpa3>;
+            interrupts = <6 IRQ_TYPE_LEVEL_HIGH>;
+            enable-gpios = <&gpf4 7 GPIO_ACTIVE_HIGH>;
+            host-req-gpios = <&gpa3 6 GPIO_ACTIVE_HIGH>;
+            mcu-req-gpios = <&gpf4 5 GPIO_ACTIVE_HIGH>;
+            mcu-resp-gpios = <&gpf4 4 GPIO_ACTIVE_HIGH>;
+
+            sensorhub {
+                compatible = "samsung,zeroflte-sensorhub";
+                samsung,acc-position = <0>;
+                samsung,mag-position = <0>;
+                samsung,glass-type = <0>;
+                samsung,prox-thresholds = <2000 1400>;
+                samsung,mag-matrix = <10213 (-360) 154 (-206) 8673 (-59)
+                                      (-66) (-59) 10479>;
+            };
+        };
+    };
