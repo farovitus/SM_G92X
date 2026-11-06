@@ -552,6 +552,14 @@ config CHARGER_MAX77693
 	help
 	  Say Y to enable support for the Maxim MAX77693 battery charger.
 
+config CHARGER_MAX77843
+	tristate "Maxim MAX77843 battery charger driver"
+	depends on MFD_MAX77843
+	help
+	  Say Y to enable support for the battery charger of the Maxim
+	  MAX77843 PMIC. The driver reports input presence, charge state
+	  and the programmed current limits.
+
 config CHARGER_MAX77976
 	tristate "Maxim MAX77976 battery charger driver"
 	depends on I2C
