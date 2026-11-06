@@ -1712,6 +1712,16 @@
 };
 
 /*
+ * The A57 watchdog resets the SoC when nothing kicks it for 15 s, so a
+ * hard hang (a bus stall, all CPUs stuck) ends in a reset instead of a
+ * dead phone. s3c2410_wdt.tmr_atboot starts it at probe and the watchdog
+ * core kicks it until userspace opens /dev/watchdog.
+ */
+&watchdog {
+	status = "okay";
+};
+
+/*
  * Lineage 20 keeps no fstab in its ramdisk: first-stage init reads the
  * early mounts from /firmware/android/fstab, as in the 3.10 Lineage tree's
  * exynos7420.dtsi. Without it init aborts with "failed to read default
