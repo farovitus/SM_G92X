@@ -16,6 +16,7 @@
 // and wakeup interrupts can be hooked to.
 
 #include <linux/err.h>
+#include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
 #include <linux/init.h>
 #include <linux/io.h>
@@ -26,6 +27,7 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/soc/samsung/exynos-gpio-port.h>
 
 #include "../core.h"
 #include "pinctrl-samsung.h"
@@ -565,6 +567,31 @@ static void samsung_gpio_set(struct gpio_chip *gc, unsigned offset, int value)
 	samsung_gpio_set_value(gc, offset, value);
 	raw_spin_unlock_irqrestore(&bank->slock, flags);
 }
+
+/**
+ * samsung_gpio_get_port() - find the data register behind a GPIO line
+ * @desc: a line the caller has requested
+ * @port: filled with the bank's DAT register, the bank lock and the bit
+ *
+ * Return: 0, or -ENODEV if @desc is not on a Samsung pinctrl bank.
+ */
+int samsung_gpio_get_port(struct gpio_desc *desc,
+			  struct samsung_gpio_port *port)
+{
+	struct gpio_chip *gc = gpiod_to_chip(desc);
+	struct samsung_pin_bank *bank;
+
+	if (!gc || gc->set != samsung_gpio_set)
+		return -ENODEV;
+
+	bank = gpiochip_get_data(gc);
+	port->dat = bank->pctl_base + bank->pctl_offset +
+		    bank->type->reg_offset[PINCFG_TYPE_DAT];
+	port->lock = &bank->slock;
+	port->mask = BIT(desc_to_gpio(desc) - gc->base);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(samsung_gpio_get_port);
 
 /* gpiolib gpio_get callback function */
 static int samsung_gpio_get(struct gpio_chip *gc, unsigned offset)
