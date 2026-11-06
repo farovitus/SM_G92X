@@ -28,11 +28,14 @@
  * and general port of each channel; the busiest channel counts), plus
  * minimum rates from interconnect votes. The driver is an interconnect
  * provider with one node: CPU OPPs carry the stock cpufreq->MIF floors as
- * opp-peak-kBps, and the display bus links to it. The floor is applied
- * inside this driver, never through dev_pm_qos: a devfreq target() runs
- * under dev_pm_qos_mtx when a PM QoS limit (thermal) moves it, so a
- * provider that takes that mutex under icc_lock deadlocks as soon as a
- * devfreq device votes bandwidth from its target(). A vote converts at 16
+ * opp-peak-kBps, and the display bus links to it. The GPU floor follows
+ * the GPU devfreq's transition notifier and the stock G3D table
+ * (samsung,gpu-mif-floors), not an interconnect path: a devfreq target()
+ * runs under dev_pm_qos_mtx when a PM QoS limit (thermal) moves it, and
+ * the exynos-bus interconnect provider takes that mutex under icc_lock,
+ * so a GPU OPP with bandwidth deadlocks against the display's votes. For
+ * the same reason the floor is applied inside this driver, never through
+ * dev_pm_qos. A vote converts at 16
  * bytes per DRAM clock (four 16-bit LPDDR4 channels, double data rate).
  * The devfreq userspace governor switches by hand; debugfs
  * exynos7420-dmc/state shows the registers.
@@ -299,9 +302,17 @@ struct exynos7420_dmc {
 	struct icc_provider icc;
 	struct icc_node *icc_node;
 	u32 icc_khz;			/* floor from interconnect votes */
+	u32 gpu_khz;			/* floor from the GPU clock */
 	u32 floor_khz;			/* floor dmc_target() applies */
 	struct mutex floor_lock;
 	struct delayed_work floor_work;	/* applies a lower floor late */
+
+	struct devfreq *gpu_df;
+	struct notifier_block gpu_nb;
+	struct delayed_work gpu_work;	/* finds the GPU devfreq */
+	int gpu_tries;
+	u32 gpu_floor[NR_LEVELS][2];	/* GPU kHz, MIF kHz; ascending */
+	int nr_gpu_floor;
 };
 
 /* /sys/module/exynos7420_dmc/parameters/trace */
@@ -691,9 +702,9 @@ static int state_show(struct seq_file *s, void *unused)
 		   clk_get_rate(dmc->dout_aclk_ccore_532),
 		   clk_get_rate(dmc->dout_aclk_ccore_133),
 		   dmc->cur_uv, regulator_get_voltage(dmc->vdd));
-	seq_printf(s, "load ppm %u %u %u %u, icc floor %u kHz\n",
+	seq_printf(s, "load ppm %u %u %u %u, icc floor %u kHz, gpu floor %u kHz\n",
 		   dmc->last_load[0], dmc->last_load[1], dmc->last_load[2],
-		   dmc->last_load[3], dmc->icc_khz);
+		   dmc->last_load[3], dmc->icc_khz, dmc->gpu_khz);
 	for (ch = 0; ch < NR_CH; ch++) {
 		void __iomem *d = dmc->drex[ch];
 
@@ -852,7 +863,7 @@ static int dmc_update_floor(struct exynos7420_dmc *dmc)
 	int ret = 0;
 
 	mutex_lock(&dmc->floor_lock);
-	want = dmc->icc_khz;
+	want = max(dmc->icc_khz, dmc->gpu_khz);
 	if (want >= dmc->floor_khz) {
 		cancel_delayed_work(&dmc->floor_work);
 		if (want != dmc->floor_khz)
@@ -872,8 +883,95 @@ static void dmc_floor_work(struct work_struct *work)
 						  floor_work);
 
 	mutex_lock(&dmc->floor_lock);
-	dmc_apply_floor(dmc, dmc->icc_khz);
+	dmc_apply_floor(dmc, max(dmc->icc_khz, dmc->gpu_khz));
 	mutex_unlock(&dmc->floor_lock);
+}
+
+static u32 dmc_gpu_floor(struct exynos7420_dmc *dmc, unsigned long hz)
+{
+	u32 khz = hz / 1000, mif = 0;
+	int i;
+
+	for (i = 0; i < dmc->nr_gpu_floor; i++)
+		if (khz >= dmc->gpu_floor[i][0])
+			mif = dmc->gpu_floor[i][1];
+	return mif;
+}
+
+/*
+ * Called from the GPU devfreq's target path. Raise before the GPU speeds
+ * up, settle on the new rate after the change (dmc_update_floor() holds
+ * a lower floor back).
+ */
+static int dmc_gpu_notify(struct notifier_block *nb, unsigned long event,
+			  void *data)
+{
+	struct exynos7420_dmc *dmc = container_of(nb, struct exynos7420_dmc,
+						  gpu_nb);
+	struct devfreq_freqs *f = data;
+
+	if (event == DEVFREQ_PRECHANGE)
+		dmc->gpu_khz = dmc_gpu_floor(dmc, max(f->old, f->new));
+	else
+		dmc->gpu_khz = dmc_gpu_floor(dmc, f->new);
+	dmc_update_floor(dmc);
+	return NOTIFY_OK;
+}
+
+/* The GPU probes after this driver; look for its devfreq for 30 s. */
+static void dmc_gpu_work(struct work_struct *work)
+{
+	struct exynos7420_dmc *dmc = container_of(to_delayed_work(work),
+						  struct exynos7420_dmc,
+						  gpu_work);
+	struct devfreq *df;
+
+	df = devfreq_get_devfreq_by_phandle(dmc->dev, "samsung,gpu", 0);
+	if (IS_ERR(df)) {
+		/* -ENODEV until panfrost has added its devfreq */
+		if ((PTR_ERR(df) == -EPROBE_DEFER || PTR_ERR(df) == -ENODEV) &&
+		    ++dmc->gpu_tries < 30)
+			schedule_delayed_work(&dmc->gpu_work, HZ);
+		else
+			dev_warn(dmc->dev, "no GPU devfreq (%ld)\n", PTR_ERR(df));
+		return;
+	}
+	dmc->gpu_nb.notifier_call = dmc_gpu_notify;
+	if (devfreq_register_notifier(df, &dmc->gpu_nb,
+				      DEVFREQ_TRANSITION_NOTIFIER)) {
+		dev_warn(dmc->dev, "GPU devfreq notifier failed\n");
+		return;
+	}
+	dmc->gpu_df = df;
+	dmc->gpu_khz = dmc_gpu_floor(dmc, df->previous_freq);
+	dmc_update_floor(dmc);
+	dev_info(dmc->dev, "GPU floors on %s\n", dev_name(df->dev.parent));
+}
+
+static void dmc_gpu_init(struct exynos7420_dmc *dmc)
+{
+	struct device_node *np = dmc->dev->of_node;
+	int n;
+
+	n = of_property_count_u32_elems(np, "samsung,gpu-mif-floors");
+	if (n <= 0 || n % 2 || n / 2 > NR_LEVELS)
+		return;
+	of_property_read_u32_array(np, "samsung,gpu-mif-floors",
+				   &dmc->gpu_floor[0][0], n);
+	dmc->nr_gpu_floor = n / 2;
+	INIT_DELAYED_WORK(&dmc->gpu_work, dmc_gpu_work);
+	schedule_delayed_work(&dmc->gpu_work, 0);
+}
+
+static void dmc_gpu_exit(struct exynos7420_dmc *dmc)
+{
+	if (!dmc->nr_gpu_floor)
+		return;
+	cancel_delayed_work_sync(&dmc->gpu_work);
+	if (dmc->gpu_df)
+		devfreq_unregister_notifier(dmc->gpu_df, &dmc->gpu_nb,
+					    DEVFREQ_TRANSITION_NOTIFIER);
+	dmc->gpu_df = NULL;
 }
 
 static int dmc_icc_set(struct icc_node *src, struct icc_node *dst)
@@ -1105,6 +1203,8 @@ static int exynos7420_dmc_probe(struct platform_device *pdev)
 	ret = dmc_icc_init(dmc);
 	if (ret)
 		goto err_floor;
+	if (dmc->df)
+		dmc_gpu_init(dmc);
 
 	dev_info(dev, "LV%d, MIF PLL %lu Hz on %s, vdd_mif %d uV, switching %s\n",
 		 dmc->cur, pll_rate,
@@ -1124,6 +1224,7 @@ static void exynos7420_dmc_remove(struct platform_device *pdev)
 {
 	struct exynos7420_dmc *dmc = platform_get_drvdata(pdev);
 
+	dmc_gpu_exit(dmc);
 	icc_provider_deregister(&dmc->icc);
 	icc_nodes_remove(&dmc->icc);
 	cancel_delayed_work_sync(&dmc->floor_work);
@@ -1141,6 +1242,7 @@ static void exynos7420_dmc_shutdown(struct platform_device *pdev)
 
 	if (!dmc->df)
 		return;
+	dmc_gpu_exit(dmc);
 	devfreq_suspend_device(dmc->df);
 	cancel_delayed_work_sync(&dmc->floor_work);
 	mutex_lock(&dmc->lock);
