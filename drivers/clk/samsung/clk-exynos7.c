@@ -20,15 +20,18 @@
 #define BUS1_DPLL_LOCK		0x0008
 #define MFC_PLL_LOCK		0x000C
 #define AUD_PLL_LOCK		0x0010
+#define MIF_PLL_LOCK		0x0014
 #define CC_PLL_CON0		0x0100
 #define BUS0_PLL_CON0		0x0110
 #define BUS1_DPLL_CON0		0x0120
 #define MFC_PLL_CON0		0x0130
 #define AUD_PLL_CON0		0x0140
+#define MIF_PLL_CON0		0x0150
 #define MUX_SEL_TOPC0		0x0200
 #define MUX_SEL_TOPC1		0x0204
 #define MUX_SEL_TOPC2		0x0208
 #define MUX_SEL_TOPC3		0x020C
+#define MUX_SEL_TOPC5		0x0214
 #define DIV_TOPC0		0x0600
 #define DIV_TOPC1		0x0604
 #define DIV_TOPC3		0x060C
@@ -84,6 +87,15 @@ PNAME(mout_topc_mfc_pll_half_p) = { "mout_topc_mfc_pll",
 PNAME(mout_topc_bus0_pll_out_p) = {"mout_topc_bus0_pll",
 	"ffac_topc_bus0_pll_div2"};
 
+/*
+ * DRAM clock (MIF). The DMC driver moves mout_aclk_mif_pll to the BUS0
+ * PLL path while it reprograms fout_mif_pll, then moves it back.
+ */
+PNAME(mout_topc_mif_pll_ctrl_p)	= { "fin_pll", "fout_mif_pll" };
+PNAME(mout_sclk_bus0_pll_mif_p)	= { "mout_topc_bus0_pll",
+	"ffac_topc_bus0_pll_div2", "mout_topc_bus1_pll", "mout_topc_cc_pll" };
+PNAME(mout_aclk_mif_pll_p)	= { "sclk_bus0_pll_mif", "mout_topc_mif_pll" };
+
 static const unsigned long topc_clk_regs[] __initconst = {
 	CC_PLL_LOCK,
 	BUS0_PLL_LOCK,
@@ -126,6 +138,11 @@ static const struct samsung_mux_clock topc_mux_clks[] __initconst = {
 		MUX_SEL_TOPC1, 0, 1),
 	MUX(0, "mout_topc_bus0_pll_out", mout_topc_bus0_pll_out_p,
 		MUX_SEL_TOPC1, 16, 1),
+	MUX(MOUT_SCLK_BUS0_PLL_MIF, "mout_sclk_bus0_pll_mif",
+		mout_sclk_bus0_pll_mif_p, MUX_SEL_TOPC1, 12, 2),
+
+	MUX(MOUT_ACLK_CCORE_532, "mout_aclk_ccore_532", mout_topc_group3,
+		MUX_SEL_TOPC2, 0, 4),
 
 	MUX(0, "mout_aclk_ccore_133", mout_topc_group2,	MUX_SEL_TOPC2, 4, 2),
 	MUX(0, "mout_aclk_bus0_532", mout_topc_group3, MUX_SEL_TOPC2, 8, 4),
@@ -136,9 +153,16 @@ static const struct samsung_mux_clock topc_mux_clks[] __initconst = {
 	MUX(0, "mout_aclk_mscl_532", mout_topc_group2, MUX_SEL_TOPC3, 20, 2),
 	MUX(0, "mout_aclk_peris_66", mout_topc_group2, MUX_SEL_TOPC3, 24, 2),
 	MUX(0, "mout_pclk_bus01_133", mout_topc_group2, MUX_SEL_TOPC3, 28, 2),
+
+	MUX(0, "mout_topc_mif_pll", mout_topc_mif_pll_ctrl_p,
+		MUX_SEL_TOPC5, 16, 1),
+	MUX(MOUT_ACLK_MIF_PLL, "mout_aclk_mif_pll", mout_aclk_mif_pll_p,
+		MUX_SEL_TOPC5, 20, 1),
 };
 
 static const struct samsung_div_clock topc_div_clks[] __initconst = {
+	DIV(DOUT_ACLK_CCORE_532, "dout_aclk_ccore_532", "mout_aclk_ccore_532",
+		DIV_TOPC0, 0, 4),
 	DIV(DOUT_ACLK_CCORE_133, "dout_aclk_ccore_133", "mout_aclk_ccore_133",
 		DIV_TOPC0, 4, 4),
 	DIV(DOUT_ACLK_BUS0_532, "dout_aclk_bus0_532", "mout_aclk_bus0_532",
@@ -159,6 +183,8 @@ static const struct samsung_div_clock topc_div_clks[] __initconst = {
 
 	DIV(DOUT_SCLK_BUS0_PLL, "dout_sclk_bus0_pll", "mout_topc_bus0_pll_out",
 		DIV_TOPC3, 0, 4),
+	DIV(DOUT_SCLK_BUS0_PLL_MIF, "dout_sclk_bus0_pll_mif",
+		"mout_sclk_bus0_pll_mif", DIV_TOPC3, 4, 3),
 	DIV(DOUT_SCLK_BUS1_PLL, "dout_sclk_bus1_pll", "mout_topc_bus1_pll",
 		DIV_TOPC3, 8, 4),
 	DIV(DOUT_SCLK_CC_PLL, "dout_sclk_cc_pll", "mout_topc_cc_pll",
@@ -171,6 +197,24 @@ static const struct samsung_div_clock topc_div_clks[] __initconst = {
 
 static const struct samsung_pll_rate_table pll1460x_24mhz_tbl[] __initconst = {
 	PLL_36XX_RATE(24 * MHZ, 491519897, 20, 1, 0, 31457),
+	{},
+};
+
+/* MIF PLL: twice the DRAM clock of each stock MIF level */
+static const struct samsung_pll_rate_table pll1450x_mif_24mhz_tbl[] __initconst = {
+	PLL_35XX_RATE(24 * MHZ, 3104000000U, 388, 3, 0),
+	PLL_35XX_RATE(24 * MHZ, 2928000000U, 244, 2, 0),
+	PLL_35XX_RATE(24 * MHZ, 2528000000U, 316, 3, 0),
+	PLL_35XX_RATE(24 * MHZ, 2052000000U, 171, 2, 0),
+	PLL_35XX_RATE(24 * MHZ, 1672000000U, 209, 3, 0),
+	PLL_35XX_RATE(24 * MHZ, 1270000000U, 635, 6, 1),
+	PLL_35XX_RATE(24 * MHZ, 1086000000U, 181, 2, 1),
+	PLL_35XX_RATE(24 * MHZ, 836000000U, 209, 3, 1),
+	PLL_35XX_RATE(24 * MHZ, 696000000U, 348, 3, 2),
+	PLL_35XX_RATE(24 * MHZ, 518000000U, 259, 3, 2),
+	PLL_35XX_RATE(24 * MHZ, 334000000U, 334, 3, 3),
+	PLL_35XX_RATE(24 * MHZ, 266000000U, 266, 3, 3),
+	PLL_35XX_RATE(24 * MHZ, 200000000U, 200, 3, 3),
 	{},
 };
 
@@ -192,6 +236,8 @@ static const struct samsung_gate_clock topc_gate_clks[] __initconst = {
 		ENABLE_SCLK_TOPC1, 16, 0, 0),
 	GATE(SCLK_BUS1_PLL_B, "sclk_bus1_pll_b", "dout_sclk_bus1_pll",
 		ENABLE_SCLK_TOPC1, 13, 0, 0),
+	GATE(SCLK_BUS0_PLL_MIF, "sclk_bus0_pll_mif", "dout_sclk_bus0_pll_mif",
+		ENABLE_SCLK_TOPC1, 6, 0, 0),
 	GATE(SCLK_BUS1_PLL_A, "sclk_bus1_pll_a", "dout_sclk_bus1_pll",
 		ENABLE_SCLK_TOPC1, 12, 0, 0),
 	GATE(SCLK_BUS0_PLL_B, "sclk_bus0_pll_b", "dout_sclk_bus0_pll",
@@ -215,6 +261,10 @@ static const struct samsung_pll_clock topc_pll_clks[] __initconst = {
 		MFC_PLL_CON0, NULL),
 	PLL(pll_1460x, FOUT_AUD_PLL, "fout_aud_pll", "fin_pll", AUD_PLL_LOCK,
 		AUD_PLL_CON0, pll1460x_24mhz_tbl),
+	/* DRAM runs from it: never gate it as unused */
+	__PLL(pll_1450x, FOUT_MIF_PLL, "fout_mif_pll", "fin_pll",
+		CLK_GET_RATE_NOCACHE | CLK_IS_CRITICAL, MIF_PLL_LOCK,
+		MIF_PLL_CON0, pll1450x_mif_24mhz_tbl),
 };
 
 static const struct samsung_cmu_info topc_cmu_info __initconst = {
