@@ -276,3 +276,10 @@ CONFIG_INTERCONNECT_EXYNOS=y
 
 # DRAM (MIF) frequency switching through the BUS0 safe PLL.
 CONFIG_EXYNOS7420_DMC=y
+
+# Lockups end in a panic, so the board restarts (into recovery on a test
+# boot) instead of hanging. The hard-lockup detector uses the buddy
+# scheme (no perf NMI on this GIC-400 board).
+CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC=y
+CONFIG_HARDLOCKUP_DETECTOR=y
+CONFIG_BOOTPARAM_HARDLOCKUP_PANIC=y
