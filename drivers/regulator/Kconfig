@@ -1284,6 +1284,18 @@ config REGULATOR_S2MPA01
 	 This driver controls Samsung S2MPA01 voltage output regulator
 	 via I2C bus. S2MPA01 has 10 Bucks and 26 LDO outputs.
 
+config REGULATOR_S2MPB02
+	tristate "Samsung S2MPB02 sub-PMIC regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver supports LDO17 of the Samsung S2MPB02 sub-PMIC over
+	  I2C. On the Galaxy S6 (SM-G920F) that output supplies the
+	  touchscreen analog rail.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called s2mpb02-regulator.
+
 config REGULATOR_S2MPS11
 	tristate "Samsung S2MPS11/13/14/15/S2MPU02 voltage regulator"
 	depends on MFD_SEC_CORE || COMPILE_TEST
