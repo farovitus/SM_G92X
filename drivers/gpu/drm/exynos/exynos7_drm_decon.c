@@ -9,12 +9,14 @@
 
 #include <linux/clk.h>
 #include <linux/component.h>
+#include <linux/interconnect.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/sizes.h>
+#include <linux/workqueue.h>
 
 #include <video/of_display_timing.h>
 #include <video/of_videomode.h>
@@ -37,6 +39,9 @@
 #define MIN_FB_WIDTH_FOR_16WORD_BURST 128
 
 #define WINDOWS_NR	2
+
+/* a command-mode panel holds its frame: release the bus after this */
+#define DECON_BW_IDLE_MS	100
 
 /* Identity map size when S-Boot scans below the /chosen framebuffer */
 #define BOOT_FB_FALLBACK_SIZE	SZ_64M
@@ -65,6 +70,11 @@ struct decon_context {
 	bool				iommu_ready;
 
 	struct drm_encoder *encoder;
+
+	/* display bus bandwidth, kB/s, requested for the last frame */
+	struct icc_path			*icc_path;
+	u32				icc_bw;
+	struct delayed_work		bw_idle_work;
 };
 
 static const struct of_device_id decon_driver_dt_match[] = {
@@ -375,10 +385,65 @@ static void decon_win_set_colkey(struct decon_context *ctx, unsigned int win)
 	writel(keycon1, ctx->regs + WKEYCON1_BASE(win));
 }
 
+static void decon_release_bandwidth(struct decon_context *ctx)
+{
+	icc_set_bw(ctx->icc_path, 0, 0);
+	ctx->icc_bw = 0;
+}
+
+static void decon_bw_idle_work(struct work_struct *work)
+{
+	struct decon_context *ctx = container_of(to_delayed_work(work),
+						 struct decon_context,
+						 bw_idle_work);
+
+	decon_release_bandwidth(ctx);
+}
+
+/*
+ * Ask the display bus for the bandwidth the enabled windows read: their
+ * source size times the refresh rate, with half again as headroom for
+ * the burst at the start of each frame. While the previous frame may
+ * still be scanned out, keep the larger of its request and this one;
+ * a drop takes effect at the next update.
+ *
+ * In command mode DECON reads memory only while it sends a frame, so the
+ * request is released once no update came for DECON_BW_IDLE_MS. The
+ * pending release is cancelled before a new frame raises the request.
+ */
+static void decon_update_bandwidth(struct decon_context *ctx)
+{
+	struct drm_crtc *crtc = &ctx->crtc->base;
+	struct drm_plane *plane;
+	u64 bytes = 0;
+	u32 bw;
+
+	cancel_delayed_work_sync(&ctx->bw_idle_work);
+
+	drm_for_each_plane_mask(plane, crtc->dev, crtc->state->plane_mask) {
+		const struct exynos_drm_plane_state *state =
+					to_exynos_plane_state(plane->state);
+
+		if (!state->base.fb)
+			continue;
+		/* the clipped source the window really fetches */
+		bytes += (u64)state->src.w * state->src.h *
+			 state->base.fb->format->cpp[0];
+	}
+
+	bw = div_u64(bytes * drm_mode_vrefresh(&crtc->state->adjusted_mode),
+		     1000);
+	icc_set_bw(ctx->icc_path, kBps_to_icc(max(bw, ctx->icc_bw)),
+		   kBps_to_icc(max(bw, ctx->icc_bw) / 2 * 3));
+	ctx->icc_bw = bw;
+}
+
 static void decon_atomic_begin(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
 	int i;
+
+	decon_update_bandwidth(ctx);
 
 	for (i = 0; i < WINDOWS_NR; i++)
 		decon_shadow_protect_win(ctx, i, true);
@@ -539,6 +604,10 @@ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
 	for (i = 0; i < WINDOWS_NR; i++)
 		decon_shadow_protect_win(ctx, i, false);
 
+	if (ctx->i80_if && ctx->icc_bw)
+		mod_delayed_work(system_wq, &ctx->bw_idle_work,
+				 msecs_to_jiffies(DECON_BW_IDLE_MS));
+
 	/*
 	 * Arm the event before the transfer starts: in i80 mode the frame
 	 * done interrupt of this transfer is the vblank that completes it.
@@ -654,6 +723,9 @@ static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
 		decon_disable_plane(crtc, &ctx->planes[i]);
 
 	pm_runtime_put_sync(ctx->dev);
+
+	cancel_delayed_work_sync(&ctx->bw_idle_work);
+	decon_release_bandwidth(ctx);
 }
 
 static const struct exynos_drm_crtc_ops decon_crtc_ops = {
@@ -797,16 +869,25 @@ static int decon_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct decon_context *ctx;
 	struct device_node *i80_if_timings;
+	struct icc_path *icc_path;
 	int ret;
 
 	if (!dev->of_node)
 		return -ENODEV;
+
+	/* before the boot framebuffer is claimed: this can defer */
+	icc_path = devm_of_icc_get(dev, NULL);
+	if (IS_ERR(icc_path))
+		return dev_err_probe(dev, PTR_ERR(icc_path),
+				     "failed to get the display bus path\n");
 
 	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
 
 	ctx->dev = dev;
+	ctx->icc_path = icc_path;
+	INIT_DELAYED_WORK(&ctx->bw_idle_work, decon_bw_idle_work);
 
 	i80_if_timings = of_get_child_by_name(dev->of_node, "i80-if-timings");
 	if (i80_if_timings)
