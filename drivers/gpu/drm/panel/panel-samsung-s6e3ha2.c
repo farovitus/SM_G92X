@@ -13,7 +13,9 @@
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/mutex.h>
 #include <linux/regulator/consumer.h>
+#include <linux/workqueue.h>
 
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_modes.h>
@@ -26,6 +28,15 @@
 #define S6E3HA2_NUM_GAMMA_STEPS		46
 #define S6E3HA2_GAMMA_CMD_CNT		35
 #define S6E3HA2_VINT_STATUS_MAX		10
+
+/*
+ * A new brightness fades in over a few frames, as on stock: each frame
+ * closes a quarter of the gap, by at most an eighth of the current
+ * luminance. The fade runs in 1/16 cd so the last steps stay small.
+ */
+#define S6E3HA2_FADE_SHIFT		4
+#define S6E3HA2_FADE_GAP_DIV		4
+#define S6E3HA2_FADE_MAX_DIV		8
 
 static const u8 gamma_tbl[S6E3HA2_NUM_GAMMA_STEPS][S6E3HA2_GAMMA_CMD_CNT] = {
 	{ 0x00, 0xb8, 0x00, 0xc3, 0x00, 0xb1, 0x89, 0x87, 0x87, 0x82, 0x83,
@@ -664,6 +675,13 @@ struct s6e3ha2 {
 	bool boot_on;		/* left running by the bootloader */
 
 	const struct s6e3ha2_panel_desc *desc;
+
+	/* Level table only: the fade, under fade_lock */
+	struct mutex fade_lock;
+	struct work_struct fade_work;
+	unsigned int fade_cur;		/* on the panel, 1/16 cd */
+	unsigned int fade_target;	/* requested, 1/16 cd */
+	bool fade_valid;		/* fade_cur is what the panel shows */
 };
 
 static int s6e3ha2_dcs_write(struct s6e3ha2 *ctx, const void *data, size_t len)
@@ -883,42 +901,43 @@ static int s6e3ha2_mix(int lo, int hi, unsigned int num, unsigned int den)
 }
 
 /*
- * The settings for @cd. Between two stock levels, the AOR and each gamma
- * point move linearly with the luminance, the way stock interpolates its
- * HBM levels; ELVSS and VINT keep the dimmer level's step. Every
- * brightness value then gets its own luminance instead of snapping to one
- * of the stock levels, which made a ramp climb in visible steps.
+ * The settings for @q, in 1/16 cd. Between two stock levels, the AOR and
+ * each gamma point move linearly with the luminance, the way stock
+ * interpolates its HBM levels; ELVSS and VINT keep the dimmer level's
+ * step. Every brightness value then gets its own luminance instead of
+ * snapping to one of the stock levels, which made a ramp climb in visible
+ * steps.
  */
 static void s6e3ha2_get_level(const struct s6e3ha2_panel_desc *desc,
-			      unsigned int cd, struct s6e3ha2_level *out)
+			      unsigned int q, struct s6e3ha2_level *out)
 {
 	const struct s6e3ha2_level *lv = desc->levels, *lo, *hi;
 	unsigned int i, num, den, aor;
 	int v;
 
-	if (cd <= lv[0].cd) {
+	if (q <= lv[0].cd << S6E3HA2_FADE_SHIFT) {
 		*out = lv[0];
 		return;
 	}
-	if (cd >= lv[desc->num_levels - 1].cd) {
+	if (q >= lv[desc->num_levels - 1].cd << S6E3HA2_FADE_SHIFT) {
 		*out = lv[desc->num_levels - 1];
 		return;
 	}
 
-	for (i = 1; lv[i].cd < cd; i++)
+	for (i = 1; lv[i].cd << S6E3HA2_FADE_SHIFT < q; i++)
 		;
-	if (lv[i].cd == cd) {
+	if (lv[i].cd << S6E3HA2_FADE_SHIFT == q) {
 		*out = lv[i];
 		return;
 	}
 
 	lo = &lv[i - 1];
 	hi = &lv[i];
-	num = cd - lo->cd;
-	den = hi->cd - lo->cd;
+	num = q - (lo->cd << S6E3HA2_FADE_SHIFT);
+	den = (hi->cd - lo->cd) << S6E3HA2_FADE_SHIFT;
 
 	*out = *lo;
-	out->cd = cd;
+	out->cd = q >> S6E3HA2_FADE_SHIFT;
 
 	aor = s6e3ha2_mix(s6e3ha2_aor_lines(lo->aor),
 			  s6e3ha2_aor_lines(hi->aor), num, den);
@@ -937,7 +956,7 @@ static void s6e3ha2_get_level(const struct s6e3ha2_panel_desc *desc,
 					    num, den);
 }
 
-static int s6e3ha2_set_level(struct s6e3ha2 *ctx, unsigned int cd)
+static int s6e3ha2_set_level(struct s6e3ha2 *ctx, unsigned int q)
 {
 	struct s6e3ha2_level lv;
 	u8 gamma[S6E3HA2_GAMMA_CMD_CNT + 1] = { 0xca, };
@@ -946,7 +965,7 @@ static int s6e3ha2_set_level(struct s6e3ha2 *ctx, unsigned int cd)
 	u8 vint[3] = { 0xf4, 0x8b, };
 	int ret;
 
-	s6e3ha2_get_level(ctx->desc, cd, &lv);
+	s6e3ha2_get_level(ctx->desc, q, &lv);
 	memcpy(gamma + 1, lv.gamma, sizeof(lv.gamma));
 	memcpy(aor + 1, lv.aor, sizeof(lv.aor));
 	elvss[1] = lv.mps;
@@ -970,6 +989,84 @@ static int s6e3ha2_set_level(struct s6e3ha2 *ctx, unsigned int cd)
 	return 0;
 }
 
+/* One fade step per frame: the host waits for the frame end before it. */
+static void s6e3ha2_fade_work(struct work_struct *work)
+{
+	struct s6e3ha2 *ctx = container_of(work, struct s6e3ha2, fade_work);
+	int gap, step, ret;
+
+	for (;;) {
+		mutex_lock(&ctx->fade_lock);
+		gap = (int)ctx->fade_target - (int)ctx->fade_cur;
+		if (!ctx->fade_valid || !gap) {
+			mutex_unlock(&ctx->fade_lock);
+			return;
+		}
+
+		step = clamp(gap / S6E3HA2_FADE_GAP_DIV,
+			     -(int)(ctx->fade_cur / S6E3HA2_FADE_MAX_DIV),
+			     (int)(ctx->fade_cur / S6E3HA2_FADE_MAX_DIV));
+		if (!step)
+			step = gap > 0 ? 1 : -1;
+
+		ret = s6e3ha2_set_level(ctx, ctx->fade_cur + step);
+		if (ret) {
+			/* The panel state is unknown: set the next value outright. */
+			ctx->fade_valid = false;
+			mutex_unlock(&ctx->fade_lock);
+			dev_err_ratelimited(ctx->dev, "fade failed: %d\n", ret);
+			return;
+		}
+		ctx->fade_cur += step;
+		mutex_unlock(&ctx->fade_lock);
+
+		usleep_range(8000, 9000);
+	}
+}
+
+/*
+ * Set the panel at once when its level is unknown (boot, resume, an
+ * error); otherwise fade to the new value and return without waiting.
+ * The lights HAL writes 0 only when the display turns off: set that at
+ * once too, and the next value, so the display comes on at its level
+ * instead of fading up from the bottom.
+ */
+static int s6e3ha2_set_cd(struct s6e3ha2 *ctx, unsigned int cd)
+{
+	const struct s6e3ha2_panel_desc *desc = ctx->desc;
+	unsigned int q;
+	int ret = 0;
+
+	q = clamp(cd, (unsigned int)desc->levels[0].cd,
+		  (unsigned int)desc->levels[desc->num_levels - 1].cd);
+	q <<= S6E3HA2_FADE_SHIFT;
+
+	mutex_lock(&ctx->fade_lock);
+	ctx->fade_target = q;
+	if (!cd || !ctx->fade_valid) {
+		ret = s6e3ha2_set_level(ctx, q);
+		if (!ret)
+			ctx->fade_cur = q;
+		ctx->fade_valid = !ret && cd;
+	} else if (ctx->fade_cur != q) {
+		queue_work(system_highpri_wq, &ctx->fade_work);
+	}
+	mutex_unlock(&ctx->fade_lock);
+
+	return ret;
+}
+
+static void s6e3ha2_fade_stop(struct s6e3ha2 *ctx)
+{
+	if (!ctx->desc->levels)
+		return;
+
+	mutex_lock(&ctx->fade_lock);
+	ctx->fade_valid = false;
+	mutex_unlock(&ctx->fade_lock);
+	cancel_work_sync(&ctx->fade_work);
+}
+
 static int s6e3ha2_set_brightness(struct backlight_device *bl_dev)
 {
 	struct s6e3ha2 *ctx = bl_get_data(bl_dev);
@@ -986,7 +1083,7 @@ static int s6e3ha2_set_brightness(struct backlight_device *bl_dev)
 		return -EPERM;
 
 	if (ctx->desc->levels)
-		return s6e3ha2_set_level(ctx, brightness);
+		return s6e3ha2_set_cd(ctx, brightness);
 
 	s6e3ha2_call_write_func(ret, s6e3ha2_test_key_on_f0(ctx));
 	s6e3ha2_call_write_func(ret, s6e3ha2_update_gamma(ctx, brightness));
@@ -1031,6 +1128,7 @@ static int s6e3ha2_disable(struct drm_panel *panel)
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
 	int ret;
 
+	s6e3ha2_fade_stop(ctx);
 	s6e3ha2_call_write_func(ret, mipi_dsi_dcs_enter_sleep_mode(dsi));
 	s6e3ha2_call_write_func(ret, mipi_dsi_dcs_set_display_off(dsi));
 
@@ -1227,6 +1325,8 @@ static int s6e3ha2_probe(struct mipi_dsi_device *dsi)
 
 	ctx->dev = dev;
 	ctx->desc = of_device_get_match_data(dev);
+	mutex_init(&ctx->fade_lock);
+	INIT_WORK(&ctx->fade_work, s6e3ha2_fade_work);
 
 	dsi->lanes = 4;
 	dsi->format = MIPI_DSI_FMT_RGB888;
@@ -1316,6 +1416,7 @@ static int s6e3ha2_probe(struct mipi_dsi_device *dsi)
 remove_panel:
 	drm_panel_remove(&ctx->panel);
 	backlight_device_unregister(ctx->bl_dev);
+	s6e3ha2_fade_stop(ctx);
 
 	return ret;
 }
@@ -1327,6 +1428,7 @@ static void s6e3ha2_remove(struct mipi_dsi_device *dsi)
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
 	backlight_device_unregister(ctx->bl_dev);
+	s6e3ha2_fade_stop(ctx);
 }
 
 static const struct of_device_id s6e3ha2_of_match[] = {
