@@ -117,18 +117,12 @@
 	};
 
 	/*
-	 * Fixed stand-ins for the TOPC/TOP0/TOP1 outputs. Those CMUs are
+	 * Fixed stand-ins for the CMU_TOP1 and PERIC outputs. Those CMUs are
 	 * disabled below, so S-Boot's PLL and divider setup stays as is;
-	 * the leaf CMUs find these parents by name.
+	 * the leaf CMUs find these parents by name. CMU_TOPC and CMU_TOP0
+	 * are registered since the 2026-11-06 probe and supply the rest.
 	 */
 	clocks {
-		aclk_peris_66: clock-aclk-peris-66 {
-			compatible = "fixed-clock";
-			#clock-cells = <0>;
-			clock-frequency = <66000000>;
-			clock-output-names = "aclk_peris_66";
-		};
-
 		aclk_fsys0_200: clock-aclk-fsys0-200 {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
@@ -190,48 +184,6 @@
 			#clock-cells = <0>;
 			clock-frequency = <26000000>;
 			clock-output-names = "sclk_phy_fsys1_26m";
-		};
-
-		fout_aud_pll: clock-fout-aud-pll {
-			compatible = "fixed-clock";
-			#clock-cells = <0>;
-			/*
-			 * Measured on SM-G920F (2026-11-05): S-Boot leaves the AUD
-			 * PLL at 196.608 MHz (4096 x 48 kHz, an entry of the stock
-			 * pll_1460x table). With S-Boot's dividers (MUX_SEL_AUD =
-			 * PLL, DIV_AUD1 cdclk /2, uart /2) sclk_uart is PLL/4 =
-			 * 49.152 MHz. A UART4 divider sweep with HCI_Reset got
-			 * Command Complete only at divider/16 = 414..438, centre
-			 * 426, i.e. sclk 49.07 MHz; 196.608 MHz gives 426.7.
-			 *
-			 * The 117 MHz uart-sclk-frequency in the stock DTS is the
-			 * rate the stock kernel set up itself; it is not what
-			 * S-Boot hands over. At 468 MHz this kernel programmed a
-			 * 2.4x too-slow baud and the BCM4358 never answered.
-			 */
-			clock-frequency = <196608000>;
-			clock-output-names = "fout_aud_pll";
-		};
-
-		aclk_disp_400: clock-aclk-disp-400 {
-			compatible = "fixed-clock";
-			#clock-cells = <0>;
-			clock-frequency = <266666667>;
-			clock-output-names = "aclk_disp_400";
-		};
-
-		sclk_decon_int_eclk: clock-sclk-decon-int-eclk {
-			compatible = "fixed-clock";
-			#clock-cells = <0>;
-			clock-frequency = <126000000>;
-			clock-output-names = "sclk_decon_int_eclk";
-		};
-
-		sclk_decon_vclk: clock-sclk-decon-vclk {
-			compatible = "fixed-clock";
-			#clock-cells = <0>;
-			clock-frequency = <126000000>;
-			clock-output-names = "sclk_decon_vclk";
 		};
 
 		hsi2c7_clk: clock-hsi2c7 {
@@ -680,9 +632,10 @@
 
 /*
  * The clusters run from the alternate input while their PLL relocks. Its
- * BUS0_PLL side comes through CMU_TOPC, which this board cannot read, so
- * the alternate input is the 24 MHz oscillator: a known rate, for the few
- * tens of microseconds a relock takes.
+ * BUS0_PLL side comes through CMU_TOPC. That was unreadable when this was
+ * written and is registered now, but the 24 MHz oscillator stays the
+ * alternate input: a known rate for the few tens of microseconds a relock
+ * takes, independent of any TOPC setting.
  */
 &clock_atlas {
 	assigned-clocks = <&clock_atlas CLK_MOUT_BUS0_PLL_ATLAS_USER>;
@@ -727,14 +680,12 @@
 };
 
 /* Leave the S-Boot root clock setup alone; see the stand-ins above. */
-&clock_topc {
-	status = "disabled";
-};
-
-&clock_top0 {
-	status = "disabled";
-};
-
+/*
+ * CMU_TOPC and CMU_TOP0 are registered: every register their drivers use
+ * reads and writes from Linux (2026-11-06 probe). Only undefined offsets
+ * abort, such as TOP0 +0x0 and TOPC +0x80c; the early "TOP0 hangs" came
+ * from a probe of TOP0's base. TOP1, CCORE, PERIC0 and PERIC1 stay off.
+ */
 &clock_top1 {
 	status = "disabled";
 };
@@ -751,10 +702,6 @@
 	status = "disabled";
 };
 
-&clock_peris {
-	clocks = <&fin_pll>, <&aclk_peris_66>;
-};
-
 &clock_fsys0 {
 	clocks = <&fin_pll>, <&aclk_fsys0_200>, <&sclk_mmc2>;
 };
@@ -766,13 +713,14 @@
 };
 
 &cmu_aud {
-	clocks = <&fin_pll>, <&fout_aud_pll>;
 	status = "okay";
 };
 
+/*
+ * CMU_DISP's parents come from CMU_TOP0 (aclk_disp_400, decon eclk and
+ * vclk), which is registered, so the rates are the real S-Boot settings.
+ */
 &cmu_disp {
-	clocks = <&fin_pll>, <&aclk_disp_400>, <&sclk_decon_int_eclk>,
-		 <&sclk_decon_vclk>;
 	status = "okay";
 };
 
