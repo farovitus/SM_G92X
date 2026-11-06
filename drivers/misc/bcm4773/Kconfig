@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config BCM4773
+	tristate "Broadcom BCM4773 GNSS and sensor hub bridge"
+	depends on SPI && OF
+	depends on GPIOLIB
+	help
+	  Bridge driver for the Broadcom BCM4773 GNSS chip, which also carries
+	  the sensor hub of the Samsung Galaxy S6. The chip is reached over
+	  Broadcom's SSI protocol on SPI. Broadcom's lhd daemon loads the
+	  chip's RAM firmware and drives GNSS through /dev/bbd_*; the sensor
+	  hub driver talks to the hub through this bridge.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called bcm4773.
