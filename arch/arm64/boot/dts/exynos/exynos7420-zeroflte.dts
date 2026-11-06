@@ -1388,6 +1388,39 @@
 			};
 		};
 	};
+
+	/*
+	 * DRAM controller: per channel the DREX, its LPDDR4 PHY, VT monitor
+	 * and CMU_MIF, plus the MIF PLL muxes in CMU_TOPC.
+	 */
+	dmc: memory-controller@10800000 {
+		compatible = "samsung,exynos7420-dmc";
+		reg = <0x10800000 0x1000>, <0x10900000 0x1000>,
+		      <0x10a00000 0x1000>, <0x10b00000 0x1000>,
+		      <0x10820000 0x1000>, <0x10920000 0x1000>,
+		      <0x10a20000 0x1000>, <0x10b20000 0x1000>,
+		      <0x10890000 0x100>, <0x10990000 0x100>,
+		      <0x10a90000 0x100>, <0x10b90000 0x100>,
+		      <0x10850000 0x2000>, <0x10950000 0x2000>,
+		      <0x10a50000 0x2000>, <0x10b50000 0x2000>,
+		      <0x10570000 0x2000>;
+		reg-names = "drex0", "drex1", "drex2", "drex3",
+			    "phy0", "phy1", "phy2", "phy3",
+			    "vtmon0", "vtmon1", "vtmon2", "vtmon3",
+			    "cmu-mif0", "cmu-mif1", "cmu-mif2", "cmu-mif3",
+			    "cmu-topc";
+		clocks = <&clock_topc FOUT_MIF_PLL>,
+			 <&clock_topc MOUT_ACLK_MIF_PLL>,
+			 <&clock_topc SCLK_BUS0_PLL_MIF>,
+			 <&clock_topc MOUT_SCLK_BUS0_PLL_MIF>,
+			 <&clock_topc DOUT_SCLK_BUS0_PLL_MIF>,
+			 <&clock_topc MOUT_ACLK_CCORE_532>,
+			 <&clock_topc DOUT_ACLK_CCORE_532>;
+		clock-names = "fout_mif_pll", "mout_aclk_mif_pll",
+			      "sclk_bus0_pll_mif", "mout_sclk_bus0_pll_mif",
+			      "dout_sclk_bus0_pll_mif", "mout_aclk_ccore_532",
+			      "dout_aclk_ccore_532";
+	};
 };
 
 &sysmmu_disp_ro {
