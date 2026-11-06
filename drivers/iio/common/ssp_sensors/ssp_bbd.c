@@ -91,6 +91,15 @@ static const struct ssp_sensorhub_info ssp_bbd_info = {
 static const struct mfd_cell ssp_bbd_cells[] = {
 	{ .name = "ssp-accelerometer", },
 	{ .name = "ssp-gyroscope", },
+	{ .name = "ssp-magnetometer", },
+	{ .name = "ssp-pressure", },
+	{ .name = "ssp-light", },
+	{ .name = "ssp-proximity", },
+	{ .name = "ssp-rotation-vector", },
+	{ .name = "ssp-game-rotvec", },
+	{ .name = "ssp-step-counter", },
+	{ .name = "ssp-step-detector", },
+	{ .name = "ssp-sig-motion", },
 };
 
 static int ssp_bbd_send(struct ssp_data *data, const void *buf, size_t len)

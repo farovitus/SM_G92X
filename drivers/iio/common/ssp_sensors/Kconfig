@@ -34,4 +34,16 @@ config IIO_SSP_SENSORHUB_BCM4773
 	  the BCM4773 bridge. The hub starts once userspace (lhd) has loaded
 	  the chip's firmware.
 
+config IIO_SSP_HUB_SENSORS
+	tristate "SSP magnetometer, pressure, light, proximity and motion sensors"
+	depends on IIO_SSP_SENSORHUB
+	select IIO_BUFFER
+	select IIO_KFIFO_BUF
+	help
+	  Say yes here for IIO devices of the sensorhub's magnetometer,
+	  pressure, light and proximity sensors, rotation vectors, step
+	  counter, step detector and significant motion.
+	  To compile this as a module, choose M here: the module
+	  will be called ssp_hub_sensors.
+
 endmenu
