@@ -642,6 +642,75 @@
 				      "dout_sclk_mmc2";
 		};
 
+		/*
+		 * MIPI-LLI to the modem CP. Register windows, interrupts and
+		 * clocks from the stock tw70-stock exynos7420.dtsi node; the
+		 * M-PHY (stock "mphy" child) is folded into "phy" and "pma".
+		 * The combo PHY PMA at 0x10ed0000 is shared with PCIe channel 0,
+		 * which this tree does not use. Boards add the IPC carve-out
+		 * (memory-region) and the M-PHY settings.
+		 */
+		mipi_lli: mipi-lli@10f24000 {
+			compatible = "samsung,exynos7420-mipi-lli";
+			reg = <0x10f24000 0x4000>,
+			      <0x10f34000 0x4000>,
+			      <0x10050000 0x2000>,
+			      <0x10f20000 0x4000>,
+			      <0x10ed0000 0x200>;
+			reg-names = "lli", "remote", "sysreg", "phy", "pma";
+			interrupts = <GIC_SPI 208 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 209 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "lli", "sig";
+			samsung,pmu-syscon = <&pmu_system_controller 0x724>;
+			clocks = <&clock_fsys0 ACLK_XIU_MODEMX>,
+				 <&clock_fsys0 ACLK_COMBO_PHY_MODEM_PCS_PCLK>,
+				 <&clock_fsys0 SCLK_PHY_FSYS0>,
+				 <&clock_fsys0 SCLK_COMBO_PHY_MODEM_26M>,
+				 <&clock_fsys0 PCLK_ASYNC_COMBO_PHY_MODEM>,
+				 <&clock_fsys0 ACLK_XIU_LLISFRX>,
+				 <&clock_fsys0 ACLK_AXIUS_LLI_BE>,
+				 <&clock_fsys0 ACLK_AXIUS_LLI_LL>,
+				 <&clock_fsys0 ACLK_AXIUS_LLISFRX_LLILL>,
+				 <&clock_fsys0 ACLK_AXIUS_LLISFRX_LLIBE>,
+				 <&clock_fsys0 ACLK_LLI_SVC_LOC>,
+				 <&clock_fsys0 ACLK_LLI_SVC_REM>,
+				 <&clock_fsys0 ACLK_LLI_LL_INIT>,
+				 <&clock_fsys0 ACLK_LLI_BE_INIT>,
+				 <&clock_fsys0 ACLK_LLI_LL_TARG>,
+				 <&clock_fsys0 ACLK_LLI_BE_TARG>,
+				 <&clock_fsys0 PHYCLK_LLI_TX0_SYMBOL_USER>,
+				 <&clock_fsys0 PHYCLK_LLI_RX0_SYMBOL_USER>;
+			clock-names = "aclk_xiu_modemx",
+				      "aclk_combo_phy_modem_pcs_pclk",
+				      "sclk_phy_fsys0",
+				      "sclk_combo_phy_modem_26m",
+				      "pclk_async_combo_phy_modem",
+				      "aclk_xiu_llisfrx",
+				      "aclk_axius_lli_be",
+				      "aclk_axius_lli_ll",
+				      "aclk_axius_llisfrx_llill",
+				      "aclk_axius_llisfrx_llibe",
+				      "aclk_lli_svc_loc",
+				      "aclk_lli_svc_rem",
+				      "aclk_lli_ll_init",
+				      "aclk_lli_be_init",
+				      "aclk_lli_ll_targ",
+				      "aclk_lli_be_targ",
+				      "user_phyclk_lli_tx0_symbol",
+				      "user_phyclk_lli_rx0_symbol";
+			/*
+			 * Stock USERMUX clocks: select the PHY-side symbol clocks.
+			 * mout_sclk_phy_fsys0_user keeps the bootloader setting,
+			 * because its parent sits in CMU_TOP1, which boards may
+			 * leave unregistered.
+			 */
+			assigned-clocks = <&clock_fsys0 MOUT_PHYCLK_LLI_TX0_USER>,
+					  <&clock_fsys0 MOUT_PHYCLK_LLI_RX0_USER>;
+			assigned-clock-parents = <&clock_fsys0 PHYCLK_LLI_TX0>,
+						 <&clock_fsys0 PHYCLK_LLI_RX0>;
+			status = "disabled";
+		};
+
 		clock_fsys1: clock-controller@156e0000 {
 			compatible = "samsung,exynos7-clock-fsys1";
 			reg = <0x156e0000 0xd00>;
