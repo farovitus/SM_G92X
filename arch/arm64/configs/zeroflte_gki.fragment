@@ -243,6 +243,13 @@ CONFIG_DRM_PANEL_SAMSUNG_S6E3HA2=y
 CONFIG_MFD_EXYNOS_LPASS=y
 # SPI0's controller clock is in CMU_PERIC1, which hangs the bus: bit-bang it.
 CONFIG_SPI_GPIO=y
+# Galaxy S6 sensor hub: the BCM4773 GNSS chip runs the SSP hub firmware
+# that lhd loads, on a bit-banged SPI1. Modules, as the BOOT size requires.
+CONFIG_BCM4773=m
+CONFIG_IIO_SSP_SENSORHUB=m
+CONFIG_IIO_SSP_SENSORHUB_BCM4773=y
+CONFIG_IIO_SSP_SENSORS_COMMONS=m
+CONFIG_IIO_SSP_HUB_SENSORS=m
 # Cirrus WM1840 (CS47L85 family) codec core, its SPI bus and its MICVDD pump.
 # Modules: the mainline CS47L85 route table alone is 4.5 MB, which built
 # in pushes the Image past the 29 MB BOOT partition.
