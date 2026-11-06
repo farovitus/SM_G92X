@@ -8,13 +8,15 @@ config SAMSUNG_MC
 config EXYNOS7420_DMC
 	bool "Exynos7420 DRAM controller frequency switching"
 	depends on ARCH_EXYNOS || COMPILE_TEST
-	depends on COMMON_CLK_SAMSUNG && DEBUG_FS
+	depends on COMMON_CLK_SAMSUNG && DEBUG_FS && REGULATOR
+	select PM_OPP
 	select SAMSUNG_MC
 	help
 	  Switches the Exynos7420 DRAM clock (MIF) between the stock
 	  levels, reprogramming the DREX timings, the LPDDR4 PHY and the
 	  DRAM mode registers through the BUS0 safe PLL as the stock
-	  kernel did. The 7420 has no firmware call for this.
+	  kernel did, and scales vdd_mif from the OPP table. The 7420
+	  has no firmware call for this.
 
 if SAMSUNG_MC
 

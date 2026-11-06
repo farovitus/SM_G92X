@@ -15,9 +15,17 @@
  * mode 2) and per-level CCORE and HPM clocks are those of the stock
  * 3.10 driver, exynos7420_bus_mif.c.
  *
- * This first version only reaches LV0..LV4. They share the 1600 MHz safe
- * PLL and run at the S-Boot BUCK1 voltage, which is LV0's, so no
- * regulator change is needed. Switching is only offered through debugfs.
+ * LV0..LV4 switch over a 1600 MHz safe PLL (DRAM 800 MHz, LV4 timings);
+ * any move that involves LV5..LV12 uses 800 MHz (DRAM 400 MHz, LV7
+ * timings). BUCK1 (vdd_mif) follows the OPP table: raised before the
+ * clock goes up, lowered after it comes down, set to the target on the
+ * safe PLL before the target clock (so DQS gate retraining runs at the
+ * new voltage, as stock did for differential DQS), with PHY clock gating
+ * off around each change. The 800 MHz safe level gets 56.25 mV more
+ * (stock CMOS_SE_OFFSET, applied in DQS mode 2).
+ *
+ * Switching is only offered through debugfs (exynos7420-dmc/level);
+ * exynos7420-dmc/state shows the registers.
  */
 
 #include <linux/bitfield.h>
@@ -27,15 +35,21 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm_opp.h>
+#include <linux/regulator/consumer.h>
 #include <linux/seq_file.h>
 
 #define NR_CH			4
 
 /* CMU_TOPC */
+#define TOPC_DIV_STAT_TOPC0	0x0700
+#define TOPC_DIV_CCORE_532_BUSY	BIT(0)
+#define TOPC_DIV_CCORE_133_BUSY	BIT(4)
 #define TOPC_MUX_STAT_TOPC5	0x0414
 #define TOPC_MIF_MUX_BUSY	GENMASK(27, 24)
 #define TOPC_PAUSE		0x1008
@@ -55,6 +69,7 @@
 #define DREX_PB_REF_EN		BIT(27)
 #define DREX_DSREF_EN		BIT(5)
 #define DREX_CGCONTROL		0x0008
+#define DREX_PHY_CG_EN		BIT(4)
 #define DREX_DIRECTCMD		0x0010
 #define DREX_TIMINGRFCPB	0x0020
 #define DREX_PWRDNCONFIG	0x0028
@@ -96,9 +111,12 @@
 
 #define POLL_TIMEOUT_US		1000
 
-/* Levels reachable over the 1600 MHz safe PLL with no voltage change */
+/* Safe levels: 1600 MHz PLL for LV0..LV4 moves, 800 MHz for the rest */
 #define LV_SAFE_HIGH		4
+#define LV_SAFE_LOW		7
+#define SAFE_LOW_OFFSET_UV	56250
 #define NR_LEVELS		13
+
 
 struct drex_timing {
 	u32 rfcpb, row, data, power, rdfetch, etc;
@@ -202,23 +220,24 @@ struct mif_level {
 	u8 ccore_532_parent;		/* index in mout_aclk_ccore_532 */
 	unsigned long ccore_532_hz;
 	u8 hpm_div;			/* DIV_MIF SCLK_HPM field */
+	unsigned long ccore_133_hz;
 };
 
 /* mout_aclk_ccore_532 parents: 2 = CC PLL (532), 5 = BUS1 PLL / 2 (334) */
 static const struct mif_level levels[NR_LEVELS] = {
-	{ 1552000, 2, 532000000, 2 },
-	{ 1464000, 2, 532000000, 2 },
-	{ 1264000, 3, 468000000, 1 },
-	{ 1026000, 0, 400000000, 1 },
-	{  836000, 5, 334000000, 1 },
-	{  635000, 5, 334000000, 1 },
-	{  543000, 6, 266000000, 1 },
-	{  418000, 4, 200000000, 0 },
-	{  348000, 9, 167000000, 0 },
-	{  259000, 9, 167000000, 0 },
-	{  167000, 10, 133000000, 0 },
-	{  133000, 8, 100000000, 0 },
-	{  100000, 8, 100000000, 0 },
+	{ 1552000, 2, 532000000, 2, 80000000 },
+	{ 1464000, 2, 532000000, 2, 80000000 },
+	{ 1264000, 3, 468000000, 1, 80000000 },
+	{ 1026000, 0, 400000000, 1, 80000000 },
+	{  836000, 5, 334000000, 1, 80000000 },
+	{  635000, 5, 334000000, 1, 67000000 },
+	{  543000, 6, 266000000, 1, 50000000 },
+	{  418000, 4, 200000000, 0, 50000000 },
+	{  348000, 9, 167000000, 0, 50000000 },
+	{  259000, 9, 167000000, 0, 50000000 },
+	{  167000, 10, 133000000, 0, 50000000 },
+	{  133000, 8, 100000000, 0, 50000000 },
+	{  100000, 8, 100000000, 0, 50000000 },
 };
 
 struct exynos7420_dmc {
@@ -237,12 +256,19 @@ struct exynos7420_dmc {
 	struct clk *dout_sclk_bus0_pll_mif;
 	struct clk *mout_aclk_ccore_532;
 	struct clk *dout_aclk_ccore_532;
+	struct clk *dout_aclk_ccore_133;
+
+	struct regulator *vdd;
+	int uv[NR_LEVELS];		/* BUCK1 voltage per level, from the OPPs */
+	int cur_uv;
 
 	struct mutex lock;
 	int cur;			/* current level, -1 if unknown */
 	bool can_switch;
 	unsigned int nr_switch;
+	s64 last_us, max_us;		/* switch_level() time */
 	struct dentry *debugfs;
+
 };
 
 static int wait_clear(void __iomem *reg, u32 mask, const char *what,
@@ -308,9 +334,22 @@ static int set_ccore(struct exynos7420_dmc *dmc, int lv)
 	if (!parent)
 		return -EINVAL;
 	ret = clk_set_parent(dmc->mout_aclk_ccore_532, parent->clk);
-	if (ret)
-		return ret;
-	return clk_set_rate(dmc->dout_aclk_ccore_532, levels[lv].ccore_532_hz);
+	/* the generic divider does not wait for DIV_STAT; stock did */
+	if (!ret)
+		ret = clk_set_rate(dmc->dout_aclk_ccore_532,
+				   levels[lv].ccore_532_hz);
+	if (!ret)
+		ret = wait_clear(dmc->topc + TOPC_DIV_STAT_TOPC0,
+				 TOPC_DIV_CCORE_532_BUSY, "CCORE 532 divider",
+				 dmc->dev);
+	if (!ret)
+		ret = clk_set_rate(dmc->dout_aclk_ccore_133,
+				   levels[lv].ccore_133_hz);
+	if (!ret)
+		ret = wait_clear(dmc->topc + TOPC_DIV_STAT_TOPC0,
+				 TOPC_DIV_CCORE_133_BUSY, "CCORE 133 divider",
+				 dmc->dev);
+	return ret;
 }
 
 static void rmw(void __iomem *reg, u32 mask, u32 val)
@@ -424,6 +463,28 @@ static void set_pbr(struct exynos7420_dmc *dmc, bool en)
 		    en ? DREX_PB_REF_EN : 0);
 }
 
+/* BUCK1 change, with the PHY clock gating off as stock did around it */
+static int set_volt(struct exynos7420_dmc *dmc, int uv)
+{
+	u32 cg = readl(dmc->drex[0] + DREX_CGCONTROL) & DREX_PHY_CG_EN;
+	int ch, ret;
+
+	if (uv == dmc->cur_uv)
+		return 0;
+	for (ch = 0; ch < NR_CH; ch++)
+		rmw(dmc->drex[ch] + DREX_CGCONTROL, DREX_PHY_CG_EN, 0);
+	ret = regulator_set_voltage(dmc->vdd, uv, uv);
+	for (ch = 0; ch < NR_CH; ch++)
+		rmw(dmc->drex[ch] + DREX_CGCONTROL, DREX_PHY_CG_EN, cg);
+	if (ret) {
+		dev_err(dmc->dev, "vdd_mif to %d uV: %d\n", uv, ret);
+		dmc->cur_uv = regulator_get_voltage(dmc->vdd);
+		return ret;
+	}
+	dmc->cur_uv = uv;
+	return 0;
+}
+
 static void set_dsref_cycle(struct exynos7420_dmc *dmc, int lv)
 {
 	u32 cyc = lv <= 4 ? 0x3ff : lv <= 7 ? 0x1ff : 0x90;
@@ -441,7 +502,7 @@ static void set_dsref_cycle(struct exynos7420_dmc *dmc, int lv)
 
 /*
  * Move from the current level to @lv through the safe PLL. Called with
- * dmc->lock held. Both levels are in LV0..LV4.
+ * dmc->lock held.
  *
  * The DRAM runs LPDDR4 set point 0 on fout_mif_pll and set point 1 on
  * the safe PLL. Set 0 may only be reloaded while the DRAM is on the safe
@@ -449,26 +510,36 @@ static void set_dsref_cycle(struct exynos7420_dmc *dmc, int lv)
  */
 static int switch_level(struct exynos7420_dmc *dmc, int lv)
 {
-	const int safe = LV_SAFE_HIGH;
-	unsigned long rate = levels[lv].khz * 2000;
-	int old = dmc->cur, final, ret;
+	int old = dmc->cur, safe, safe_uv, ccore, final, ret;
+	unsigned long rate, safe_rate;
 	struct clk_hw *hw;
 	u32 vt;
 
-	if (lv < 0 || lv > LV_SAFE_HIGH || old < 0)
+	if (lv < 0 || lv >= NR_LEVELS || old < 0 || !dmc->uv[lv])
 		return -EINVAL;
+	rate = levels[lv].khz * 2000;
 	if (!mux_ctrl_by_cmuc(dmc)) {
 		dev_err(dmc->dev, "MIF muxes not under CMU_TOPC control\n");
 		return -EIO;
 	}
 
-	/* Safe PLL: BUS0 PLL undivided, 1600 MHz, so DRAM runs 800 MHz */
+	if (old <= LV_SAFE_HIGH && lv <= LV_SAFE_HIGH) {
+		safe = LV_SAFE_HIGH;
+		safe_rate = 1600000000;
+		safe_uv = dmc->uv[safe];
+	} else {
+		safe = LV_SAFE_LOW;
+		safe_rate = 800000000;
+		safe_uv = dmc->uv[safe] + SAFE_LOW_OFFSET_UV;
+	}
+
+	/* Safe PLL: BUS0 PLL (1600 MHz), undivided or halved */
 	hw = clk_hw_get_parent_by_index(__clk_get_hw(dmc->mout_sclk_bus0_pll_mif), 0);
 	if (!hw)
 		return -EINVAL;
 	ret = clk_set_parent(dmc->mout_sclk_bus0_pll_mif, hw->clk);
 	if (!ret)
-		ret = clk_set_rate(dmc->dout_sclk_bus0_pll_mif, 1600000000);
+		ret = clk_set_rate(dmc->dout_sclk_bus0_pll_mif, safe_rate);
 	if (!ret)
 		ret = clk_prepare_enable(dmc->sclk_bus0_pll_mif);
 	if (ret)
@@ -479,10 +550,21 @@ static int switch_level(struct exynos7420_dmc *dmc, int lv)
 		set_pbr(dmc, false);
 	vt = vtmon_comp_off(dmc);
 
-	/* CCORE never runs above the DRAM's level: lower it first */
-	ret = set_ccore(dmc, safe);
+	/* The old level and the safe one must both hold */
+	ret = set_volt(dmc, max(dmc->uv[old], safe_uv));
 	if (ret)
 		goto abort;
+
+	/*
+	 * CCORE never runs above the DRAM's level: lower it before the
+	 * DRAM clock goes down, raise it after the DRAM clock goes up.
+	 */
+	ccore = (safe >= old && safe >= lv) ? safe : lv >= old ? lv : -1;
+	if (ccore >= 0) {
+		ret = set_ccore(dmc, ccore);
+		if (ret)
+			goto abort;
+	}
 
 	preset(dmc, safe, 1);
 	set_hpm_div(dmc, safe);
@@ -494,7 +576,9 @@ static int switch_level(struct exynos7420_dmc *dmc, int lv)
 		goto back;
 	}
 
-	if (clk_get_rate(dmc->fout_mif_pll) != rate) {
+	/* The target voltage before the target clock */
+	ret = set_volt(dmc, max(safe_uv, dmc->uv[lv]));
+	if (!ret && clk_get_rate(dmc->fout_mif_pll) != rate) {
 		ret = clk_set_rate(dmc->fout_mif_pll, rate);
 		if (ret)
 			dev_err(dmc->dev, "MIF PLL to %lu Hz: %d\n", rate, ret);
@@ -503,24 +587,29 @@ static int switch_level(struct exynos7420_dmc *dmc, int lv)
 back:
 	/* Return to the MIF PLL whatever failed, on the level it now feeds */
 	final = clk_get_rate(dmc->fout_mif_pll) == rate ? lv : old;
+	if (set_volt(dmc, max(safe_uv, dmc->uv[final])))
+		goto stuck;
 	preset(dmc, final, 0);
 	set_hpm_div(dmc, final);
 	if (clk_set_parent(dmc->mout_aclk_mif_pll, dmc->mout_topc_mif_pll) ||
-	    wait_pause(dmc)) {
-		/* DRAM may still be on the safe PLL: keep its gate on */
-		dev_crit(dmc->dev, "cannot return to the MIF PLL\n");
-		dmc->can_switch = false;
-		dmc->cur = -1;
-		return -EIO;
-	}
+	    wait_pause(dmc))
+		goto stuck;
 	clk_disable_unprepare(dmc->sclk_bus0_pll_mif);
 	set_ccore(dmc, final);
 	vtmon_comp_restore(dmc, vt);
+	set_volt(dmc, dmc->uv[final]);
 	set_pbr(dmc, final < 4);
 	set_dsref_cycle(dmc, final);
 	dmc->cur = final;
 	dmc->nr_switch++;
 	return final == lv ? ret : (ret ?: -EIO);
+
+stuck:
+	/* DRAM may still be on the safe PLL: keep its gate on */
+	dev_crit(dmc->dev, "cannot return to the MIF PLL\n");
+	dmc->can_switch = false;
+	dmc->cur = -1;
+	return -EIO;
 
 abort:
 	/* Still on the MIF PLL in set point 0: undo the clock changes */
@@ -528,6 +617,7 @@ abort:
 	set_ccore(dmc, old);
 	clk_disable_unprepare(dmc->sclk_bus0_pll_mif);
 	vtmon_comp_restore(dmc, vt);
+	set_volt(dmc, dmc->uv[old]);
 	set_pbr(dmc, old < 4);
 	return ret;
 }
@@ -553,14 +643,16 @@ static int state_show(struct seq_file *s, void *unused)
 	int ch, n;
 
 	mutex_lock(&dmc->lock);
-	seq_printf(s, "level %d (%lu kHz) switches %u can_switch %d\n",
+	seq_printf(s, "level %d (%lu kHz) switches %u (last %lld us, max %lld us) can_switch %d\n",
 		   dmc->cur, dmc->cur >= 0 ? levels[dmc->cur].khz : 0,
-		   dmc->nr_switch, dmc->can_switch);
-	seq_printf(s, "fout_mif_pll %lu mout_aclk_mif_pll %lu (%s) ccore_532 %lu\n",
+		   dmc->nr_switch, dmc->last_us, dmc->max_us, dmc->can_switch);
+	seq_printf(s, "fout_mif_pll %lu mout_aclk_mif_pll %lu (%s) ccore_532 %lu ccore_133 %lu vdd_mif %d (%d)\n",
 		   clk_get_rate(dmc->fout_mif_pll),
 		   clk_get_rate(dmc->mout_aclk_mif_pll),
 		   __clk_get_name(clk_get_parent(dmc->mout_aclk_mif_pll)),
-		   clk_get_rate(dmc->dout_aclk_ccore_532));
+		   clk_get_rate(dmc->dout_aclk_ccore_532),
+		   clk_get_rate(dmc->dout_aclk_ccore_133),
+		   dmc->cur_uv, regulator_get_voltage(dmc->vdd));
 	for (ch = 0; ch < NR_CH; ch++) {
 		void __iomem *d = dmc->drex[ch];
 
@@ -606,9 +698,10 @@ static ssize_t level_write(struct file *file, const char __user *buf,
 		old = dmc->cur;
 		t0 = ktime_get();
 		ret = switch_level(dmc, lv);
+		dmc->last_us = ktime_us_delta(ktime_get(), t0);
+		dmc->max_us = max(dmc->max_us, dmc->last_us);
 		dev_info(dmc->dev, "LV%d -> LV%u: %d, %lld us, now LV%d\n",
-			 old, lv, ret, ktime_us_delta(ktime_get(), t0),
-			 dmc->cur);
+			 old, lv, ret, dmc->last_us, dmc->cur);
 	}
 	mutex_unlock(&dmc->lock);
 	return ret ? ret : count;
@@ -646,10 +739,11 @@ static int exynos7420_dmc_probe(struct platform_device *pdev)
 		{ .id = "dout_sclk_bus0_pll_mif" },
 		{ .id = "mout_aclk_ccore_532" },
 		{ .id = "dout_aclk_ccore_532" },
+		{ .id = "dout_aclk_ccore_133" },
 	};
 	struct clk_hw *pll_mux;
 	unsigned long pll_rate;
-	int ch, ret;
+	int ch, lv, ret;
 
 	dmc = devm_kzalloc(dev, sizeof(*dmc), GFP_KERNEL);
 	if (!dmc)
@@ -681,6 +775,27 @@ static int exynos7420_dmc_probe(struct platform_device *pdev)
 	dmc->dout_sclk_bus0_pll_mif = clks[4].clk;
 	dmc->mout_aclk_ccore_532 = clks[5].clk;
 	dmc->dout_aclk_ccore_532 = clks[6].clk;
+	dmc->dout_aclk_ccore_133 = clks[7].clk;
+
+	dmc->vdd = devm_regulator_get(dev, "vdd");
+	if (IS_ERR(dmc->vdd))
+		return dev_err_probe(dev, PTR_ERR(dmc->vdd), "vdd_mif\n");
+	ret = devm_pm_opp_of_add_table(dev);
+	if (ret)
+		return dev_err_probe(dev, ret, "OPP table\n");
+	for (lv = 0; lv < NR_LEVELS; lv++) {
+		unsigned long hz = levels[lv].khz * 1000;
+		struct dev_pm_opp *opp = dev_pm_opp_find_freq_exact(dev, hz, true);
+
+		/* a level without an OPP is never used */
+		if (IS_ERR(opp))
+			continue;
+		dmc->uv[lv] = dev_pm_opp_get_voltage(opp);
+		dev_pm_opp_put(opp);
+	}
+	if (!dmc->uv[0] || !dmc->uv[LV_SAFE_HIGH] || !dmc->uv[LV_SAFE_LOW])
+		return dev_err_probe(dev, -EINVAL, "no OPP for LV0, LV4 or LV7\n");
+	dmc->cur_uv = regulator_get_voltage(dmc->vdd);
 
 	pll_mux = clk_hw_get_parent_by_index(__clk_get_hw(dmc->mout_aclk_mif_pll), 1);
 	if (!pll_mux)
@@ -695,7 +810,8 @@ static int exynos7420_dmc_probe(struct platform_device *pdev)
 	pll_rate = clk_get_rate(dmc->fout_mif_pll);
 	dmc->can_switch = dmc->cur == 0 &&
 		clk_get_parent(dmc->mout_aclk_mif_pll) == dmc->mout_topc_mif_pll &&
-		pll_rate == levels[0].khz * 2000 && mux_ctrl_by_cmuc(dmc);
+		pll_rate == levels[0].khz * 2000 && mux_ctrl_by_cmuc(dmc) &&
+		dmc->cur_uv >= dmc->uv[0];
 	for (ch = 1; ch < NR_CH; ch++)
 		if (readl(dmc->drex[ch] + DREX_TIMINGROW_0) !=
 		    readl(dmc->drex[0] + DREX_TIMINGROW_0))
@@ -707,9 +823,10 @@ static int exynos7420_dmc_probe(struct platform_device *pdev)
 	debugfs_create_file("state", 0400, dmc->debugfs, dmc, &state_fops);
 	debugfs_create_file("level", 0200, dmc->debugfs, dmc, &level_fops);
 
-	dev_info(dev, "LV%d, MIF PLL %lu Hz on %s, switching %s\n",
+	dev_info(dev, "LV%d, MIF PLL %lu Hz on %s, vdd_mif %d uV, switching %s\n",
 		 dmc->cur, pll_rate,
 		 __clk_get_name(clk_get_parent(dmc->mout_aclk_mif_pll)),
+		 dmc->cur_uv,
 		 dmc->can_switch ? "available (debugfs)" : "disabled");
 	return 0;
 }

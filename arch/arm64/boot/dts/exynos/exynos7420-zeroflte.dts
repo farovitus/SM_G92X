@@ -460,6 +460,58 @@
 		};
 	};
 
+	dmc_opp_table: opp-table-dmc {
+		compatible = "operating-points-v2";
+		opp-133000000 {
+			opp-hz = /bits/ 64 <133000000>;
+			opp-microvolt = <587500>;
+		};
+		opp-167000000 {
+			opp-hz = /bits/ 64 <167000000>;
+			opp-microvolt = <587500>;
+		};
+		opp-259000000 {
+			opp-hz = /bits/ 64 <259000000>;
+			opp-microvolt = <587500>;
+		};
+		opp-348000000 {
+			opp-hz = /bits/ 64 <348000000>;
+			opp-microvolt = <587500>;
+		};
+		opp-418000000 {
+			opp-hz = /bits/ 64 <418000000>;
+			opp-microvolt = <587500>;
+		};
+		opp-543000000 {
+			opp-hz = /bits/ 64 <543000000>;
+			opp-microvolt = <656250>;
+		};
+		opp-635000000 {
+			opp-hz = /bits/ 64 <635000000>;
+			opp-microvolt = <668750>;
+		};
+		opp-836000000 {
+			opp-hz = /bits/ 64 <836000000>;
+			opp-microvolt = <712500>;
+		};
+		opp-1026000000 {
+			opp-hz = /bits/ 64 <1026000000>;
+			opp-microvolt = <731250>;
+		};
+		opp-1264000000 {
+			opp-hz = /bits/ 64 <1264000000>;
+			opp-microvolt = <756250>;
+		};
+		opp-1464000000 {
+			opp-hz = /bits/ 64 <1464000000>;
+			opp-microvolt = <787500>;
+		};
+		opp-1552000000 {
+			opp-hz = /bits/ 64 <1552000000>;
+			opp-microvolt = <825000>;
+		};
+	};
+
 	/* Bus for the MAX77843 MUIC/charger/fuel gauge (stock hsi2c_1 pins) */
 	i2c_max77843: i2c-max77843 {
 		compatible = "i2c-gpio";
@@ -1391,7 +1443,11 @@
 
 	/*
 	 * DRAM controller: per channel the DREX, its LPDDR4 PHY, VT monitor
-	 * and CMU_MIF, plus the MIF PLL muxes in CMU_TOPC.
+	 * and CMU_MIF, plus the MIF PLL muxes in CMU_TOPC. OPPs are the DRAM
+	 * clock; voltages are the stock MIF ASV table v15 entries for this
+	 * chip's group (ASV9). G925F needs its own values. Stock LV12
+	 * (100 MHz) is left out: switching LV11 -> LV12 hangs this phone
+	 * (test-79, twice), and LV11 is 133 MHz at the same voltage.
 	 */
 	dmc: memory-controller@10800000 {
 		compatible = "samsung,exynos7420-dmc";
@@ -1415,11 +1471,14 @@
 			 <&clock_topc MOUT_SCLK_BUS0_PLL_MIF>,
 			 <&clock_topc DOUT_SCLK_BUS0_PLL_MIF>,
 			 <&clock_topc MOUT_ACLK_CCORE_532>,
-			 <&clock_topc DOUT_ACLK_CCORE_532>;
+			 <&clock_topc DOUT_ACLK_CCORE_532>,
+			 <&clock_topc DOUT_ACLK_CCORE_133>;
 		clock-names = "fout_mif_pll", "mout_aclk_mif_pll",
 			      "sclk_bus0_pll_mif", "mout_sclk_bus0_pll_mif",
 			      "dout_sclk_bus0_pll_mif", "mout_aclk_ccore_532",
-			      "dout_aclk_ccore_532";
+			      "dout_aclk_ccore_532", "dout_aclk_ccore_133";
+		vdd-supply = <&vdd_mif>;
+		operating-points-v2 = <&dmc_opp_table>;
 	};
 };
 
