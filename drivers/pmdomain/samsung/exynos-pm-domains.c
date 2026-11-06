@@ -22,6 +22,10 @@
 struct exynos_pm_domain_config {
 	/* Value for LOCAL_PWR_CFG and STATUS fields for each domain */
 	u32 local_pwr_cfg;
+	/* Value for the OPTION register, written before each transition */
+	u32 pd_option;
+	/* Domain must never be powered off by genpd */
+	bool always_on;
 };
 
 /*
@@ -31,6 +35,7 @@ struct exynos_pm_domain {
 	void __iomem *base;
 	struct generic_pm_domain pd;
 	u32 local_pwr_cfg;
+	u32 pd_option;
 };
 
 static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
@@ -42,6 +47,9 @@ static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 
 	pd = container_of(domain, struct exynos_pm_domain, pd);
 	base = pd->base;
+
+	if (pd->pd_option)
+		writel_relaxed(pd->pd_option, base + 0x8);
 
 	pwr = power_on ? pd->local_pwr_cfg : 0;
 	writel_relaxed(pwr, base);
@@ -81,10 +89,20 @@ static const struct exynos_pm_domain_config exynos5433_cfg = {
 	.local_pwr_cfg		= 0xf,
 };
 
+static const struct exynos_pm_domain_config exynos7420_g3d_cfg = {
+	.local_pwr_cfg		= 0xf,
+	.pd_option		= 0x1101,
+	.always_on		= true,
+};
+
 static const struct of_device_id exynos_pm_domain_of_match[] = {
 	{
 		.compatible = "samsung,exynos4210-pd",
 		.data = &exynos4210_cfg,
+	}, {
+		/* must precede the generic exynos5433-pd entry */
+		.compatible = "samsung,exynos7420-g3d-pd",
+		.data = &exynos7420_g3d_cfg,
 	}, {
 		.compatible = "samsung,exynos5433-pd",
 		.data = &exynos5433_cfg,
@@ -127,10 +145,24 @@ static int exynos_pd_probe(struct platform_device *pdev)
 	pd->pd.power_off = exynos_pd_power_off;
 	pd->pd.power_on = exynos_pd_power_on;
 	pd->local_pwr_cfg = pm_domain_cfg->local_pwr_cfg;
+	pd->pd_option = pm_domain_cfg->pd_option;
 
 	on = readl_relaxed(pd->base + 0x4) & pd->local_pwr_cfg;
 
 	pm_genpd_init(&pd->pd, NULL, !on);
+
+	/*
+	 * genpd refuses to initialise an always-on domain that starts off,
+	 * so set the flag only after pm_genpd_init(). A domain found off is
+	 * powered on at its first consumer resume and then kept on.
+	 */
+	if (pm_domain_cfg->always_on) {
+		if (!on)
+			dev_warn(dev, "%s is off, kept on once powered\n",
+				 pd->pd.name);
+		pd->pd.flags |= GENPD_FLAG_ALWAYS_ON;
+	}
+
 	ret = of_genpd_add_provider_simple(np, &pd->pd);
 
 	if (ret == 0 && of_parse_phandle_with_args(np, "power-domains",
