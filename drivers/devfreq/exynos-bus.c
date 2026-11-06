@@ -190,6 +190,14 @@ static int exynos_bus_parent_parse_of(struct device_node *np,
 	bus->opp_token = ret;
 
 	/*
+	 * A bus without devfreq-event devices has no load to measure. It is
+	 * set only by the minimum frequency requests of its users, through
+	 * PM QoS and the interconnect provider.
+	 */
+	if (!of_property_present(np, "devfreq-events"))
+		return 0;
+
+	/*
 	 * Get the devfreq-event devices to get the current utilization of
 	 * buses. This raw data will be used in devfreq ondemand governor.
 	 */
@@ -295,10 +303,23 @@ static int exynos_bus_profile_init(struct exynos_bus *bus,
 	int ret;
 
 	/* Initialize the struct profile and governor data for parent device */
-	profile->polling_ms = 50;
 	profile->target = exynos_bus_target;
-	profile->get_dev_status = exynos_bus_get_dev_status;
 	profile->exit = exynos_bus_exit;
+
+	/* Without load counters, run at the lowest rate the requests allow */
+	if (!bus->edev_count) {
+		bus->devfreq = devm_devfreq_add_device(dev, profile,
+						DEVFREQ_GOV_POWERSAVE, NULL);
+		if (IS_ERR(bus->devfreq)) {
+			dev_err(dev, "failed to add devfreq device\n");
+			return PTR_ERR(bus->devfreq);
+		}
+
+		return devm_devfreq_register_opp_notifier(dev, bus->devfreq);
+	}
+
+	profile->polling_ms = 50;
+	profile->get_dev_status = exynos_bus_get_dev_status;
 
 	ondemand_data = devm_kzalloc(dev, sizeof(*ondemand_data), GFP_KERNEL);
 	if (!ondemand_data)
