@@ -34,6 +34,17 @@
 
 	aliases {
 		serial0 = &serial_4;
+		/*
+		 * Fixed i2c bus numbers, in the order they probe today. Android
+		 * sepolicy and HALs name the bus directories (i2c-1 PMIC, i2c-3
+		 * MAX77843), so the numbers must not follow probe order.
+		 */
+		i2c0 = &i2c_touchkey;
+		i2c1 = "/i2c-tsp-main-pmic";
+		i2c2 = "/i2c-tsp-analog-pmic";
+		i2c3 = &i2c_max77843;
+		i2c4 = "/i2c-amp";
+		i2c5 = &hsi2c_7;
 	};
 
 	chosen {
