@@ -1094,6 +1094,13 @@
 	 */
 	samsung,bootloader-display;
 
+	/*
+	 * The panel's tearing-effect output on GPG0-0, an EINT (3.10:
+	 * decon_fb gpios = <&gpg0 0 0xf>, used to time each frame's
+	 * software trigger). DECON sends every frame at a TE edge.
+	 */
+	te-gpios = <&gpg0 0 GPIO_ACTIVE_HIGH>;
+
 	/* Command-mode (i80) MIPI panel, S6E3HA2 */
 	i80-if-timings {
 	};

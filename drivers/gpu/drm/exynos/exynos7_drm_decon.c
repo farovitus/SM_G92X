@@ -9,6 +9,8 @@
 
 #include <linux/clk.h>
 #include <linux/component.h>
+#include <linux/gpio/consumer.h>
+#include <linux/interrupt.h>
 #include <linux/interconnect.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
@@ -43,6 +45,39 @@
 /* a command-mode panel holds its frame: release the bus after this */
 #define DECON_BW_IDLE_MS	100
 
+/*
+ * Command mode with the panel's tearing-effect (TE) line: each frame is
+ * sent at a TE edge, when the panel starts reading its frame memory, and
+ * vblank counts TE edges, so vblank events and flip completions follow
+ * the panel's own refresh. Without TE a frame is sent as soon as it is
+ * committed: the transfer then starts at an arbitrary point of the
+ * panel's refresh, and the time between frames on screen follows the
+ * commit times. te_sync=0 keeps that behaviour; a change applies the next
+ * time the display is turned on. te_active reports whether frames
+ * currently go out at TE.
+ */
+static bool decon_te_enable = true;
+module_param_named(te_sync, decon_te_enable, bool, 0644);
+static bool decon_te_active;
+module_param_named(te_active, decon_te_active, bool, 0444);
+
+/*
+ * Shadow-latch check: commits programmed while a transfer was running, and
+ * frame-done interrupts that found such a commit already applied (its
+ * DECON_UPDATE standalone bit cleared before its own trigger). The second
+ * must stay 0: a nonzero value means the active registers changed under a
+ * running transfer.
+ */
+static unsigned int decon_te_mid_xfer;
+module_param_named(te_mid_xfer, decon_te_mid_xfer, uint, 0444);
+static unsigned int decon_te_early_latch;
+module_param_named(te_early_latch, decon_te_early_latch, uint, 0444);
+
+/* a pending frame waits at most this long for TE before it is sent anyway */
+#define DECON_TE_TIMEOUT_MS	50
+/* after this many such frames in a row, frames go out on commit again */
+#define DECON_TE_MISS_MAX	3
+
 /* Identity map size when S-Boot scans below the /chosen framebuffer */
 #define BOOT_FB_FALLBACK_SIZE	SZ_64M
 
@@ -75,6 +110,19 @@ struct decon_context {
 	struct icc_path			*icc_path;
 	u32				icc_bw;
 	struct delayed_work		bw_idle_work;
+
+	/* TE-synchronised frame transfers, under te_lock */
+	int				te_irq;
+	spinlock_t			te_lock;
+	bool				te_sync;	/* TE seen: send frames at TE */
+	bool				te_irq_on;
+	bool				vblank_on;
+	bool				trig_pending;	/* committed, waits for TE */
+	bool				xfer_busy;	/* sending, until frame done */
+	unsigned int			te_count;
+	unsigned int			te_misses;	/* watchdog sends in a row */
+	wait_queue_head_t		te_wq;
+	struct delayed_work		te_watchdog;
 };
 
 static const struct of_device_id decon_driver_dt_match[] = {
@@ -257,10 +305,27 @@ static void decon_commit(struct exynos_drm_crtc *crtc)
 	writel(val, ctx->regs + DECON_UPDATE);
 }
 
+/* Called with te_lock held. */
+static void decon_te_irq_get(struct decon_context *ctx)
+{
+	if (!ctx->te_irq_on) {
+		ctx->te_irq_on = true;
+		enable_irq(ctx->te_irq);
+	}
+}
+
 static int decon_enable_vblank(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
+	unsigned long flags;
 	u32 val;
+
+	if (ctx->te_sync) {
+		spin_lock_irqsave(&ctx->te_lock, flags);
+		ctx->vblank_on = true;
+		decon_te_irq_get(ctx);
+		spin_unlock_irqrestore(&ctx->te_lock, flags);
+	}
 
 	if (!test_and_set_bit(0, &ctx->irq_flags)) {
 		val = readl(ctx->regs + VIDINTCON0);
@@ -285,7 +350,20 @@ static int decon_enable_vblank(struct exynos_drm_crtc *crtc)
 static void decon_disable_vblank(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
+	unsigned long flags;
 	u32 val;
+
+	if (ctx->te_sync) {
+		/*
+		 * Vblank counts TE edges. The frame-done interrupt stays on:
+		 * it ends each transfer. The TE handler turns its interrupt
+		 * off once no frame waits for it.
+		 */
+		spin_lock_irqsave(&ctx->te_lock, flags);
+		ctx->vblank_on = false;
+		spin_unlock_irqrestore(&ctx->te_lock, flags);
+		return;
+	}
 
 	if (test_and_clear_bit(0, &ctx->irq_flags)) {
 		val = readl(ctx->regs + VIDINTCON0);
@@ -443,6 +521,16 @@ static void decon_atomic_begin(struct exynos_drm_crtc *crtc)
 	struct decon_context *ctx = crtc->ctx;
 	int i;
 
+	/*
+	 * No wait for the previous transfer: the window registers written
+	 * here are shadow copies. DECON copies them to the active set only
+	 * when the next frame is triggered, so a transfer in progress keeps
+	 * reading the old state (as in exynos5433_drm_decon and the 3.10
+	 * decon driver, which both reprogram while a frame is going out).
+	 */
+	if (ctx->te_sync && READ_ONCE(ctx->xfer_busy))
+		WRITE_ONCE(decon_te_mid_xfer, decon_te_mid_xfer + 1);
+
 	decon_update_bandwidth(ctx);
 
 	for (i = 0; i < WINDOWS_NR; i++)
@@ -596,6 +684,183 @@ static void decon_i80_trigger(struct decon_context *ctx)
 	writel(val, ctx->regs + TRIGCON);
 }
 
+/* Start sending the committed frame. Called with te_lock held. */
+static void decon_te_send(struct decon_context *ctx)
+{
+	decon_i80_trigger(ctx);
+	ctx->trig_pending = false;
+	ctx->xfer_busy = true;
+}
+
+/*
+ * TE sync: latch the new window state and leave the transfer to the next
+ * TE edge, which also completes the flip. The event is armed before the
+ * frame is marked pending: a TE in between completes the flip one frame
+ * early, never late. te_lock is not held around event_lock, which the
+ * vblank core takes before calling disable_vblank.
+ */
+static void decon_te_flush(struct decon_context *ctx)
+{
+	struct drm_crtc *crtc = &ctx->crtc->base;
+	struct drm_pending_vblank_event *event = crtc->state->event;
+	unsigned long flags;
+
+	if (event) {
+		crtc->state->event = NULL;
+		WARN_ON(drm_crtc_vblank_get(crtc) != 0);
+		spin_lock_irqsave(&crtc->dev->event_lock, flags);
+		drm_crtc_arm_vblank_event(crtc, event);
+		spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
+	}
+
+	spin_lock_irqsave(&ctx->te_lock, flags);
+	ctx->trig_pending = true;
+	decon_te_irq_get(ctx);
+	spin_unlock_irqrestore(&ctx->te_lock, flags);
+
+	mod_delayed_work(system_highpri_wq, &ctx->te_watchdog,
+			 msecs_to_jiffies(DECON_TE_TIMEOUT_MS));
+}
+
+/* A frame that got no TE in time is sent anyway, so the display never stalls. */
+static void decon_te_watchdog(struct work_struct *work)
+{
+	struct decon_context *ctx = container_of(to_delayed_work(work),
+						 struct decon_context,
+						 te_watchdog);
+	unsigned long flags;
+	bool sent = false, off = false;
+
+	spin_lock_irqsave(&ctx->te_lock, flags);
+	if (ctx->trig_pending) {
+		/* a lost frame-done must not hold the display either */
+		decon_te_send(ctx);
+		sent = true;
+		if (++ctx->te_misses >= DECON_TE_MISS_MAX) {
+			/* frame done feeds vblank again, as without TE */
+			ctx->te_sync = false;
+			WRITE_ONCE(decon_te_active, false);
+			ctx->xfer_busy = false;
+			if (ctx->te_irq_on) {
+				ctx->te_irq_on = false;
+				disable_irq_nosync(ctx->te_irq);
+			}
+			off = true;
+		}
+	}
+	spin_unlock_irqrestore(&ctx->te_lock, flags);
+
+	if (sent) {
+		dev_warn_ratelimited(ctx->dev, "no TE for %u ms, frame sent without it\n",
+				     DECON_TE_TIMEOUT_MS);
+		drm_crtc_handle_vblank(&ctx->crtc->base);
+	}
+	if (off) {
+		wake_up(&ctx->te_wq);
+		dev_warn(ctx->dev, "TE lost, frames sent on commit\n");
+	}
+}
+
+static irqreturn_t decon_te_irq_handler(int irq, void *dev_id)
+{
+	struct decon_context *ctx = dev_id;
+	bool vblank;
+
+	spin_lock(&ctx->te_lock);
+	ctx->te_count++;
+	if (ctx->te_sync && ctx->trig_pending && !ctx->xfer_busy) {
+		decon_te_send(ctx);
+		ctx->te_misses = 0;
+	}
+	vblank = ctx->te_sync && ctx->vblank_on;
+	if (ctx->te_sync && !ctx->trig_pending && !vblank) {
+		disable_irq_nosync(irq);
+		ctx->te_irq_on = false;
+	}
+	spin_unlock(&ctx->te_lock);
+
+	if (!ctx->te_sync)
+		wake_up(&ctx->te_wq);
+	if (vblank)
+		drm_crtc_handle_vblank(&ctx->crtc->base);
+
+	return IRQ_HANDLED;
+}
+
+/*
+ * S-Boot leaves the panel running with TE on, but nothing guarantees it:
+ * use TE only once edges arrive at a sane rate. Called when the CRTC is
+ * enabled.
+ */
+static void decon_te_start(struct decon_context *ctx)
+{
+	unsigned long flags;
+	ktime_t t0;
+	s64 us;
+	u32 val;
+
+	if (!ctx->i80_if || ctx->te_irq <= 0 || !decon_te_enable)
+		return;
+
+	spin_lock_irqsave(&ctx->te_lock, flags);
+	ctx->te_sync = false;
+	WRITE_ONCE(decon_te_active, false);
+	ctx->te_count = 0;
+	ctx->te_misses = 0;
+	ctx->trig_pending = false;
+	ctx->xfer_busy = false;
+	decon_te_irq_get(ctx);
+	spin_unlock_irqrestore(&ctx->te_lock, flags);
+
+	t0 = ktime_get();
+	wait_event_timeout(ctx->te_wq, READ_ONCE(ctx->te_count) >= 7,
+			   msecs_to_jiffies(200));
+	us = ktime_us_delta(ktime_get(), t0);
+
+	spin_lock_irqsave(&ctx->te_lock, flags);
+	/* 6 TE periods at 30..120 Hz; anything faster is not TE */
+	if (ctx->te_count >= 7 && us >= 6 * 8000 && us <= 7 * 34000) {
+		/* the frame-done interrupt ends every transfer from now on */
+		val = readl(ctx->regs + VIDINTCON0);
+		writel(val | VIDINTCON0_INT_ENABLE | VIDINTCON0_INT_I80_EN,
+		       ctx->regs + VIDINTCON0);
+		/* vblank may already be on: from now on TE feeds it */
+		ctx->vblank_on = test_and_set_bit(0, &ctx->irq_flags);
+		ctx->te_sync = true;
+		WRITE_ONCE(decon_te_active, true);
+	} else {
+		ctx->te_irq_on = false;
+		disable_irq_nosync(ctx->te_irq);
+	}
+	spin_unlock_irqrestore(&ctx->te_lock, flags);
+
+	if (ctx->te_sync)
+		dev_info(ctx->dev, "TE sync on: %u edges in %lld us\n",
+			 ctx->te_count, us);
+	else
+		dev_warn(ctx->dev, "no TE (%u edges in %lld us), frames sent on commit\n",
+			 ctx->te_count, us);
+}
+
+static void decon_te_stop(struct decon_context *ctx)
+{
+	unsigned long flags;
+
+	if (ctx->te_irq <= 0)
+		return;
+	cancel_delayed_work_sync(&ctx->te_watchdog);
+	spin_lock_irqsave(&ctx->te_lock, flags);
+	ctx->te_sync = false;
+	WRITE_ONCE(decon_te_active, false);
+	ctx->trig_pending = false;
+	ctx->xfer_busy = false;
+	if (ctx->te_irq_on) {
+		ctx->te_irq_on = false;
+		disable_irq_nosync(ctx->te_irq);
+	}
+	spin_unlock_irqrestore(&ctx->te_lock, flags);
+}
+
 static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
@@ -607,6 +872,11 @@ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
 	if (ctx->i80_if && ctx->icc_bw)
 		mod_delayed_work(system_wq, &ctx->bw_idle_work,
 				 msecs_to_jiffies(DECON_BW_IDLE_MS));
+
+	if (ctx->i80_if && ctx->te_sync) {
+		decon_te_flush(ctx);
+		return;
+	}
 
 	/*
 	 * Arm the event before the transfer starts: in i80 mode the frame
@@ -707,12 +977,15 @@ static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
 		decon_enable_vblank(ctx->crtc);
 
 	decon_commit(ctx->crtc);
+	decon_te_start(ctx);
 }
 
 static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
 	int i;
+
+	decon_te_stop(ctx);
 
 	/*
 	 * We need to make sure that all windows are disabled before we
@@ -759,8 +1032,22 @@ static irqreturn_t decon_irq_handler(int irq, void *dev_id)
 	if (!drm_dev_has_vblank(ctx->drm_dev))
 		goto out;
 
-	/* in i80 mode the end of a frame transfer stands in for vsync */
-	drm_crtc_handle_vblank(&ctx->crtc->base);
+	if (ctx->te_sync) {
+		/* vblank counts TE edges; frame done only ends the transfer */
+		spin_lock(&ctx->te_lock);
+		if (ctx->trig_pending &&
+		    !(readl(ctx->regs + DECON_UPDATE) & DECON_UPDATE_STANDALONE_F))
+			decon_te_early_latch++;
+		ctx->xfer_busy = false;
+		spin_unlock(&ctx->te_lock);
+		wake_up(&ctx->te_wq);
+	} else {
+		/*
+		 * In command (i80) mode without TE the end of a frame
+		 * transfer stands in for vsync.
+		 */
+		drm_crtc_handle_vblank(&ctx->crtc->base);
+	}
 
 	/* set wait vsync event to zero and wake up queue. */
 	if (atomic_read(&ctx->wait_vsync_event)) {
@@ -943,6 +1230,33 @@ static int decon_probe(struct platform_device *pdev)
 
 	init_waitqueue_head(&ctx->wait_vsync_queue);
 	atomic_set(&ctx->wait_vsync_event, 0);
+
+	spin_lock_init(&ctx->te_lock);
+	init_waitqueue_head(&ctx->te_wq);
+	INIT_DELAYED_WORK(&ctx->te_watchdog, decon_te_watchdog);
+	if (ctx->i80_if) {
+		struct gpio_desc *te = devm_gpiod_get_optional(dev, "te", GPIOD_IN);
+
+		if (IS_ERR(te)) {
+			ret = dev_err_probe(dev, PTR_ERR(te), "TE gpio\n");
+			goto err_iounmap;
+		}
+		if (te) {
+			ctx->te_irq = gpiod_to_irq(te);
+			if (ctx->te_irq > 0)
+				ret = devm_request_irq(dev, ctx->te_irq,
+						       decon_te_irq_handler,
+						       IRQF_TRIGGER_RISING |
+						       IRQF_NO_AUTOEN,
+						       "decon-te", ctx);
+			else
+				ret = ctx->te_irq;
+			if (ret) {
+				dev_warn(dev, "TE irq: %d, frames sent on commit\n", ret);
+				ctx->te_irq = 0;
+			}
+		}
+	}
 
 	platform_set_drvdata(pdev, ctx);
 
