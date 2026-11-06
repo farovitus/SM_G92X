@@ -33,8 +33,11 @@
  * core under the ceiling waits on or streams to DRAM and gets the stock
  * cpufreq->MIF floor for its clock (samsung,mif-floors in the memlat
  * child nodes); a compute-bound or idle core gets none. The vote runs
- * from a work item, not in cpufreq. Under it, the CPU OPPs still vote
- * DRAM through the interconnect from their clock (the board DT). The GPU
+ * from a work item, not in cpufreq. Under it, the CPU OPPs vote the
+ * stock table's first step (543 MHz) through the interconnect from the
+ * clock where stock's table starts: the deep levels under fast CPUs hang
+ * the SoC, and the OPP core raises that vote before the clock, so
+ * cpufreq waits for DRAM only when a cluster crosses that clock. The GPU
  * floor follows the GPU devfreq's transition notifier and the stock G3D
  * table (samsung,gpu-mif-floors), not an interconnect path: a devfreq
  * target() runs under dev_pm_qos_mtx when a PM QoS limit (thermal) moves

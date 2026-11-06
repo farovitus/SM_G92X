@@ -973,10 +973,13 @@
 };
 
 /*
- * DRAM floors from the CPU clock: the stock cpufreq bus tables (MIF kHz
- * per CPU level) as bandwidth votes, 16 bytes per DRAM clock. An idle
- * cluster keeps its vote, so the lowest levels (A57 800-900 MHz, A53
- * 500-600 MHz) vote nothing and the load governor alone sets DRAM there.
+ * The safe DRAM envelope from the CPU clock: stock's cpufreq bus tables
+ * never ran MIF under 543 MHz with an A57 at 1 GHz or more or an A53 at
+ * 700 MHz or more, and the deep levels under fast CPUs hang the SoC
+ * (test-182/183/185). The OPP core sets this vote before the clock
+ * rises, so it holds only that first step (543 MHz x 16 bytes); the
+ * higher stock steps come from memlat in the dmc, for cores that wait on
+ * DRAM. The vote changes only when a cluster crosses that clock.
  */
 &cpu_atlas0 {
 	interconnects = <&dmc &dmc>;
@@ -1024,25 +1027,25 @@
 		opp-peak-kBps = <8688000>;
 	};
 	opp-1200000000 {
-		opp-peak-kBps = <10112000>;
+		opp-peak-kBps = <8688000>;
 	};
 	opp-1300000000 {
-		opp-peak-kBps = <10112000>;
+		opp-peak-kBps = <8688000>;
 	};
 	opp-1400000000 {
-		opp-peak-kBps = <13248000>;
+		opp-peak-kBps = <8688000>;
 	};
 	opp-1500000000 {
-		opp-peak-kBps = <13248000>;
+		opp-peak-kBps = <8688000>;
 	};
 	opp-1600000000 {
-		opp-peak-kBps = <16416000>;
+		opp-peak-kBps = <8688000>;
 	};
 	opp-1704000000 {
-		opp-peak-kBps = <16416000>;
+		opp-peak-kBps = <8688000>;
 	};
 	opp-1800000000 {
-		opp-peak-kBps = <20224000>;
+		opp-peak-kBps = <8688000>;
 	};
 };
 
@@ -1063,25 +1066,25 @@
 		opp-peak-kBps = <8688000>;
 	};
 	opp-900000000 {
-		opp-peak-kBps = <10112000>;
+		opp-peak-kBps = <8688000>;
 	};
 	opp-1000000000 {
-		opp-peak-kBps = <10112000>;
+		opp-peak-kBps = <8688000>;
 	};
 	opp-1104000000 {
-		opp-peak-kBps = <13248000>;
+		opp-peak-kBps = <8688000>;
 	};
 	opp-1200000000 {
-		opp-peak-kBps = <13248000>;
+		opp-peak-kBps = <8688000>;
 	};
 	opp-1296000000 {
-		opp-peak-kBps = <16416000>;
+		opp-peak-kBps = <8688000>;
 	};
 	opp-1400000000 {
-		opp-peak-kBps = <16416000>;
+		opp-peak-kBps = <8688000>;
 	};
 	opp-1500000000 {
-		opp-peak-kBps = <16416000>;
+		opp-peak-kBps = <8688000>;
 	};
 };
 
