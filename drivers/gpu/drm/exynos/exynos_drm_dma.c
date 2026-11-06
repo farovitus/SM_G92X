@@ -6,6 +6,7 @@
 
 #include <linux/dma-map-ops.h>
 #include <linux/iommu.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 
 #include <drm/drm_print.h>
@@ -105,6 +106,17 @@ int exynos_drm_register_dma(struct drm_device *drm, struct device *dev,
 
 	if (!IS_ENABLED(CONFIG_EXYNOS_IOMMU))
 		return 0;
+
+	/*
+	 * A device wired to a SysMMU whose domain is not set up yet must wait
+	 * for it. Going on would cache an IOMMU-less mapping for good, and the
+	 * CRTC would then reject non-contiguous buffers.
+	 */
+	if (!IS_ENABLED(CONFIG_ARM_DMA_USE_IOMMU) &&
+	    IS_ENABLED(CONFIG_IOMMU_DMA) && !iommu_get_domain_for_dev(dev) &&
+	    (of_property_present(dev->of_node, "iommus") ||
+	     of_property_present(priv->dma_dev->of_node, "iommus")))
+		return -EPROBE_DEFER;
 
 	if (!priv->mapping) {
 		void *mapping = NULL;
