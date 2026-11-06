@@ -304,6 +304,8 @@
 		vdd-supply = <&vdd_disp_cam0>;
 		operating-points-v2 = <&bus_disp_opp_table>;
 		#interconnect-cells = <0>;
+		/* display traffic also sets a DRAM floor */
+		interconnects = <&dmc>;
 	};
 
 	bus_disp_opp_table: opp-table-bus-disp {
@@ -959,9 +961,120 @@
 	status = "okay";
 };
 
+/*
+ * DRAM floors from the CPU clock: the stock cpufreq bus tables (MIF kHz
+ * per CPU level) as bandwidth votes, 16 bytes per DRAM clock.
+ */
+&cpu_atlas0 {
+	interconnects = <&dmc &dmc>;
+};
+
+&cpu_atlas1 {
+	interconnects = <&dmc &dmc>;
+};
+
+&cpu_atlas2 {
+	interconnects = <&dmc &dmc>;
+};
+
+&cpu_atlas3 {
+	interconnects = <&dmc &dmc>;
+};
+
+&cpu_apollo0 {
+	interconnects = <&dmc &dmc>;
+};
+
+&cpu_apollo1 {
+	interconnects = <&dmc &dmc>;
+};
+
+&cpu_apollo2 {
+	interconnects = <&dmc &dmc>;
+};
+
+&cpu_apollo3 {
+	interconnects = <&dmc &dmc>;
+};
+
+&cpu_atlas_opp_table {
+	opp-800000000 {
+		opp-peak-kBps = <6656000>;
+	};
+	opp-900000000 {
+		opp-peak-kBps = <6656000>;
+	};
+	opp-1000000000 {
+		opp-peak-kBps = <8688000>;
+	};
+	opp-1100000000 {
+		opp-peak-kBps = <8688000>;
+	};
+	opp-1200000000 {
+		opp-peak-kBps = <10112000>;
+	};
+	opp-1300000000 {
+		opp-peak-kBps = <10112000>;
+	};
+	opp-1400000000 {
+		opp-peak-kBps = <13248000>;
+	};
+	opp-1500000000 {
+		opp-peak-kBps = <13248000>;
+	};
+	opp-1600000000 {
+		opp-peak-kBps = <16416000>;
+	};
+	opp-1704000000 {
+		opp-peak-kBps = <16416000>;
+	};
+	opp-1800000000 {
+		opp-peak-kBps = <20224000>;
+	};
+};
+
+&cpu_apollo_opp_table {
+	opp-400000000 {
+		opp-peak-kBps = <0>;
+	};
+	opp-500000000 {
+		opp-peak-kBps = <6656000>;
+	};
+	opp-600000000 {
+		opp-peak-kBps = <6656000>;
+	};
+	opp-700000000 {
+		opp-peak-kBps = <8688000>;
+	};
+	opp-800000000 {
+		opp-peak-kBps = <8688000>;
+	};
+	opp-900000000 {
+		opp-peak-kBps = <10112000>;
+	};
+	opp-1000000000 {
+		opp-peak-kBps = <10112000>;
+	};
+	opp-1104000000 {
+		opp-peak-kBps = <13248000>;
+	};
+	opp-1200000000 {
+		opp-peak-kBps = <13248000>;
+	};
+	opp-1296000000 {
+		opp-peak-kBps = <16416000>;
+	};
+	opp-1400000000 {
+		opp-peak-kBps = <16416000>;
+	};
+	opp-1500000000 {
+		opp-peak-kBps = <16416000>;
+	};
+};
+
 &decon {
 	status = "okay";
-	interconnects = <&bus_disp &bus_disp>;
+	interconnects = <&bus_disp &dmc>;
 	/*
 	 * Only S-Boot sets up the DSI link and panel; keep the display
 	 * running through system sleep.
