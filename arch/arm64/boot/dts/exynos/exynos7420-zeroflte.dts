@@ -2008,7 +2008,12 @@
 		};
 	};
 
-	modem {
+	/*
+	 * The stock node name: cbd looks for the platform device
+	 * "mif_pdata" under /sys/bus/platform/drivers/mif_sipc5 while it
+	 * sends the CP boot loader, and fails the boot without it.
+	 */
+	mif_pdata {
 		compatible = "samsung,ss333-modem";
 		pinctrl-names = "default";
 		pinctrl-0 = <&modem_ctrl_out &modem_eint &modem_cp_dump_int
