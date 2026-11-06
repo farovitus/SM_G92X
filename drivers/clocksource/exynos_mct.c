@@ -60,6 +60,16 @@
 #define MCT_CLKEVENTS_RATING		350
 #endif
 
+/*
+ * Exynos 7420 Galaxy S6 (zeroflte): the stock kernel uses the MCT for
+ * per-CPU clock events and the arch timer only as clocksource. The arch
+ * timer's per-CPU event path is unvalidated on this firmware, so rate the
+ * MCT ticks above the arch timer's 450 there.
+ */
+#define MCT_CLKEVENTS_RATING_PREFERRED	500
+
+static int mct_clkevents_rating __ro_after_init = MCT_CLKEVENTS_RATING;
+
 /* There are four Global timers starting with 0 offset */
 #define MCT_G0_IRQ	0
 /* Local timers count starts after global timer count */
@@ -470,7 +480,7 @@ static int exynos4_mct_starting_cpu(unsigned int cpu)
 	evt->tick_resume = set_state_shutdown;
 	evt->features = CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT |
 			CLOCK_EVT_FEAT_PERCPU;
-	evt->rating = MCT_CLKEVENTS_RATING;
+	evt->rating = mct_clkevents_rating;
 
 	exynos4_mct_write(TICK_BASE_CNT, mevt->base + MCT_L_TCNTB_OFFSET);
 
@@ -645,6 +655,9 @@ static int __init mct_init_dt(struct device_node *np, unsigned int int_type)
 	u32 local_idx[MCT_NR_LOCAL] = {0};
 	int nr_local;
 	int ret;
+
+	if (of_machine_is_compatible("samsung,zeroflte"))
+		mct_clkevents_rating = MCT_CLKEVENTS_RATING_PREFERRED;
 
 	nr_local = of_property_count_u32_elems(np, "samsung,local-timers");
 	if (nr_local == 0)
