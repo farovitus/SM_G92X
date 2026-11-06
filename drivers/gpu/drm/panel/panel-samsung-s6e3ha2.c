@@ -244,6 +244,7 @@ struct s6e3ha2_level {
 	u8 mps;			/* B6 1st: MPS_CON, the caps setting from 41 cd */
 	u8 elvss;		/* B6 2nd: ELVSS */
 	u8 vint;		/* F4 2nd: VINT */
+	bool hbm;		/* 53: the panel's HBM mode, 600 cd only */
 	u8 gamma[S6E3HA2_GAMMA_CMD_CNT];	/* CA */
 };
 
@@ -255,7 +256,12 @@ struct s6e3ha2_level {
  * cannot read; these rows are what it computed for the maintainer's panel
  * (rev.E, logged by its 3.10 kernel). Another panel's MTP shifts each
  * gamma point by a few codes, so it keeps the range with a slightly
- * different white point. The HBM levels above 360 cd are left out.
+ * different white point.
+ *
+ * Above 360 cd is stock's outdoor range, which its slider never reached:
+ * 382 to 544 cd keep the 360 cd AOR and raise the gamma, logged the same
+ * way, and 600 cd is the panel's HBM mode with its own MTP gamma. Stock
+ * also lowers the 22nd ELVSS byte there, which this driver does not send.
  */
 static const struct s6e3ha2_level s6e3ha2_zeroflte_levels[] = {
 	{ .cd = 2, .aor = { 0xe3, 0x90 }, .mps = 0x8c, .elvss = 0x12,
@@ -648,6 +654,54 @@ static const struct s6e3ha2_level s6e3ha2_zeroflte_levels[] = {
 		0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
 		0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
 		0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ .cd = 382, .aor = { 0x03, 0x10 }, .mps = 0x9c, .elvss = 0x0a,
+	  .vint = 0x21, .gamma = {
+		0x01, 0x02, 0x01, 0x02, 0x01, 0x03, 0x80, 0x80, 0x80, 0x80,
+		0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+		0x80, 0x80, 0x80, 0x80, 0x7f, 0x7f, 0x7f, 0x75, 0x75, 0x75,
+		0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ .cd = 407, .aor = { 0x03, 0x10 }, .mps = 0x9c, .elvss = 0x0a,
+	  .vint = 0x21, .gamma = {
+		0x01, 0x06, 0x01, 0x06, 0x01, 0x06, 0x80, 0x7f, 0x7f, 0x80,
+		0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x81,
+		0x80, 0x80, 0x80, 0x80, 0x7c, 0x7c, 0x7d, 0x67, 0x67, 0x67,
+		0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ .cd = 433, .aor = { 0x03, 0x10 }, .mps = 0x9c, .elvss = 0x09,
+	  .vint = 0x21, .gamma = {
+		0x01, 0x09, 0x01, 0x09, 0x01, 0x0a, 0x7f, 0x7e, 0x7e, 0x80,
+		0x80, 0x80, 0x80, 0x80, 0x80, 0x7f, 0x7f, 0x7f, 0x81, 0x81,
+		0x81, 0x80, 0x80, 0x80, 0x7a, 0x7a, 0x7b, 0x5a, 0x5a, 0x5a,
+		0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ .cd = 461, .aor = { 0x03, 0x10 }, .mps = 0x9c, .elvss = 0x08,
+	  .vint = 0x21, .gamma = {
+		0x01, 0x0d, 0x01, 0x0d, 0x01, 0x0e, 0x7e, 0x7d, 0x7d, 0x7f,
+		0x7f, 0x80, 0x80, 0x80, 0x80, 0x7e, 0x7e, 0x7e, 0x82, 0x82,
+		0x81, 0x80, 0x80, 0x80, 0x78, 0x78, 0x79, 0x4b, 0x4b, 0x4b,
+		0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ .cd = 490, .aor = { 0x03, 0x10 }, .mps = 0x9c, .elvss = 0x06,
+	  .vint = 0x21, .gamma = {
+		0x01, 0x10, 0x01, 0x11, 0x01, 0x13, 0x7e, 0x7c, 0x7c, 0x7f,
+		0x7f, 0x7f, 0x7f, 0x80, 0x7f, 0x7e, 0x7e, 0x7e, 0x82, 0x83,
+		0x82, 0x7f, 0x7f, 0x7f, 0x75, 0x75, 0x76, 0x3b, 0x3b, 0x3b,
+		0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ .cd = 516, .aor = { 0x03, 0x10 }, .mps = 0x9c, .elvss = 0x04,
+	  .vint = 0x21, .gamma = {
+		0x01, 0x14, 0x01, 0x14, 0x01, 0x16, 0x7d, 0x7b, 0x7b, 0x7f,
+		0x7f, 0x7f, 0x7f, 0x80, 0x7f, 0x7d, 0x7d, 0x7d, 0x83, 0x83,
+		0x82, 0x7f, 0x7f, 0x7f, 0x73, 0x73, 0x74, 0x2d, 0x2d, 0x2d,
+		0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ .cd = 544, .aor = { 0x03, 0x10 }, .mps = 0x9c, .elvss = 0x02,
+	  .vint = 0x21, .gamma = {
+		0x01, 0x17, 0x01, 0x18, 0x01, 0x1a, 0x7d, 0x7a, 0x7a, 0x7e,
+		0x7e, 0x7f, 0x7f, 0x80, 0x7f, 0x7d, 0x7d, 0x7d, 0x83, 0x84,
+		0x83, 0x7f, 0x7f, 0x7f, 0x70, 0x70, 0x72, 0x1e, 0x1e, 0x1e,
+		0x00, 0x00, 0x00, 0x00, 0x00 } },
+	{ .cd = 600, .aor = { 0x03, 0x10 }, .mps = 0x9c, .elvss = 0x0a,
+	  .vint = 0x21, .hbm = true, .gamma = {
+		0x01, 0x1f, 0x01, 0x20, 0x01, 0x23, 0x7b, 0x78, 0x78, 0x7d,
+		0x7d, 0x7e, 0x7e, 0x7f, 0x7e, 0x7b, 0x7b, 0x7b, 0x85, 0x86,
+		0x84, 0x7e, 0x7e, 0x7e, 0x6b, 0x6b, 0x6d, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00 } },
 };
 
 enum s6e3ha2_type {
@@ -662,6 +716,7 @@ struct s6e3ha2_panel_desc {
 	const struct s6e3ha2_level *levels;
 	unsigned int num_levels;
 	unsigned int default_cd;
+	unsigned int max_cd;	/* top of the normal range */
 };
 
 struct s6e3ha2 {
@@ -682,7 +737,17 @@ struct s6e3ha2 {
 	unsigned int fade_cur;		/* on the panel, 1/16 cd */
 	unsigned int fade_target;	/* requested, 1/16 cd */
 	bool fade_valid;		/* fade_cur is what the panel shows */
+	bool acl_on;		/* ACL and HBM as last sent, under fade_lock */
+	bool hbm_on;
 };
+
+/*
+ * The outdoor levels are opt-in: max_brightness stays at the normal top
+ * until userspace sets this parameter, so a lights HAL that scales its
+ * range to max_brightness never puts them on the slider by accident.
+ */
+static bool hbm;
+static struct s6e3ha2 *s6e3ha2_hbm_ctx;
 
 static int s6e3ha2_dcs_write(struct s6e3ha2 *ctx, const void *data, size_t len)
 {
@@ -933,6 +998,11 @@ static void s6e3ha2_get_level(const struct s6e3ha2_panel_desc *desc,
 
 	lo = &lv[i - 1];
 	hi = &lv[i];
+	/* HBM mode is a separate gamma set: hold the level below it. */
+	if (hi->hbm) {
+		*out = *lo;
+		return;
+	}
 	num = q - (lo->cd << S6E3HA2_FADE_SHIFT);
 	den = (hi->cd - lo->cd) << S6E3HA2_FADE_SHIFT;
 
@@ -954,6 +1024,42 @@ static void s6e3ha2_get_level(const struct s6e3ha2_panel_desc *desc,
 	for (; i < S6E3HA2_GAMMA_CMD_CNT; i++)
 		out->gamma[i] = s6e3ha2_mix(lo->gamma[i], hi->gamma[i],
 					    num, den);
+}
+
+/* Stock runs the outdoor levels with ACL at 8% OPR, and 600 cd in HBM. */
+static int s6e3ha2_set_outdoor(struct s6e3ha2 *ctx, unsigned int q, bool hbm)
+{
+	static const u8 acl_opr_on[] = { 0xb5, 0x50, 0x7f, 0x27, 0x09 };
+	static const u8 acl_opr_off[] = { 0xb5, 0x40 };
+	bool acl = q > ctx->desc->max_cd << S6E3HA2_FADE_SHIFT;
+	u8 cmd[2];
+	int ret;
+
+	if (acl != ctx->acl_on) {
+		ret = acl ? s6e3ha2_dcs_write(ctx, acl_opr_on,
+					      sizeof(acl_opr_on)) :
+			    s6e3ha2_dcs_write(ctx, acl_opr_off,
+					      sizeof(acl_opr_off));
+		if (ret < 0)
+			return ret;
+		cmd[0] = 0x55;
+		cmd[1] = acl ? 0x02 : 0x00;
+		ret = s6e3ha2_dcs_write(ctx, cmd, sizeof(cmd));
+		if (ret < 0)
+			return ret;
+		ctx->acl_on = acl;
+	}
+
+	if (hbm != ctx->hbm_on) {
+		cmd[0] = 0x53;
+		cmd[1] = hbm ? 0xc0 : 0x00;
+		ret = s6e3ha2_dcs_write(ctx, cmd, sizeof(cmd));
+		if (ret < 0)
+			return ret;
+		ctx->hbm_on = hbm;
+	}
+
+	return 0;
 }
 
 static int s6e3ha2_set_level(struct s6e3ha2 *ctx, unsigned int q)
@@ -983,6 +1089,7 @@ static int s6e3ha2_set_level(struct s6e3ha2 *ctx, unsigned int q)
 	s6e3ha2_call_write_func(ret,
 				s6e3ha2_dcs_write(ctx, vint, sizeof(vint)));
 	s6e3ha2_call_write_func(ret, s6e3ha2_gamma_update(ctx));
+	s6e3ha2_call_write_func(ret, s6e3ha2_set_outdoor(ctx, q, lv.hbm));
 	s6e3ha2_call_write_func(ret, s6e3ha2_test_key_off_fc(ctx));
 	s6e3ha2_call_write_func(ret, s6e3ha2_test_key_off_f0(ctx));
 
@@ -1056,6 +1163,47 @@ static int s6e3ha2_set_cd(struct s6e3ha2 *ctx, unsigned int cd)
 	return ret;
 }
 
+static unsigned int s6e3ha2_max_cd(struct s6e3ha2 *ctx)
+{
+	const struct s6e3ha2_panel_desc *desc = ctx->desc;
+
+	return hbm ? desc->levels[desc->num_levels - 1].cd : desc->max_cd;
+}
+
+static int s6e3ha2_hbm_param_set(const char *val,
+				 const struct kernel_param *kp)
+{
+	struct s6e3ha2 *ctx = s6e3ha2_hbm_ctx;
+	struct backlight_device *bd;
+	bool clipped = false;
+	int ret;
+
+	ret = param_set_bool(val, kp);
+	if (ret || !ctx)
+		return ret;
+
+	bd = ctx->bl_dev;
+	mutex_lock(&bd->ops_lock);
+	bd->props.max_brightness = s6e3ha2_max_cd(ctx);
+	if (bd->props.brightness > bd->props.max_brightness) {
+		bd->props.brightness = bd->props.max_brightness;
+		clipped = true;
+	}
+	mutex_unlock(&bd->ops_lock);
+
+	if (clipped)
+		backlight_update_status(bd);
+
+	return 0;
+}
+
+static const struct kernel_param_ops s6e3ha2_hbm_param_ops = {
+	.set = s6e3ha2_hbm_param_set,
+	.get = param_get_bool,
+};
+module_param_cb(hbm, &s6e3ha2_hbm_param_ops, &hbm, 0644);
+MODULE_PARM_DESC(hbm, "Allow the outdoor levels above the normal maximum");
+
 static void s6e3ha2_fade_stop(struct s6e3ha2 *ctx)
 {
 	if (!ctx->desc->levels)
@@ -1063,6 +1211,9 @@ static void s6e3ha2_fade_stop(struct s6e3ha2 *ctx)
 
 	mutex_lock(&ctx->fade_lock);
 	ctx->fade_valid = false;
+	/* Sleep and power-off leave ACL and HBM off; enable sends them off. */
+	ctx->acl_on = false;
+	ctx->hbm_on = false;
 	mutex_unlock(&ctx->fade_lock);
 	cancel_work_sync(&ctx->fade_work);
 }
@@ -1222,6 +1373,24 @@ static int s6e3ha2_enable(struct drm_panel *panel)
 	s6e3ha2_call_write_func(ret, s6e3ha2_acl_off(ctx));
 	s6e3ha2_call_write_func(ret, s6e3ha2_acl_off_opr(ctx));
 	s6e3ha2_call_write_func(ret, s6e3ha2_hbm_off(ctx));
+	if (ctx->desc->levels) {
+		/* Those cleared what an outdoor level had set: send it again. */
+		mutex_lock(&ctx->fade_lock);
+		ctx->acl_on = false;
+		ctx->hbm_on = false;
+		if (ctx->fade_cur > ctx->desc->max_cd << S6E3HA2_FADE_SHIFT) {
+			struct s6e3ha2_level lv;
+
+			s6e3ha2_get_level(ctx->desc, ctx->fade_cur, &lv);
+			ret = s6e3ha2_test_key_on_f0(ctx);
+			if (!ret)
+				ret = s6e3ha2_set_outdoor(ctx, ctx->fade_cur,
+							  lv.hbm);
+		}
+		mutex_unlock(&ctx->fade_lock);
+		if (ret < 0)
+			return ret;
+	}
 
 	/* elvss temp compensation */
 	s6e3ha2_call_write_func(ret, s6e3ha2_test_global(ctx));
@@ -1258,6 +1427,7 @@ static const struct s6e3ha2_panel_desc samsung_s6e3ha2_zeroflte = {
 	.levels = s6e3ha2_zeroflte_levels,
 	.num_levels = ARRAY_SIZE(s6e3ha2_zeroflte_levels),
 	.default_cd = 183,	/* stock UI default, 134 of 255 */
+	.max_cd = 360,		/* the levels above it are opt-in */
 };
 
 static const struct drm_display_mode s6e3hf2_mode = {
@@ -1390,8 +1560,7 @@ static int s6e3ha2_probe(struct mipi_dsi_device *dsi)
 
 	if (ctx->desc->levels) {
 		/* Brightness is the luminance in cd/m2. */
-		ctx->bl_dev->props.max_brightness =
-			ctx->desc->levels[ctx->desc->num_levels - 1].cd;
+		ctx->bl_dev->props.max_brightness = s6e3ha2_max_cd(ctx);
 		ctx->bl_dev->props.brightness = ctx->desc->default_cd;
 		ctx->bl_dev->props.scale = BACKLIGHT_SCALE_LINEAR;
 	} else {
@@ -1400,6 +1569,10 @@ static int s6e3ha2_probe(struct mipi_dsi_device *dsi)
 	}
 	ctx->bl_dev->props.power = ctx->boot_on ? FB_BLANK_UNBLANK :
 						  FB_BLANK_POWERDOWN;
+
+	if (ctx->desc->levels && ctx->desc->max_cd <
+	    ctx->desc->levels[ctx->desc->num_levels - 1].cd)
+		s6e3ha2_hbm_ctx = ctx;
 
 	drm_panel_init(&ctx->panel, dev, &s6e3ha2_drm_funcs,
 		       DRM_MODE_CONNECTOR_DSI);
@@ -1414,6 +1587,8 @@ static int s6e3ha2_probe(struct mipi_dsi_device *dsi)
 	return ret;
 
 remove_panel:
+	if (s6e3ha2_hbm_ctx == ctx)
+		s6e3ha2_hbm_ctx = NULL;
 	drm_panel_remove(&ctx->panel);
 	backlight_device_unregister(ctx->bl_dev);
 	s6e3ha2_fade_stop(ctx);
@@ -1425,6 +1600,8 @@ static void s6e3ha2_remove(struct mipi_dsi_device *dsi)
 {
 	struct s6e3ha2 *ctx = mipi_dsi_get_drvdata(dsi);
 
+	if (s6e3ha2_hbm_ctx == ctx)
+		s6e3ha2_hbm_ctx = NULL;
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
 	backlight_device_unregister(ctx->bl_dev);
