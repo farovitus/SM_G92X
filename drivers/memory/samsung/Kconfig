@@ -5,6 +5,17 @@ config SAMSUNG_MC
 	  Support for the Memory Controller (MC) devices found on
 	  Samsung Exynos SoCs.
 
+config EXYNOS7420_DMC
+	bool "Exynos7420 DRAM controller frequency switching"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	depends on COMMON_CLK_SAMSUNG && DEBUG_FS
+	select SAMSUNG_MC
+	help
+	  Switches the Exynos7420 DRAM clock (MIF) between the stock
+	  levels, reprogramming the DREX timings, the LPDDR4 PHY and the
+	  DRAM mode registers through the BUS0 safe PLL as the stock
+	  kernel did. The 7420 has no firmware call for this.
+
 if SAMSUNG_MC
 
 config EXYNOS5422_DMC
