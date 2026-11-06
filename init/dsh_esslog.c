@@ -40,6 +40,9 @@ static unsigned long ess_pos;
 static void ess_console_write(struct console *con, const char *s,
 			      unsigned int n)
 {
+	if (!ess_klog)		/* kept for the hung boot, see below */
+		return;
+
 	while (n) {
 		unsigned long chunk = min_t(unsigned long, n,
 					    ESS_KLOG_SIZE - ess_pos);
@@ -59,8 +62,18 @@ static struct console ess_console = {
 	.index	= -1,
 };
 
+static bool ess_wdt_redirect(void);
+
 static int __init ess_console_init(void)
 {
+	/*
+	 * After a watchdog reset the ring still holds the boot that hung.
+	 * This boot only restarts into recovery (ess_rescue_init), so leave
+	 * the ring alone and TWRP shows the hung boot as last_kmsg.
+	 */
+	if (ess_wdt_redirect())
+		return 0;
+
 	/* Both ranges are no-map reserved in the board DT. */
 	ess_header = ioremap(ESS_HEADER_PA, PAGE_SIZE);
 	ess_klog = ioremap(ESS_KLOG_PA, ESS_KLOG_SIZE);
@@ -235,21 +248,39 @@ static struct notifier_block ess_panic_nb = {
 	.priority	= INT_MAX,
 };
 
-static int __init ess_rescue_init(void)
+static int __init ess_map_pmu(void)
 {
 	struct device_node *np;
-	u32 rst;
 
-	/* Only test boots, which set dsh_autorecovery, are rescued. */
-	if (!ess_autorecovery)
+	if (ess_pmu)
 		return 0;
 	np = of_find_compatible_node(NULL, NULL, "samsung,exynos7-pmu");
 	if (!np)
 		return -ENODEV;
 	ess_pmu = of_iomap(np, 0);
 	of_node_put(np);
-	if (!ess_pmu)
-		return -ENOMEM;
+	return ess_pmu ? 0 : -ENOMEM;
+}
+
+/* A test boot that follows a watchdog reset; runs before the console. */
+static bool __init ess_wdt_redirect(void)
+{
+	if (!ess_autorecovery || ess_charger_mode || ess_map_pmu())
+		return false;
+	return readl(ess_pmu + ESS_PMU_RST_STAT) & ESS_RST_A57_WDT;
+}
+
+static int __init ess_rescue_init(void)
+{
+	u32 rst;
+	int ret;
+
+	/* Only test boots, which set dsh_autorecovery, are rescued. */
+	if (!ess_autorecovery)
+		return 0;
+	ret = ess_map_pmu();
+	if (ret)
+		return ret;
 	if (ess_charger_mode)
 		goto out;
 	ess_set_target(ESS_TARGET_RECOVERY);
