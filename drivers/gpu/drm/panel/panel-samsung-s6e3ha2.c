@@ -871,35 +871,87 @@ static int s6e3ha2_update_gamma(struct s6e3ha2 *ctx, unsigned int brightness)
 	return 0;
 }
 
-/* The level nearest to @cd; a tie goes to the dimmer one, as in stock. */
-static const struct s6e3ha2_level *
-s6e3ha2_find_level(const struct s6e3ha2_panel_desc *desc, unsigned int cd)
+/* The AOR is a 12-bit count of the 2576 line times the pixels are off. */
+static unsigned int s6e3ha2_aor_lines(const u8 *aor)
 {
-	const struct s6e3ha2_level *lv = desc->levels;
-	unsigned int i;
+	return (aor[1] >> 4) << 8 | aor[0];
+}
 
-	if (cd <= lv[0].cd)
-		return &lv[0];
+static int s6e3ha2_mix(int lo, int hi, unsigned int num, unsigned int den)
+{
+	return lo + DIV_ROUND_CLOSEST((hi - lo) * (int)num, (int)den);
+}
 
-	for (i = 1; i < desc->num_levels; i++) {
-		if (lv[i].cd < cd)
-			continue;
-		return lv[i].cd - cd < cd - lv[i - 1].cd ? &lv[i] : &lv[i - 1];
+/*
+ * The settings for @cd. Between two stock levels, the AOR and each gamma
+ * point move linearly with the luminance, the way stock interpolates its
+ * HBM levels; ELVSS and VINT keep the dimmer level's step. Every
+ * brightness value then gets its own luminance instead of snapping to one
+ * of the stock levels, which made a ramp climb in visible steps.
+ */
+static void s6e3ha2_get_level(const struct s6e3ha2_panel_desc *desc,
+			      unsigned int cd, struct s6e3ha2_level *out)
+{
+	const struct s6e3ha2_level *lv = desc->levels, *lo, *hi;
+	unsigned int i, num, den, aor;
+	int v;
+
+	if (cd <= lv[0].cd) {
+		*out = lv[0];
+		return;
+	}
+	if (cd >= lv[desc->num_levels - 1].cd) {
+		*out = lv[desc->num_levels - 1];
+		return;
 	}
 
-	return &lv[desc->num_levels - 1];
+	for (i = 1; lv[i].cd < cd; i++)
+		;
+	if (lv[i].cd == cd) {
+		*out = lv[i];
+		return;
+	}
+
+	lo = &lv[i - 1];
+	hi = &lv[i];
+	num = cd - lo->cd;
+	den = hi->cd - lo->cd;
+
+	*out = *lo;
+	out->cd = cd;
+
+	aor = s6e3ha2_mix(s6e3ha2_aor_lines(lo->aor),
+			  s6e3ha2_aor_lines(hi->aor), num, den);
+	out->aor[0] = aor & 0xff;
+	out->aor[1] = (aor >> 8) << 4;
+
+	/* V255 of R, G and B: 9 bits each, high bit first. */
+	for (i = 0; i < 6; i += 2) {
+		v = s6e3ha2_mix(lo->gamma[i] << 8 | lo->gamma[i + 1],
+				hi->gamma[i] << 8 | hi->gamma[i + 1], num, den);
+		out->gamma[i] = v >> 8;
+		out->gamma[i + 1] = v & 0xff;
+	}
+	for (; i < S6E3HA2_GAMMA_CMD_CNT; i++)
+		out->gamma[i] = s6e3ha2_mix(lo->gamma[i], hi->gamma[i],
+					    num, den);
 }
 
 static int s6e3ha2_set_level(struct s6e3ha2 *ctx, unsigned int cd)
 {
-	const struct s6e3ha2_level *lv = s6e3ha2_find_level(ctx->desc, cd);
+	struct s6e3ha2_level lv;
 	u8 gamma[S6E3HA2_GAMMA_CMD_CNT + 1] = { 0xca, };
-	const u8 aor[] = { 0xb2, lv->aor[0], lv->aor[1] };
-	const u8 elvss[] = { 0xb6, lv->mps, lv->elvss };
-	const u8 vint[] = { 0xf4, 0x8b, lv->vint };
+	u8 aor[3] = { 0xb2, };
+	u8 elvss[3] = { 0xb6, };
+	u8 vint[3] = { 0xf4, 0x8b, };
 	int ret;
 
-	memcpy(gamma + 1, lv->gamma, sizeof(lv->gamma));
+	s6e3ha2_get_level(ctx->desc, cd, &lv);
+	memcpy(gamma + 1, lv.gamma, sizeof(lv.gamma));
+	memcpy(aor + 1, lv.aor, sizeof(lv.aor));
+	elvss[1] = lv.mps;
+	elvss[2] = lv.elvss;
+	vint[2] = lv.vint;
 
 	/* Stock order: gamma, AOR, ELVSS, VINT, then latch. */
 	s6e3ha2_call_write_func(ret, s6e3ha2_test_key_on_f0(ctx));
