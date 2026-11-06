@@ -1639,6 +1639,14 @@
 		vdd-supply = <&vdd_mif>;
 		operating-points-v2 = <&dmc_opp_table>;
 		/*
+		 * DRAM floor per GPU clock (GPU kHz, MIF kHz) from the stock
+		 * 3.10 G3D DVFS table; the driver follows the GPU devfreq.
+		 */
+		samsung,gpu = <&gpu>;
+		samsung,gpu-mif-floors = <266000 416000>, <350000 543000>,
+					 <420000 1026000>, <544000 1026000>,
+					 <600000 1552000>, <700000 1552000>;
+		/*
 		 * Load: the CPU and general ports of each channel (the
 		 * general ones are shared with bus_int).
 		 */
