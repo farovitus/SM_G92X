@@ -26,6 +26,7 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/ktime.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -53,6 +54,12 @@
 #define DSIM_CMD_TIMEOUT_US		50000
 /* No frame end within a frame period: DECON is not sending one. */
 #define DSIM_FRAME_WAIT_US		20000
+/*
+ * A packet sent this soon after the previous one belongs to the same
+ * command sequence (a brightness update is ten packets): it follows at
+ * once instead of waiting for another frame end.
+ */
+#define DSIM_BURST_US			1000
 
 static bool enable = true;
 module_param(enable, bool, 0444);
@@ -64,6 +71,7 @@ struct dsim_cmd {
 	struct clk *pclk;
 	struct mipi_dsi_host host;
 	struct mutex lock;	/* one packet in the FIFOs at a time */
+	ktime_t last_tx;	/* end of the last packet, under lock */
 };
 
 static struct dsim_cmd *host_to_dsim(struct mipi_dsi_host *host)
@@ -97,8 +105,8 @@ static int dsim_cmd_wait(struct dsim_cmd *dsim, u32 reg, u32 mask, bool set)
 }
 
 /*
- * Wait for the FIFOs to drain, then for the end of the frame in flight, if
- * any. Called with dsim->lock held.
+ * Wait for the FIFOs to drain, then, at the start of a command sequence,
+ * for the end of the frame in flight, if any. Called with dsim->lock held.
  */
 static int dsim_cmd_wait_idle(struct dsim_cmd *dsim)
 {
@@ -109,6 +117,9 @@ static int dsim_cmd_wait_idle(struct dsim_cmd *dsim)
 			    DSIM_FIFOCTRL_EMPTY_PL_SFR, true);
 	if (ret)
 		return ret;
+
+	if (ktime_us_delta(ktime_get(), dsim->last_tx) < DSIM_BURST_US)
+		return 0;
 
 	writel(DSIM_INTSRC_FRAME_DONE, dsim->reg + DSIM_INTSRC);
 	ret = readl_poll_timeout(dsim->reg + DSIM_INTSRC, val,
@@ -176,6 +187,7 @@ static ssize_t dsim_cmd_transfer(struct mipi_dsi_host *host,
 		goto timeout;
 	writel(done, dsim->reg + DSIM_INTSRC);
 
+	dsim->last_tx = ktime_get();
 	mutex_unlock(&dsim->lock);
 	return msg->tx_len;
 
