@@ -51,6 +51,22 @@
 					regulator-boot-on;
 				};
 
+				/*
+				 * Display and camera ISP blocks. S-Boot leaves
+				 * 793.75 mV, its 400 MHz level; the display bus
+				 * sets it from its OPPs. The range is 3.10's.
+				 * The ramp is the slowest BUCK_RAMP setting, as
+				 * for BUCK6.
+				 */
+				vdd_disp_cam0: BUCK5 {
+					regulator-name = "vdd_disp_cam0";
+					regulator-min-microvolt = <500000>;
+					regulator-max-microvolt = <1000000>;
+					regulator-ramp-delay = <6000>;
+					regulator-always-on;
+					regulator-boot-on;
+				};
+
 				tsp_io_ldo15: LDO15 {
 					regulator-name = "tsp_io";
 					regulator-min-microvolt = <1850000>;

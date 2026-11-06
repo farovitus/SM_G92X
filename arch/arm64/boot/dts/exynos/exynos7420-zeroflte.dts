@@ -283,6 +283,50 @@
 		alert-celsius = <10 41>;
 	};
 
+	/*
+	 * Display bus (aclk_disp_400, CMU_TOP0). It has no load counters, so
+	 * it runs at the lowest OPP the DECON's bandwidth request allows:
+	 * 100 MHz while no frame is sent, up to 267 MHz, the stock cap, for
+	 * two full-screen windows.
+	 *
+	 * Rates are divisions of the 800 MHz BUS0 PLL mux that S-Boot
+	 * selects. 650 mV is the stock CAM/DISP ASV table v15 entry for
+	 * 100-267 MHz at this chip's fused group (cam_disp_asv_group 0x999,
+	 * ASV9, from the 3.10 boot log); stock ran these levels at that
+	 * voltage, plus 37.5 mV only when the TMU reported the chip cold,
+	 * which nothing here does. The upper limit of 1 V leaves room for the
+	 * camera ISP, which shares BUCK5. G925F needs its own values.
+	 */
+	bus_disp: bus-disp {
+		compatible = "samsung,exynos-bus";
+		clocks = <&clock_top0 CLK_DOUT_ACLK_DISP_400>;
+		clock-names = "bus";
+		vdd-supply = <&vdd_disp_cam0>;
+		operating-points-v2 = <&bus_disp_opp_table>;
+		#interconnect-cells = <0>;
+	};
+
+	bus_disp_opp_table: opp-table-bus-disp {
+		compatible = "operating-points-v2";
+
+		opp-100000000 {
+			opp-hz = /bits/ 64 <100000000>;
+			opp-microvolt = <650000 650000 1000000>;
+		};
+		opp-160000000 {
+			opp-hz = /bits/ 64 <160000000>;
+			opp-microvolt = <650000 650000 1000000>;
+		};
+		opp-200000000 {
+			opp-hz = /bits/ 64 <200000000>;
+			opp-microvolt = <650000 650000 1000000>;
+		};
+		opp-266666667 {
+			opp-hz = /bits/ 64 <266666667>;
+			opp-microvolt = <650000 650000 1000000>;
+		};
+	};
+
 	/* Bus for the MAX77843 MUIC/charger/fuel gauge (stock hsi2c_1 pins) */
 	i2c_max77843: i2c-max77843 {
 		compatible = "i2c-gpio";
@@ -730,6 +774,7 @@
 
 &decon {
 	status = "okay";
+	interconnects = <&bus_disp &bus_disp>;
 	/*
 	 * Only S-Boot sets up the DSI link and panel; keep the display
 	 * running through system sleep.
