@@ -509,6 +509,8 @@
 		opp-1552000000 {
 			opp-hz = /bits/ 64 <1552000000>;
 			opp-microvolt = <825000>;
+			/* stock suspended on LV0 */
+			opp-suspend;
 		};
 	};
 
@@ -1441,6 +1443,50 @@
 		};
 	};
 
+	ppmu_d0_cpu: ppmu@10860000 {
+		compatible = "samsung,exynos-ppmu-v2";
+		reg = <0x10860000 0x300>;
+
+		events {
+			ppmu_event0_d0_cpu: ppmu-event0-d0-cpu {
+				event-name = "ppmu-event0-d0-cpu";
+			};
+		};
+	};
+
+	ppmu_d1_cpu: ppmu@10960000 {
+		compatible = "samsung,exynos-ppmu-v2";
+		reg = <0x10960000 0x300>;
+
+		events {
+			ppmu_event0_d1_cpu: ppmu-event0-d1-cpu {
+				event-name = "ppmu-event0-d1-cpu";
+			};
+		};
+	};
+
+	ppmu_d2_cpu: ppmu@10a60000 {
+		compatible = "samsung,exynos-ppmu-v2";
+		reg = <0x10a60000 0x300>;
+
+		events {
+			ppmu_event0_d2_cpu: ppmu-event0-d2-cpu {
+				event-name = "ppmu-event0-d2-cpu";
+			};
+		};
+	};
+
+	ppmu_d3_cpu: ppmu@10b60000 {
+		compatible = "samsung,exynos-ppmu-v2";
+		reg = <0x10b60000 0x300>;
+
+		events {
+			ppmu_event0_d3_cpu: ppmu-event0-d3-cpu {
+				event-name = "ppmu-event0-d3-cpu";
+			};
+		};
+	};
+
 	/*
 	 * DRAM controller: per channel the DREX, its LPDDR4 PHY, VT monitor
 	 * and CMU_MIF, plus the MIF PLL muxes in CMU_TOPC. OPPs are the DRAM
@@ -1479,6 +1525,18 @@
 			      "dout_aclk_ccore_532", "dout_aclk_ccore_133";
 		vdd-supply = <&vdd_mif>;
 		operating-points-v2 = <&dmc_opp_table>;
+		/*
+		 * Load: the CPU and general ports of each channel (the
+		 * general ones are shared with bus_int).
+		 */
+		devfreq-events = <&ppmu_event0_d0_cpu>, <&ppmu_event0_d1_cpu>,
+				 <&ppmu_event0_d2_cpu>, <&ppmu_event0_d3_cpu>,
+				 <&ppmu_event0_d0_general>,
+				 <&ppmu_event0_d1_general>,
+				 <&ppmu_event0_d2_general>,
+				 <&ppmu_event0_d3_general>;
+		exynos,saturation-ratio = <100>;
+		#interconnect-cells = <0>;
 	};
 };
 

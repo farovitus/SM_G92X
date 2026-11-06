@@ -24,7 +24,13 @@
  * off around each change. The 800 MHz safe level gets 56.25 mV more
  * (stock CMOS_SE_OFFSET, applied in DQS mode 2).
  *
- * Switching is only offered through debugfs (exynos7420-dmc/level);
+ * Demand: a devfreq device with simple_ondemand on the DREX PPMUs (CPU
+ * and general port of each channel; the busiest channel counts), plus
+ * minimum rates from interconnect votes. The driver is an interconnect
+ * provider with one node: CPU OPPs carry the stock cpufreq->MIF floors as
+ * opp-peak-kBps, and the display bus links to it. A vote converts at 16
+ * bytes per DRAM clock (four 16-bit LPDDR4 channels, double data rate).
+ * The devfreq userspace governor switches by hand; debugfs
  * exynos7420-dmc/state shows the registers.
  */
 
@@ -32,6 +38,9 @@
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/debugfs.h>
+#include <linux/devfreq.h>
+#include <linux/devfreq-event.h>
+#include <linux/interconnect-provider.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
@@ -41,8 +50,10 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
+#include <linux/pm_qos.h>
 #include <linux/regulator/consumer.h>
 #include <linux/seq_file.h>
+#include <linux/workqueue.h>
 
 #define NR_CH			4
 
@@ -117,6 +128,12 @@
 #define SAFE_LOW_OFFSET_UV	56250
 #define NR_LEVELS		13
 
+/* Bytes per DRAM clock over all channels, to turn kB/s votes into kHz */
+#define BYTES_PER_CLK		16
+/* icc node id; exynos-bus icc nodes use small platform device ids */
+#define DMC_ICC_ID		7420
+#define FLOOR_HOLD_MS		50
+#define MAX_EDEV		(2 * NR_CH)
 
 struct drex_timing {
 	u32 rfcpb, row, data, power, rdfetch, etc;
@@ -269,7 +286,26 @@ struct exynos7420_dmc {
 	s64 last_us, max_us;		/* switch_level() time */
 	struct dentry *debugfs;
 
+	struct devfreq *df;
+	struct devfreq_simple_ondemand_data ondemand;
+	struct devfreq_event_dev *edev[MAX_EDEV];	/* channel n: n, n + 4 */
+	int nr_edev;
+	u32 saturation;			/* percent of PPMU cycles = full load */
+	u32 last_load[NR_CH];		/* ppm of PPMU cycles, last sample */
+
+	struct icc_provider icc;
+	struct icc_node *icc_node;
+	struct dev_pm_qos_request icc_qos;
+	u32 icc_khz;			/* floor from interconnect votes */
+	u32 floor_khz;			/* floor applied to devfreq */
+	struct mutex floor_lock;
+	struct delayed_work floor_work;	/* applies a lower floor late */
 };
+
+/* /sys/module/exynos7420_dmc/parameters/trace */
+static bool trace;
+module_param(trace, bool, 0644);
+MODULE_PARM_DESC(trace, "log every level switch");
 
 static int wait_clear(void __iomem *reg, u32 mask, const char *what,
 		      struct device *dev)
@@ -653,6 +689,9 @@ static int state_show(struct seq_file *s, void *unused)
 		   clk_get_rate(dmc->dout_aclk_ccore_532),
 		   clk_get_rate(dmc->dout_aclk_ccore_133),
 		   dmc->cur_uv, regulator_get_voltage(dmc->vdd));
+	seq_printf(s, "load ppm %u %u %u %u, icc floor %u kHz\n",
+		   dmc->last_load[0], dmc->last_load[1], dmc->last_load[2],
+		   dmc->last_load[3], dmc->icc_khz);
 	for (ch = 0; ch < NR_CH; ch++) {
 		void __iomem *d = dmc->drex[ch];
 
@@ -679,39 +718,251 @@ static int state_show(struct seq_file *s, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(state);
 
-static ssize_t level_write(struct file *file, const char __user *buf,
-			   size_t count, loff_t *ppos)
+static int level_of_khz(unsigned long khz)
 {
-	struct exynos7420_dmc *dmc = file->private_data;
-	unsigned int lv;
-	ktime_t t0;
-	int old, ret;
+	int lv;
 
-	ret = kstrtouint_from_user(buf, count, 0, &lv);
-	if (ret)
-		return ret;
-
-	mutex_lock(&dmc->lock);
-	if (!dmc->can_switch) {
-		ret = -EPERM;
-	} else {
-		old = dmc->cur;
-		t0 = ktime_get();
-		ret = switch_level(dmc, lv);
-		dmc->last_us = ktime_us_delta(ktime_get(), t0);
-		dmc->max_us = max(dmc->max_us, dmc->last_us);
-		dev_info(dmc->dev, "LV%d -> LV%u: %d, %lld us, now LV%d\n",
-			 old, lv, ret, dmc->last_us, dmc->cur);
-	}
-	mutex_unlock(&dmc->lock);
-	return ret ? ret : count;
+	for (lv = 0; lv < NR_LEVELS; lv++)
+		if (levels[lv].khz == khz)
+			return lv;
+	return -EINVAL;
 }
 
-static const struct file_operations level_fops = {
-	.open = simple_open,
-	.write = level_write,
-	.llseek = noop_llseek,
+static int dmc_target(struct device *dev, unsigned long *freq, u32 flags)
+{
+	struct exynos7420_dmc *dmc = dev_get_drvdata(dev);
+	struct dev_pm_opp *opp;
+	int lv, ret = 0;
+
+	opp = devfreq_recommended_opp(dev, freq, flags);
+	if (IS_ERR(opp))
+		return PTR_ERR(opp);
+	dev_pm_opp_put(opp);
+
+	lv = level_of_khz(*freq / 1000);
+	if (lv < 0)
+		return lv;
+
+	mutex_lock(&dmc->lock);
+	if (lv != dmc->cur) {
+		int old = dmc->cur;
+		ktime_t t0 = ktime_get();
+
+		ret = dmc->can_switch ? switch_level(dmc, lv) : -EPERM;
+		dmc->last_us = ktime_us_delta(ktime_get(), t0);
+		dmc->max_us = max(dmc->max_us, dmc->last_us);
+		if (ret)
+			dev_err(dev, "LV%d -> LV%d: %d\n", old, lv, ret);
+		else if (trace)
+			dev_info(dev, "LV%d -> LV%d, %lld us, vdd_mif %d uV\n",
+				 old, lv, dmc->last_us, dmc->cur_uv);
+	}
+	if (dmc->cur >= 0)
+		*freq = levels[dmc->cur].khz * 1000;
+	mutex_unlock(&dmc->lock);
+	return ret;
+}
+
+static int dmc_cur_freq(struct device *dev, unsigned long *freq)
+{
+	struct exynos7420_dmc *dmc = dev_get_drvdata(dev);
+
+	*freq = dmc->cur >= 0 ? levels[dmc->cur].khz * 1000 : 0;
+	return 0;
+}
+
+/*
+ * Load of the busiest channel: data beats on its CPU and general ports
+ * per PPMU cycle. Each PPMU counts against its own cycle counter, so the
+ * ratio stays right when bus_int restarts the general-port PPMUs on its
+ * own schedule. Saturation is the beats-per-cycle ratio of a full channel.
+ */
+static int dmc_get_dev_status(struct device *dev,
+			      struct devfreq_dev_status *stat)
+{
+	struct exynos7420_dmc *dmc = dev_get_drvdata(dev);
+	struct devfreq_event_data ed;
+	u32 load[NR_CH] = { }, busy = 0;
+	int i, ret;
+
+	for (i = 0; i < dmc->nr_edev; i++) {
+		ret = devfreq_event_get_event(dmc->edev[i], &ed);
+		if (!ret && ed.total_count)
+			load[i % NR_CH] += min_t(u64, div64_ul((u64)ed.load_count *
+						 1000000, ed.total_count), 1000000);
+		ret = devfreq_event_set_event(dmc->edev[i]);
+		if (ret)
+			return ret;
+	}
+	for (i = 0; i < NR_CH; i++) {
+		dmc->last_load[i] = load[i];
+		busy = max(busy, load[i]);
+	}
+
+	dmc_cur_freq(dev, &stat->current_frequency);
+	stat->total_time = 1000000;
+	stat->busy_time = min_t(u64, (u64)busy * 100 / dmc->saturation, 1000000);
+	return 0;
+}
+
+static struct devfreq_dev_profile dmc_profile = {
+	.polling_ms = 100,
+	.target = dmc_target,
+	.get_dev_status = dmc_get_dev_status,
+	.get_cur_freq = dmc_cur_freq,
 };
+
+static int dmc_apply_floor(struct exynos7420_dmc *dmc, u32 khz)
+{
+	int ret;
+
+	if (!dev_pm_qos_request_active(&dmc->icc_qos))
+		return 0;
+	ret = dev_pm_qos_update_request(&dmc->icc_qos, khz);
+	if (ret >= 0)
+		dmc->floor_khz = khz;
+	return ret < 0 ? ret : 0;
+}
+
+/*
+ * schedutil moves the CPUs often, and each move changes their vote; a
+ * DRAM switch pauses traffic for about a millisecond. Raise the floor at
+ * once (the OPP core votes before a CPU speeds up) but lower it only once
+ * the lower vote has held for FLOOR_HOLD_MS.
+ */
+static int dmc_update_floor(struct exynos7420_dmc *dmc)
+{
+	int ret = 0;
+
+	mutex_lock(&dmc->floor_lock);
+	if (dmc->icc_khz >= dmc->floor_khz) {
+		cancel_delayed_work(&dmc->floor_work);
+		if (dmc->icc_khz != dmc->floor_khz)
+			ret = dmc_apply_floor(dmc, dmc->icc_khz);
+	} else {
+		queue_delayed_work(system_wq, &dmc->floor_work,
+				   msecs_to_jiffies(FLOOR_HOLD_MS));
+	}
+	mutex_unlock(&dmc->floor_lock);
+	return ret;
+}
+
+static void dmc_floor_work(struct work_struct *work)
+{
+	struct exynos7420_dmc *dmc = container_of(to_delayed_work(work),
+						  struct exynos7420_dmc,
+						  floor_work);
+
+	mutex_lock(&dmc->floor_lock);
+	dmc_apply_floor(dmc, dmc->icc_khz);
+	mutex_unlock(&dmc->floor_lock);
+}
+
+static int dmc_icc_set(struct icc_node *src, struct icc_node *dst)
+{
+	struct exynos7420_dmc *dmc = dst->provider->data;
+	u32 bw = max(dst->avg_bw, dst->peak_bw);
+
+	/*
+	 * A path from another provider (the display bus) reaches only this
+	 * set(); let that provider apply its own node as well.
+	 */
+	if (src != dst && src->provider != dst->provider && src->provider->set)
+		src->provider->set(src, src);
+
+	/* the boot value is INT_MAX per request, summed: compute in 64 bits */
+	dmc->icc_khz = min_t(u64, DIV_ROUND_UP_ULL((u64)bw, BYTES_PER_CLK),
+			     S32_MAX);
+	return dmc_update_floor(dmc);
+}
+
+static struct icc_node *dmc_icc_xlate(struct of_phandle_args *spec, void *data)
+{
+	struct exynos7420_dmc *dmc = data;
+
+	return dmc->icc_node;
+}
+
+static int dmc_icc_init(struct exynos7420_dmc *dmc)
+{
+	struct icc_provider *p = &dmc->icc;
+	int ret;
+
+	p->dev = dmc->dev;
+	p->set = dmc_icc_set;
+	p->aggregate = icc_std_aggregate;
+	p->xlate = dmc_icc_xlate;
+	p->inter_set = true;
+	p->data = dmc;
+	icc_provider_init(p);
+
+	dmc->icc_node = icc_node_create(DMC_ICC_ID);
+	if (IS_ERR(dmc->icc_node))
+		return PTR_ERR(dmc->icc_node);
+	dmc->icc_node->name = "dmc";
+	icc_node_add(dmc->icc_node, p);
+
+	ret = icc_provider_register(p);
+	if (ret) {
+		icc_nodes_remove(p);
+		return ret;
+	}
+	return 0;
+}
+
+static int dmc_devfreq_init(struct exynos7420_dmc *dmc)
+{
+	struct device *dev = dmc->dev;
+	int i, ret;
+
+	/* one or two PPMU ports per channel, in channel order */
+	dmc->nr_edev = devfreq_event_get_edev_count(dev, "devfreq-events");
+	if (dmc->nr_edev != NR_CH && dmc->nr_edev != MAX_EDEV)
+		return dev_err_probe(dev, -EINVAL, "need %d or %d devfreq-events\n",
+				     NR_CH, MAX_EDEV);
+	for (i = 0; i < dmc->nr_edev; i++) {
+		dmc->edev[i] = devfreq_event_get_edev_by_phandle(dev,
+							"devfreq-events", i);
+		if (IS_ERR(dmc->edev[i]))
+			return dev_err_probe(dev, PTR_ERR(dmc->edev[i]),
+					     "devfreq-event %d\n", i);
+		ret = devfreq_event_enable_edev(dmc->edev[i]);
+		if (!ret)
+			ret = devfreq_event_set_event(dmc->edev[i]);
+		if (ret)
+			return dev_err_probe(dev, ret, "devfreq-event %d\n", i);
+	}
+	if (of_property_read_u32(dev->of_node, "exynos,saturation-ratio",
+				 &dmc->saturation) || !dmc->saturation)
+		dmc->saturation = 100;
+
+	/*
+	 * Hold the top level until the interconnect votes are in: with no
+	 * get_bw() the core keeps this node at INT_MAX until every provider
+	 * reaches sync_state, as stock started MIF at its maximum with the
+	 * cpufreq floors in place. A lower level while the CPUs run fast
+	 * hangs the SoC.
+	 */
+	ret = dev_pm_qos_add_request(dev, &dmc->icc_qos,
+				     DEV_PM_QOS_MIN_FREQUENCY, levels[0].khz);
+	if (ret < 0)
+		return ret;
+	dmc->floor_khz = levels[0].khz;
+
+	dmc_profile.initial_freq = levels[dmc->cur].khz * 1000;
+	dmc->ondemand.upthreshold = 70;
+	dmc->ondemand.downdifferential = 20;
+	dmc->df = devm_devfreq_add_device(dev, &dmc_profile,
+					  DEVFREQ_GOV_SIMPLE_ONDEMAND,
+					  &dmc->ondemand);
+	if (IS_ERR(dmc->df)) {
+		ret = PTR_ERR(dmc->df);
+		dmc->df = NULL;
+		dev_pm_qos_remove_request(&dmc->icc_qos);
+		return dev_err_probe(dev, ret, "devfreq\n");
+	}
+	return 0;
+}
 
 static void __iomem *map(struct platform_device *pdev, const char *name, int ch)
 {
@@ -750,6 +1001,8 @@ static int exynos7420_dmc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	dmc->dev = dev;
 	mutex_init(&dmc->lock);
+	mutex_init(&dmc->floor_lock);
+	INIT_DELAYED_WORK(&dmc->floor_work, dmc_floor_work);
 
 	for (ch = 0; ch < NR_CH; ch++) {
 		dmc->drex[ch] = map(pdev, "drex", ch);
@@ -821,21 +1074,70 @@ static int exynos7420_dmc_probe(struct platform_device *pdev)
 
 	dmc->debugfs = debugfs_create_dir("exynos7420-dmc", NULL);
 	debugfs_create_file("state", 0400, dmc->debugfs, dmc, &state_fops);
-	debugfs_create_file("level", 0200, dmc->debugfs, dmc, &level_fops);
+
+	/*
+	 * The CPUs and the display bus take paths to this provider, so it
+	 * registers even when switching is off; votes then do nothing.
+	 */
+	if (dmc->can_switch) {
+		ret = dmc_devfreq_init(dmc);
+		if (ret == -EPROBE_DEFER)
+			goto err_debugfs;
+		if (ret) {
+			dev_err(dev, "no devfreq (%d): level fixed\n", ret);
+			dmc->can_switch = false;
+		}
+	}
+	ret = dmc_icc_init(dmc);
+	if (ret)
+		goto err_qos;
 
 	dev_info(dev, "LV%d, MIF PLL %lu Hz on %s, vdd_mif %d uV, switching %s\n",
 		 dmc->cur, pll_rate,
 		 __clk_get_name(clk_get_parent(dmc->mout_aclk_mif_pll)),
 		 dmc->cur_uv,
-		 dmc->can_switch ? "available (debugfs)" : "disabled");
+		 dmc->can_switch ? "on demand" : "disabled");
 	return 0;
+
+err_qos:
+	cancel_delayed_work_sync(&dmc->floor_work);
+	if (dev_pm_qos_request_active(&dmc->icc_qos))
+		dev_pm_qos_remove_request(&dmc->icc_qos);
+err_debugfs:
+	debugfs_remove_recursive(dmc->debugfs);
+	return ret;
 }
 
 static void exynos7420_dmc_remove(struct platform_device *pdev)
 {
 	struct exynos7420_dmc *dmc = platform_get_drvdata(pdev);
 
+	icc_provider_deregister(&dmc->icc);
+	icc_nodes_remove(&dmc->icc);
+	cancel_delayed_work_sync(&dmc->floor_work);
+	if (dev_pm_qos_request_active(&dmc->icc_qos))
+		dev_pm_qos_remove_request(&dmc->icc_qos);
 	debugfs_remove_recursive(dmc->debugfs);
+}
+
+/*
+ * Hand DRAM to the next boot on LV0 at its voltage, as stock did from its
+ * reboot notifier. System suspend reaches the same level through devfreq
+ * and the OPP marked opp-suspend.
+ */
+static void exynos7420_dmc_shutdown(struct platform_device *pdev)
+{
+	struct exynos7420_dmc *dmc = platform_get_drvdata(pdev);
+
+	if (!dmc->df)
+		return;
+	devfreq_suspend_device(dmc->df);
+	cancel_delayed_work_sync(&dmc->floor_work);
+	mutex_lock(&dmc->lock);
+	if (dmc->cur != 0)
+		dev_warn(&pdev->dev, "shutdown on LV%d\n", dmc->cur);
+	dmc->can_switch = false;
+	mutex_unlock(&dmc->lock);
 }
 
 static const struct of_device_id exynos7420_dmc_of_match[] = {
@@ -847,10 +1149,13 @@ MODULE_DEVICE_TABLE(of, exynos7420_dmc_of_match);
 static struct platform_driver exynos7420_dmc_driver = {
 	.probe = exynos7420_dmc_probe,
 	.remove_new = exynos7420_dmc_remove,
+	.shutdown = exynos7420_dmc_shutdown,
 	.driver = {
 		.name = "exynos7420-dmc",
 		.of_match_table = exynos7420_dmc_of_match,
 		.suppress_bind_attrs = true,
+		/* the core holds all icc nodes at INT_MAX until every provider syncs */
+		.sync_state = icc_sync_state,
 	},
 };
 module_platform_driver(exynos7420_dmc_driver);
