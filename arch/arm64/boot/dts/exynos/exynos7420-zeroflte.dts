@@ -1344,3 +1344,86 @@
 		compatible = "samsung,mdnie-compat";
 	};
 };
+
+/*
+ * Sensor hub: the SSP hub firmware runs on the Broadcom BCM4773 GNSS chip,
+ * which carries the accelerometer/gyroscope (MPU6500), magnetometer
+ * (YAS537), barometer (LPS25H), light/proximity (TMD4903) and grip (SX9306)
+ * sensors. Board facts are from the stock rev06 DT.
+ *
+ * The chip sits on SPI1, whose controller is clocked from CMU_PERIC1, which
+ * hangs the bus on this board, so the bus is bit-banged on the same pins
+ * (SCLK gpd6-2, CS gpd6-3, MISO gpd6-4, MOSI gpd6-5), mode 3 as on stock.
+ * HOST_REQ gpa3-6 is the chip's data-ready interrupt; MCU_REQ gpf4-5 and
+ * MCU_RESP gpf4-4 are the SSI handshake; nSTANDBY gpf4-7 powers the chip
+ * and belongs to lhd, which loads the chip's RAM patch on every power-up.
+ */
+&pinctrl_alive {
+	gnss_host_req: gnss-host-req-pins {
+		samsung,pins = "gpa3-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+	};
+};
+
+&pinctrl_bus0 {
+	gnss_spi: gnss-spi-pins {
+		samsung,pins = "gpd6-2", "gpd6-3", "gpd6-4", "gpd6-5";
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+};
+
+&pinctrl_bus1 {
+	gnss_ctrl: gnss-ctrl-pins {
+		samsung,pins = "gpf4-5", "gpf4-7";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	gnss_mcu_resp: gnss-mcu-resp-pins {
+		samsung,pins = "gpf4-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+	};
+};
+
+/ {
+	spi-gnss {
+		compatible = "spi-gpio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		sck-gpios = <&gpd6 2 GPIO_ACTIVE_HIGH>;
+		miso-gpios = <&gpd6 4 GPIO_ACTIVE_HIGH>;
+		mosi-gpios = <&gpd6 5 GPIO_ACTIVE_HIGH>;
+		cs-gpios = <&gpd6 3 GPIO_ACTIVE_LOW>;
+		num-chipselects = <1>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&gnss_spi &gnss_host_req &gnss_ctrl &gnss_mcu_resp>;
+
+		gnss@0 {
+			compatible = "brcm,bcm4773";
+			reg = <0>;
+			spi-max-frequency = <26000000>;
+			spi-cpha;
+			spi-cpol;
+			interrupt-parent = <&gpa3>;
+			interrupts = <6 IRQ_TYPE_LEVEL_HIGH>;
+			enable-gpios = <&gpf4 7 GPIO_ACTIVE_HIGH>;
+			host-req-gpios = <&gpa3 6 GPIO_ACTIVE_HIGH>;
+			mcu-req-gpios = <&gpf4 5 GPIO_ACTIVE_HIGH>;
+			mcu-resp-gpios = <&gpf4 4 GPIO_ACTIVE_HIGH>;
+
+			sensorhub {
+				compatible = "samsung,zeroflte-sensorhub";
+				samsung,acc-position = <0>;
+				samsung,mag-position = <0>;
+				samsung,glass-type = <0>;
+				samsung,prox-thresholds = <2000 1400>;
+				/* YAS537 static matrix of the rev05-07 boards */
+				samsung,mag-matrix = <10213 (-360) 154 (-206) 8673
+						      (-59) (-66) (-59) 10479>;
+			};
+		};
+	};
+};
