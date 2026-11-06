@@ -43,6 +43,13 @@ static const struct samsung_fixed_factor_clock topc_fixed_factor_clks[] __initco
 	FFACTOR(0, "ffac_topc_bus1_pll_div2", "mout_topc_bus1_pll", 1, 2, 0),
 	FFACTOR(0, "ffac_topc_cc_pll_div2", "mout_topc_cc_pll", 1, 2, 0),
 	FFACTOR(0, "ffac_topc_mfc_pll_div2", "mout_topc_mfc_pll", 1, 2, 0),
+	FFACTOR(0, "ffac_topc_bus0_pll_half_div2", "mout_topc_bus0_pll_half",
+		1, 2, 0),
+	FFACTOR(0, "ffac_topc_bus0_pll_half_div4", "mout_topc_bus0_pll_half",
+		1, 4, 0),
+	FFACTOR(0, "ffac_topc_bus1_pll_div4", "mout_topc_bus1_pll", 1, 4, 0),
+	FFACTOR(0, "ffac_topc_cc_pll_div4", "mout_topc_cc_pll", 1, 4, 0),
+	FFACTOR(0, "ffac_topc_mfc_pll_div4", "mout_topc_mfc_pll", 1, 4, 0),
 };
 
 /* List of parent clocks for Muxes in CMU_TOPC */
@@ -55,6 +62,14 @@ PNAME(mout_topc_mfc_pll_ctrl_p)	= { "fin_pll", "fout_mfc_pll" };
 PNAME(mout_topc_group2) = { "mout_topc_bus0_pll_half",
 	"mout_topc_bus1_pll_half", "mout_topc_cc_pll_half",
 	"mout_topc_mfc_pll_half" };
+
+/* the bus0/bus1 532 MHz muxes take the PLLs directly, /2 and /4 */
+PNAME(mout_topc_group3) = { "mout_topc_bus0_pll_half", "mout_topc_bus1_pll",
+	"mout_topc_cc_pll", "mout_topc_mfc_pll",
+	"ffac_topc_bus0_pll_half_div2", "ffac_topc_bus1_pll_div2",
+	"ffac_topc_cc_pll_div2", "ffac_topc_mfc_pll_div2",
+	"ffac_topc_bus0_pll_half_div4", "ffac_topc_bus1_pll_div4",
+	"ffac_topc_cc_pll_div4", "ffac_topc_mfc_pll_div4" };
 
 PNAME(mout_topc_bus0_pll_half_p) = { "mout_topc_bus0_pll",
 	"ffac_topc_bus0_pll_div2", "ffac_topc_bus0_pll_div4"};
@@ -113,19 +128,34 @@ static const struct samsung_mux_clock topc_mux_clks[] __initconst = {
 		MUX_SEL_TOPC1, 16, 1),
 
 	MUX(0, "mout_aclk_ccore_133", mout_topc_group2,	MUX_SEL_TOPC2, 4, 2),
+	MUX(0, "mout_aclk_bus0_532", mout_topc_group3, MUX_SEL_TOPC2, 8, 4),
+	MUX(0, "mout_aclk_bus1_532", mout_topc_group3, MUX_SEL_TOPC2, 12, 4),
+	MUX(0, "mout_aclk_bus1_200", mout_topc_group2, MUX_SEL_TOPC2, 16, 2),
+	MUX(0, "mout_aclk_imem_266", mout_topc_group2, MUX_SEL_TOPC2, 20, 2),
 
 	MUX(0, "mout_aclk_mscl_532", mout_topc_group2, MUX_SEL_TOPC3, 20, 2),
 	MUX(0, "mout_aclk_peris_66", mout_topc_group2, MUX_SEL_TOPC3, 24, 2),
+	MUX(0, "mout_pclk_bus01_133", mout_topc_group2, MUX_SEL_TOPC3, 28, 2),
 };
 
 static const struct samsung_div_clock topc_div_clks[] __initconst = {
 	DIV(DOUT_ACLK_CCORE_133, "dout_aclk_ccore_133", "mout_aclk_ccore_133",
 		DIV_TOPC0, 4, 4),
+	DIV(DOUT_ACLK_BUS0_532, "dout_aclk_bus0_532", "mout_aclk_bus0_532",
+		DIV_TOPC0, 8, 4),
+	DIV(DOUT_ACLK_BUS1_532, "dout_aclk_bus1_532", "mout_aclk_bus1_532",
+		DIV_TOPC0, 12, 4),
+	DIV(DOUT_ACLK_BUS1_200, "dout_aclk_bus1_200", "mout_aclk_bus1_200",
+		DIV_TOPC0, 16, 4),
+	DIV(DOUT_ACLK_IMEM_266, "dout_aclk_imem_266", "mout_aclk_imem_266",
+		DIV_TOPC0, 20, 4),
 
 	DIV(DOUT_ACLK_MSCL_532, "dout_aclk_mscl_532", "mout_aclk_mscl_532",
 		DIV_TOPC1, 20, 4),
 	DIV(DOUT_ACLK_PERIS, "dout_aclk_peris_66", "mout_aclk_peris_66",
 		DIV_TOPC1, 24, 4),
+	DIV(DOUT_PCLK_BUS01_133, "dout_pclk_bus01_133", "mout_pclk_bus01_133",
+		DIV_TOPC1, 28, 4),
 
 	DIV(DOUT_SCLK_BUS0_PLL, "dout_sclk_bus0_pll", "mout_topc_bus0_pll_out",
 		DIV_TOPC3, 0, 4),
