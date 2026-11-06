@@ -306,6 +306,12 @@ static int apply_constraints(struct icc_path *path)
 	int ret = -EINVAL;
 	int i;
 
+	/* a path within one node has that node as both endpoints */
+	if (path->num_nodes == 1) {
+		next = path->reqs[0].node;
+		return next->provider->set(next, next);
+	}
+
 	for (i = 0; i < path->num_nodes; i++) {
 		next = path->reqs[i].node;
 		p = next->provider;
