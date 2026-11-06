@@ -293,3 +293,6 @@ CONFIG_DEFAULT_HUNG_TASK_TIMEOUT=60
 # spi-gpio bus enabled above.
 CONFIG_MIPI_LLI=y
 CONFIG_SEC_MODEM_SS333=y
+
+# Entropy: the secure-world TRNG seeds the CRNG before /init.
+CONFIG_HW_RANDOM_EXYNOS7420_SWD=y

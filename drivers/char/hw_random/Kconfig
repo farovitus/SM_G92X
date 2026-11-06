@@ -466,6 +466,17 @@ config HW_RANDOM_S390
 
 	  If unsure, say Y.
 
+config HW_RANDOM_EXYNOS7420_SWD
+	tristate "Exynos7420 secure-world TRNG support"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	depends on HAVE_ARM_SMCCC
+	help
+	  The Exynos7420 TRNG, read through the EL3 firmware's SMC
+	  interface. It seeds the kernel's CRNG at boot.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called exynos7420-swd-rng.
+
 config HW_RANDOM_EXYNOS
 	tristate "Samsung Exynos True Random Number Generator support"
 	depends on ARCH_EXYNOS || COMPILE_TEST

@@ -1791,6 +1791,13 @@
 	};
 };
 
+/* The TRNG, owned by the EL3 firmware and read through its SMC. */
+/ {
+	swd-rng {
+		compatible = "samsung,exynos7420-swd-rng";
+	};
+};
+
 / {
 	/* "battery" and "ac" for the ROM's thermal and health HALs. */
 	sec-battery-compat {
