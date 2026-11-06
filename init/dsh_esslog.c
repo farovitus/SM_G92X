@@ -84,8 +84,9 @@ console_initcall(ess_console_init);
  * dsh_autorecovery=<seconds> restarts into recovery at the first beat after
  * that uptime, so a test boot returns to TWRP with its log without anyone
  * holding the keys. Writing 0 to
- * /sys/module/dsh_esslog/parameters/autorecovery cancels it, so a boot
- * that completes stays up. An off-mode charging boot
+ * /sys/module/dsh_esslog/parameters/autorecovery cancels it and stops the
+ * beat, so a boot that completes stays up without dumping stacks every
+ * 30 s; writing a non-zero value starts the beat again. An off-mode charging boot
  * (androidboot.mode=charger) never completes and has no adb to cancel it,
  * so it is left alone.
  */
@@ -123,14 +124,22 @@ static void ess_set_target(u32 target)
 	writel(target, ess_pmu + ESS_PMU_INFORM3);
 }
 
+static void ess_beat(struct work_struct *work);
+static DECLARE_DELAYED_WORK(ess_beat_work, ess_beat);
+
 static int ess_autorecovery_set(const char *val, const struct kernel_param *kp)
 {
 	int ret = param_set_uint(val, kp);
 
-	if (!ret && !ess_charger_mode)
+	if (ret)
+		return ret;
+	if (!ess_charger_mode)
 		ess_set_target(ess_autorecovery ? ESS_TARGET_RECOVERY :
 				  ESS_TARGET_NORMAL);
-	return ret;
+	/* Before the late initcall the beat is not set up yet. */
+	if (ess_autorecovery && system_state == SYSTEM_RUNNING)
+		schedule_delayed_work(&ess_beat_work, 30 * HZ);
+	return 0;
 }
 
 static const struct kernel_param_ops ess_autorecovery_ops = {
@@ -180,12 +189,14 @@ static void ess_replay_kernel_log(void)
 	console_unlock();
 }
 
-static void ess_beat(struct work_struct *work);
-static DECLARE_DELAYED_WORK(ess_beat_work, ess_beat);
 
 static void ess_beat(struct work_struct *work)
 {
 	struct task_struct *init_task_p;
+
+	/* Cancelled: the boot completed, so stop the beat. */
+	if (!ess_autorecovery)
+		return;
 
 	pr_emerg("dsh: alive %llu s\n", ktime_get_boottime_seconds());
 	rcu_read_lock();
