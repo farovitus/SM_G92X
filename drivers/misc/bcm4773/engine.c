@@ -117,11 +117,15 @@ static void bbd_cb_data_to_lhd(struct sITransportLayerCb *cb,
 	bbd_on_read(BBD_MINOR_PACKET, data, size);
 }
 
-/* IRpcSensorResponse::Data carries one chunk of the SSP byte stream. */
+/*
+ * IRpcSensorResponse::Data carries one chunk of the SSP byte stream.
+ * BbdBridge_OnRpcReceived() passes the decoder itself, not its data.
+ */
 static bool bbd_sensor_rpc(void *priv, unsigned short id,
 			   struct sStreamDecoder *str)
 {
-	struct bbd_device *bbd = priv;
+	struct sRpcDecoder *dec = priv;
+	struct bbd_device *bbd = dec->data;
 	unsigned short size;
 	unsigned char *data;
 
