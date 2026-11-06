@@ -974,7 +974,9 @@
 
 /*
  * DRAM floors from the CPU clock: the stock cpufreq bus tables (MIF kHz
- * per CPU level) as bandwidth votes, 16 bytes per DRAM clock.
+ * per CPU level) as bandwidth votes, 16 bytes per DRAM clock. An idle
+ * cluster keeps its vote, so the lowest levels (A57 800-900 MHz, A53
+ * 500-600 MHz) vote nothing and the load governor alone sets DRAM there.
  */
 &cpu_atlas0 {
 	interconnects = <&dmc &dmc>;
@@ -1010,10 +1012,10 @@
 
 &cpu_atlas_opp_table {
 	opp-800000000 {
-		opp-peak-kBps = <6656000>;
+		opp-peak-kBps = <0>;
 	};
 	opp-900000000 {
-		opp-peak-kBps = <6656000>;
+		opp-peak-kBps = <0>;
 	};
 	opp-1000000000 {
 		opp-peak-kBps = <8688000>;
@@ -1049,10 +1051,10 @@
 		opp-peak-kBps = <0>;
 	};
 	opp-500000000 {
-		opp-peak-kBps = <6656000>;
+		opp-peak-kBps = <0>;
 	};
 	opp-600000000 {
-		opp-peak-kBps = <6656000>;
+		opp-peak-kBps = <0>;
 	};
 	opp-700000000 {
 		opp-peak-kBps = <8688000>;
@@ -1652,9 +1654,11 @@
 		/*
 		 * DRAM floor per GPU clock (GPU kHz, MIF kHz) from the stock
 		 * 3.10 G3D DVFS table; the driver follows the GPU devfreq.
+		 * The idle GPU stays at 266 MHz, so that level holds no
+		 * floor: the stock 3.10 vote went away with the GPU power.
 		 */
 		samsung,gpu = <&gpu>;
-		samsung,gpu-mif-floors = <266000 416000>, <350000 543000>,
+		samsung,gpu-mif-floors = <350000 543000>,
 					 <420000 1026000>, <544000 1026000>,
 					 <600000 1552000>, <700000 1552000>;
 		/*
