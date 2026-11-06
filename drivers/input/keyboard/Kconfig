@@ -799,6 +799,17 @@ config KEYBOARD_MTK_PMIC
 	  To compile this driver as a module, choose M here: the
 	  module will be called pmic-keys.
 
+config KEYBOARD_CYPRESS_MBR_TOUCHKEY
+	tristate "Cypress CY8CMBR31x5 capacitive touch keys"
+	depends on I2C
+	help
+	  Say Y here to enable the Cypress CY8CMBR31x5 capacitive touch
+	  keys used as the Recents and Back keys of the Galaxy S6
+	  (SM-G920F).
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called cypress-mbr-touchkey.
+
 config KEYBOARD_CYPRESS_SF
 	tristate "Cypress StreetFighter touchkey support"
 	depends on I2C
