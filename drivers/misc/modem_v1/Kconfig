@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config SEC_MODEM_SS333
+	bool "Samsung SS333 (Shannon 333) modem interface"
+	depends on MIPI_LLI && SPI_MASTER && NET
+	help
+	  Modem interface for the Shannon 333 CP on the Galaxy S6
+	  (SM-G920F/SM-G925F): CP power and reset GPIOs, the SPI bootloader
+	  link, the MIPI-LLI shared-memory IPC link with link power
+	  management, and the stock character devices (/dev/umts_*) and
+	  rmnet network interfaces that cbd and the RIL expect.
+
+	  The platform driver keeps the stock name "mif_sipc5".
