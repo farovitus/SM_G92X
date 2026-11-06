@@ -245,6 +245,7 @@ CONFIG_MFD_EXYNOS_LPASS=y
 CONFIG_SPI_GPIO=y
 # Galaxy S6 sensor hub: the BCM4773 GNSS chip runs the SSP hub firmware
 # that lhd loads, on a bit-banged SPI1. Modules, as the BOOT size requires.
+CONFIG_SPI_EXYNOS_GPIO=m
 CONFIG_BCM4773=m
 CONFIG_IIO_SSP_SENSORHUB=m
 CONFIG_IIO_SSP_SENSORHUB_BCM4773=y
