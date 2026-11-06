@@ -14,6 +14,7 @@
  * without its SIPC5 header, as in stock.
  */
 
+#include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -41,17 +42,37 @@ static void spi_boot_terminate(struct link_device *ld, struct io_device *iod)
 {
 }
 
-static int spi_transmit_data(struct spi_device *spi, const void *buf,
+/*
+ * The CP boot ROM takes one byte per chip-select frame. Stock got that from
+ * the SPI2 controller's auto chip-select mode, which raises nCS after every
+ * 8-bit packet; Samsung's other SPI boot driver (modem_boot_device_spi.c)
+ * sends one byte per spi_sync for the same reason. spi-gpio holds CS for a
+ * whole transfer, so frame each byte as its own message.
+ */
+static int spi_transmit_data(struct spi_device *spi, const u8 *buf,
 			     unsigned int len)
 {
-	struct spi_transfer t = {
-		.tx_buf = buf,
-		.len = len,
-		/* stock: delay_usecs = 10 after the transfer */
-		.delay = { .value = 10, .unit = SPI_DELAY_UNIT_USECS },
-	};
+	ktime_t start = ktime_get();
+	unsigned int i;
+	int ret = 0;
 
-	return spi_sync_transfer(spi, &t, 1);
+	for (i = 0; i < len; i++) {
+		struct spi_transfer t = {
+			.tx_buf = &buf[i],
+			.len = 1,
+		};
+
+		ret = spi_sync_transfer(spi, &t, 1);
+		if (ret < 0)
+			break;
+	}
+
+	/* stock: delay_usecs = 10 after the transfer */
+	udelay(10);
+
+	mif_info("SPI boot: %u/%u bytes in %lld us (%d)\n", i, len,
+		 ktime_us_delta(ktime_get(), start), ret);
+	return ret;
 }
 
 static int spi_boot_send(struct link_device *ld, struct io_device *iod,
