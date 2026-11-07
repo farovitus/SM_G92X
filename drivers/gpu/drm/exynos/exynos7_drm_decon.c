@@ -124,6 +124,8 @@ struct decon_context {
 	bool				xfer_busy;	/* sending, until frame done */
 	unsigned int			te_count;
 	unsigned int			te_misses;	/* watchdog sends in a row */
+	/* i80: completes once DECON scans the committed state, under te_lock */
+	struct drm_pending_vblank_event	*flip_event;
 	wait_queue_head_t		te_wq;
 	struct delayed_work		te_watchdog;
 };
@@ -315,6 +317,59 @@ static void decon_te_irq_get(struct decon_context *ctx)
 		ctx->te_irq_on = true;
 		enable_irq(ctx->te_irq);
 	}
+}
+
+#define DECON_VSTATUS_MASK		(0x7 << 13)
+
+/*
+ * Whether DECON has stopped reading the buffers of the state before the
+ * last commit. It copies the shadow registers to the active set at the
+ * start of a frame and then clears DECON_UPDATE_STANDALONE_F. While that
+ * request is still pending, no frame in flight means the next one starts
+ * with the new state; a frame with no window enabled may never start at
+ * all, so the bit alone is not enough.
+ */
+static bool decon_old_state_done(struct decon_context *ctx)
+{
+	u32 val;
+
+	if (!(readl(ctx->regs + DECON_UPDATE) & DECON_UPDATE_STANDALONE_F))
+		return true;
+	val = readl(ctx->regs + VIDCON1(0));
+	return !VIDCON1_LINECNT_GET(val) && !(val & DECON_VSTATUS_MASK);
+}
+
+/*
+ * A flip completes, and its old framebuffers may go, only once DECON is
+ * done with them. Completing it at the TE after the commit, as before, let
+ * a framebuffer be freed and unmapped while a transfer still fetched it:
+ * the SysMMU then faulted on every retry of the read. Called with te_lock
+ * held; the caller sends the event.
+ */
+static struct drm_pending_vblank_event *
+decon_take_latched_flip(struct decon_context *ctx)
+{
+	struct drm_pending_vblank_event *event = ctx->flip_event;
+
+	if (!event || !decon_old_state_done(ctx))
+		return NULL;
+	ctx->flip_event = NULL;
+	return event;
+}
+
+/* Send a flip event taken from ctx->flip_event. Not with te_lock held. */
+static void decon_send_flip(struct decon_context *ctx,
+			    struct drm_pending_vblank_event *event)
+{
+	struct drm_crtc *crtc = &ctx->crtc->base;
+	unsigned long flags;
+
+	if (!event)
+		return;
+	spin_lock_irqsave(&crtc->dev->event_lock, flags);
+	drm_crtc_send_vblank_event(crtc, event);
+	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
+	drm_crtc_vblank_put(crtc);
 }
 
 static int decon_enable_vblank(struct exynos_drm_crtc *crtc)
@@ -696,25 +751,14 @@ static void decon_te_send(struct decon_context *ctx)
 }
 
 /*
- * TE sync: latch the new window state and leave the transfer to the next
- * TE edge, which also completes the flip. The event is armed before the
- * frame is marked pending: a TE in between completes the flip one frame
- * early, never late. te_lock is not held around event_lock, which the
- * vblank core takes before calling disable_vblank.
+ * TE sync: leave the transfer to the next TE edge. The flip completes at
+ * the first TE or frame done that finds the new state latched. te_lock is
+ * not held around event_lock, which the vblank core takes before calling
+ * disable_vblank.
  */
 static void decon_te_flush(struct decon_context *ctx)
 {
-	struct drm_crtc *crtc = &ctx->crtc->base;
-	struct drm_pending_vblank_event *event = crtc->state->event;
 	unsigned long flags;
-
-	if (event) {
-		crtc->state->event = NULL;
-		WARN_ON(drm_crtc_vblank_get(crtc) != 0);
-		spin_lock_irqsave(&crtc->dev->event_lock, flags);
-		drm_crtc_arm_vblank_event(crtc, event);
-		spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
-	}
 
 	spin_lock_irqsave(&ctx->te_lock, flags);
 	ctx->trig_pending = true;
@@ -767,10 +811,13 @@ static void decon_te_watchdog(struct work_struct *work)
 static irqreturn_t decon_te_irq_handler(int irq, void *dev_id)
 {
 	struct decon_context *ctx = dev_id;
+	struct drm_pending_vblank_event *flip;
 	bool vblank;
 
 	spin_lock(&ctx->te_lock);
 	ctx->te_count++;
+	/* before the send below requests the next latch */
+	flip = decon_take_latched_flip(ctx);
 	if (ctx->te_sync && ctx->trig_pending && !ctx->xfer_busy) {
 		decon_te_send(ctx);
 		ctx->te_misses = 0;
@@ -786,6 +833,8 @@ static irqreturn_t decon_te_irq_handler(int irq, void *dev_id)
 		wake_up(&ctx->te_wq);
 	if (vblank)
 		drm_crtc_handle_vblank(&ctx->crtc->base);
+	/* after the vblank count, so the event carries this TE's time */
+	decon_send_flip(ctx, flip);
 
 	return IRQ_HANDLED;
 }
@@ -872,6 +921,33 @@ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
 	for (i = 0; i < WINDOWS_NR; i++)
 		decon_shadow_protect_win(ctx, i, false);
 
+	if (ctx->i80_if) {
+		struct drm_crtc *crtc_base = &crtc->base;
+		struct drm_pending_vblank_event *event = crtc_base->state->event;
+		unsigned long flags;
+
+		struct drm_pending_vblank_event *old = NULL;
+
+		/*
+		 * Request the latch only now that every window is unprotected,
+		 * so a cleared STANDALONE_F means all of this commit is active.
+		 */
+		writel(readl(ctx->regs + DECON_UPDATE) |
+		       DECON_UPDATE_STANDALONE_F, ctx->regs + DECON_UPDATE);
+
+		if (event) {
+			crtc_base->state->event = NULL;
+			WARN_ON(drm_crtc_vblank_get(crtc_base) != 0);
+			spin_lock_irqsave(&ctx->te_lock, flags);
+			old = ctx->flip_event;
+			ctx->flip_event = event;
+			spin_unlock_irqrestore(&ctx->te_lock, flags);
+		}
+		/* only after a flip_done timeout: do not leak it */
+		if (WARN_ON_ONCE(old))
+			decon_send_flip(ctx, old);
+	}
+
 	if (ctx->i80_if && ctx->icc_bw)
 		mod_delayed_work(system_wq, &ctx->bw_idle_work,
 				 msecs_to_jiffies(DECON_BW_IDLE_MS));
@@ -881,14 +957,13 @@ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
 		return;
 	}
 
-	/*
-	 * Arm the event before the transfer starts: in i80 mode the frame
-	 * done interrupt of this transfer is the vblank that completes it.
-	 */
-	exynos_crtc_handle_event(crtc);
-
-	if (ctx->i80_if)
+	if (ctx->i80_if) {
+		/* the frame done of this transfer completes the flip */
 		decon_i80_trigger(ctx);
+		return;
+	}
+
+	exynos_crtc_handle_event(crtc);
 }
 
 static void decon_init(struct decon_context *ctx)
@@ -983,6 +1058,37 @@ static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
 	decon_te_start(ctx);
 }
 
+/*
+ * The helpers skip atomic_begin/flush for a CRTC being turned off, so the
+ * window disables above are still shadow-protected and unlatched, and in
+ * command mode the TE trigger goes on fetching the old buffers from the
+ * active registers. Unprotect them, request a frame and wait until DECON
+ * no longer reads the old buffers, so they can be freed once this returns.
+ */
+static void decon_stop_windows(struct decon_context *ctx)
+{
+	struct drm_pending_vblank_event *flip;
+	unsigned long flags;
+	bool done;
+	int i, ret;
+
+	for (i = 0; i < WINDOWS_NR; i++)
+		decon_shadow_protect_win(ctx, i, false);
+	decon_i80_trigger(ctx);
+
+	ret = read_poll_timeout(decon_old_state_done, done, done, 100, 100000,
+				false, ctx);
+	if (ret)
+		dev_warn(ctx->dev, "window disable not latched\n");
+
+	/* a flip still waiting for its latch: the CRTC is off now */
+	spin_lock_irqsave(&ctx->te_lock, flags);
+	flip = ctx->flip_event;
+	ctx->flip_event = NULL;
+	spin_unlock_irqrestore(&ctx->te_lock, flags);
+	decon_send_flip(ctx, flip);
+}
+
 static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
@@ -997,6 +1103,9 @@ static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
 	 */
 	for (i = 0; i < WINDOWS_NR; i++)
 		decon_disable_plane(crtc, &ctx->planes[i]);
+
+	if (ctx->i80_if)
+		decon_stop_windows(ctx);
 
 	pm_runtime_put_sync(ctx->dev);
 
@@ -1019,6 +1128,7 @@ static const struct exynos_drm_crtc_ops decon_crtc_ops = {
 static irqreturn_t decon_irq_handler(int irq, void *dev_id)
 {
 	struct decon_context *ctx = (struct decon_context *)dev_id;
+	struct drm_pending_vblank_event *flip;
 	u32 val, clear_bit;
 
 	val = readl(ctx->regs + VIDINTCON1);
@@ -1050,6 +1160,13 @@ static irqreturn_t decon_irq_handler(int irq, void *dev_id)
 		 * transfer stands in for vsync.
 		 */
 		drm_crtc_handle_vblank(&ctx->crtc->base);
+	}
+
+	if (ctx->i80_if) {
+		spin_lock(&ctx->te_lock);
+		flip = decon_take_latched_flip(ctx);
+		spin_unlock(&ctx->te_lock);
+		decon_send_flip(ctx, flip);
 	}
 
 	/* set wait vsync event to zero and wake up queue. */
@@ -1355,8 +1472,6 @@ err_aclk_enable:
 err_pclk_enable:
 	return ret;
 }
-
-#define DECON_VSTATUS_MASK		(0x7 << 13)
 
 /*
  * In command mode with the TE trigger enabled (TRIGCON HWTRIGMASK_DISPIF0
