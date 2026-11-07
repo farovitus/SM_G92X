@@ -2637,6 +2637,13 @@ static int brcmf_pcie_pm_enter_D3(struct device *dev)
 	if (!devinfo->mbdata_completed) {
 		brcmf_err(bus, "Timeout on response for entering D3 substate\n");
 		brcmf_bus_change_state(bus, BRCMF_BUS_UP);
+		brcmf_pcie_fwcon_timer(devinfo, true);
+		/* A dongle that misses the D3 ACK keeps missing it, and every
+		 * later system suspend would fail here. Recover it the way a
+		 * halted firmware is recovered: reset the bus, which reloads
+		 * the firmware once this suspend has been aborted.
+		 */
+		brcmf_fw_crashed(dev);
 		return -EIO;
 	}
 
