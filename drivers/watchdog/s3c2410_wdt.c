@@ -757,21 +757,16 @@ static void s3c2410wdt_shutdown(struct platform_device *dev)
 
 static int s3c2410wdt_suspend(struct device *dev)
 {
-	int ret;
 	struct s3c2410_wdt *wdt = dev_get_drvdata(dev);
 
 	/* Save watchdog state, and turn it off. */
 	wdt->wtcon_save = readl(wdt->reg_base + S3C2410_WTCON);
 	wdt->wtdat_save = readl(wdt->reg_base + S3C2410_WTDAT);
 
-	ret = s3c2410wdt_enable(wdt, false);
-	if (ret < 0)
-		return ret;
-
 	/* Note that WTCNT doesn't need to be saved. */
 	s3c2410wdt_stop(&wdt->wdt_device);
 
-	return 0;
+	return s3c2410wdt_enable(wdt, false);
 }
 
 static int s3c2410wdt_resume(struct device *dev)
@@ -779,14 +774,21 @@ static int s3c2410wdt_resume(struct device *dev)
 	int ret;
 	struct s3c2410_wdt *wdt = dev_get_drvdata(dev);
 
+	/*
+	 * Re-enable the reset request in the PMU before restoring the
+	 * registers. On Exynos7420 the timer reads back its reset defaults
+	 * (WTCON 0x8021, WTDAT 0x8000: running, about 1 s) after the PMU
+	 * bits are cleared, so values written before that are lost and the
+	 * SoC resets about a second after resume.
+	 */
+	ret = s3c2410wdt_enable(wdt, true);
+	if (ret < 0)
+		return ret;
+
 	/* Restore watchdog state. */
 	writel(wdt->wtdat_save, wdt->reg_base + S3C2410_WTDAT);
 	writel(wdt->wtdat_save, wdt->reg_base + S3C2410_WTCNT);/* Reset count */
 	writel(wdt->wtcon_save, wdt->reg_base + S3C2410_WTCON);
-
-	ret = s3c2410wdt_enable(wdt, true);
-	if (ret < 0)
-		return ret;
 
 	dev_info(dev, "watchdog %sabled\n",
 		(wdt->wtcon_save & S3C2410_WTCON_ENABLE) ? "en" : "dis");
