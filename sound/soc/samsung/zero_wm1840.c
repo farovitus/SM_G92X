@@ -14,6 +14,14 @@
  *
  * The headset jack is the codec's own accessory detection: the MICDET
  * clamp follows JD1, and MICDET1 measures the mic ring through MICBIAS2.
+ *
+ * The Shannon modem's voice PCM is wired to the codec's AIF2, the CP
+ * driving BCLK and LRCLK: I2S, 2 x 16 bit slots at 8 kHz (narrowband) or
+ * 16 kHz (wideband). It is a codec-to-codec link from a machine DAI that
+ * stands for the CP, so calls need no host PCM; the audio HAL's mixer
+ * paths route AIF2 and pick the rate with the link's Params control. The
+ * CP clock is not locked to the codec's, so AIF2 runs on ASYNCCLK from
+ * FLL2, which follows AIF2 BCLK, and ASRC1 crosses into SYSCLK.
  */
 
 #include <linux/input.h>
@@ -32,6 +40,7 @@
 
 #define ZERO_MCLK2_RATE		32768
 #define ZERO_SYSCLK_RATE	98304000
+#define ZERO_ASYNCCLK_RATE	98304000
 
 /*
  * max98925 set_sysclk: clock ID 1 selects BCLK as the amp's DAI clock.
@@ -44,6 +53,7 @@
 struct zero_priv {
 	struct snd_soc_component *codec;
 	struct snd_soc_jack jack;
+	bool fll2_on;
 };
 
 /* Stock headset buttons: impedance up to max ohms, and their keys. */
@@ -229,6 +239,213 @@ static const struct snd_soc_pcm_stream zero_amp_params = {
 	.channels_max	= 2,
 };
 
+/*
+ * FLL2 makes ASYNCCLK for AIF2. It takes MCLK2 as its reference, so it
+ * locks before the CP starts BCLK, and follows AIF2 BCLK once it runs.
+ * It runs only while the baseband link is powered.
+ */
+static int zero_baseband_hw_params(struct snd_pcm_substream *substream,
+				   struct snd_pcm_hw_params *params,
+				   struct snd_soc_dai *dai)
+{
+	struct zero_priv *priv = snd_soc_card_get_drvdata(dai->component->card);
+	unsigned int bclk = params_rate(params) * 32;
+	int ret;
+
+	if (!priv->codec)
+		return -EPROBE_DEFER;
+
+	ret = snd_soc_component_set_pll(priv->codec, MADERA_FLL2_REFCLK,
+					MADERA_FLL_SRC_MCLK2, ZERO_MCLK2_RATE,
+					ZERO_ASYNCCLK_RATE);
+	if (ret) {
+		dev_err(dai->dev, "Failed to start FLL2: %d\n", ret);
+		return ret;
+	}
+
+	ret = snd_soc_component_set_pll(priv->codec, MADERA_FLL2_SYNCCLK,
+					MADERA_FLL_SRC_AIF2BCLK, bclk,
+					ZERO_ASYNCCLK_RATE);
+	if (ret) {
+		dev_err(dai->dev, "Failed to sync FLL2 to AIF2 BCLK: %d\n", ret);
+		return ret;
+	}
+
+	priv->fll2_on = true;
+	dev_info(dai->dev, "baseband %u Hz, FLL2 on AIF2 BCLK %u Hz\n",
+		 params_rate(params), bclk);
+
+	return 0;
+}
+
+static int zero_baseband_hw_free(struct snd_pcm_substream *substream,
+				 struct snd_soc_dai *dai)
+{
+	struct zero_priv *priv = snd_soc_card_get_drvdata(dai->component->card);
+
+	if (!priv->fll2_on)
+		return 0;
+
+	snd_soc_component_set_pll(priv->codec, MADERA_FLL2_SYNCCLK,
+				  MADERA_FLL_SRC_NONE, 0, 0);
+	snd_soc_component_set_pll(priv->codec, MADERA_FLL2_REFCLK,
+				  MADERA_FLL_SRC_NONE, 0, 0);
+	priv->fll2_on = false;
+
+	return 0;
+}
+
+static const struct snd_soc_dai_ops zero_baseband_dai_ops = {
+	.hw_params	= zero_baseband_hw_params,
+	.hw_free	= zero_baseband_hw_free,
+};
+
+#define ZERO_BASEBAND_RATES	(SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000)
+
+static struct snd_soc_dai_driver zero_baseband_dai = {
+	.name = "zero-baseband",
+	.playback = {
+		.stream_name	= "Modem Playback",
+		.channels_min	= 2,
+		.channels_max	= 2,
+		.rates		= ZERO_BASEBAND_RATES,
+		.formats	= SNDRV_PCM_FMTBIT_S16_LE,
+	},
+	.capture = {
+		.stream_name	= "Modem Capture",
+		.channels_min	= 2,
+		.channels_max	= 2,
+		.rates		= ZERO_BASEBAND_RATES,
+		.formats	= SNDRV_PCM_FMTBIT_S16_LE,
+	},
+	.ops = &zero_baseband_dai_ops,
+};
+
+/* The CP end of the link: it powers whenever a path through AIF2 is set. */
+static const struct snd_soc_dapm_widget zero_modem_widgets[] = {
+	SND_SOC_DAPM_INPUT("Modem RX"),
+	SND_SOC_DAPM_OUTPUT("Modem TX"),
+};
+
+static const struct snd_soc_dapm_route zero_modem_routes[] = {
+	{ "Modem Capture", NULL, "Modem RX" },
+	{ "Modem TX", NULL, "Modem Playback" },
+};
+
+static const struct snd_soc_component_driver zero_modem_component = {
+	.name			= "zero-modem",
+	.dapm_widgets		= zero_modem_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(zero_modem_widgets),
+	.dapm_routes		= zero_modem_routes,
+	.num_dapm_routes	= ARRAY_SIZE(zero_modem_routes),
+	.idle_bias_on		= 1,
+	.endianness		= 1,
+};
+
+/*
+ * AIF2 runs on ASYNCCLK. SYSCLK sample rates 2 and 3 are the narrowband
+ * and wideband call rates, for the ASRC and ISRC between the domains.
+ */
+static int zero_baseband_init(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_component *codec = snd_soc_rtd_to_codec(rtd, 0)->component;
+	int ret;
+
+	ret = snd_soc_component_set_sysclk(codec, MADERA_CLK_ASYNCCLK_1,
+					   MADERA_CLK_SRC_FLL2,
+					   ZERO_ASYNCCLK_RATE,
+					   SND_SOC_CLOCK_IN);
+	if (ret) {
+		dev_err(codec->dev, "Failed to set ASYNCCLK: %d\n", ret);
+		return ret;
+	}
+
+	ret = snd_soc_dai_set_sysclk(snd_soc_rtd_to_codec(rtd, 0),
+				     MADERA_CLK_ASYNCCLK_1, 0, 0);
+	if (ret) {
+		dev_err(codec->dev, "Failed to put AIF2 on ASYNCCLK: %d\n", ret);
+		return ret;
+	}
+
+	snd_soc_component_update_bits(codec, MADERA_SAMPLE_RATE_2,
+				      MADERA_SAMPLE_RATE_1_MASK, 0x11);
+	snd_soc_component_update_bits(codec, MADERA_SAMPLE_RATE_3,
+				      MADERA_SAMPLE_RATE_1_MASK, 0x12);
+
+	return 0;
+}
+
+static const struct snd_soc_pcm_stream zero_baseband_params[] = {
+	{
+		.stream_name	= "NB",
+		.formats	= SNDRV_PCM_FMTBIT_S16_LE,
+		.rate_min	= 8000,
+		.rate_max	= 8000,
+		.channels_min	= 2,
+		.channels_max	= 2,
+	},
+	{
+		.stream_name	= "WB",
+		.formats	= SNDRV_PCM_FMTBIT_S16_LE,
+		.rate_min	= 16000,
+		.rate_max	= 16000,
+		.channels_min	= 2,
+		.channels_max	= 2,
+	},
+};
+
+#define ZERO_LINK_BASEBAND	1
+
+/*
+ * "Voice Call Rate" picks the baseband link's configuration, NB or WB.
+ * The link's own Params control would do the same, but it is created
+ * after every routing control, and libaudioroute writes changed controls
+ * in index order: it would come too late, with the link already powered
+ * by the new path. This card control comes before them.
+ */
+static const char * const zero_voice_rate_text[] = { "NB", "WB" };
+
+static SOC_ENUM_SINGLE_EXT_DECL(zero_voice_rate_enum, zero_voice_rate_text);
+
+static struct snd_soc_pcm_runtime *zero_baseband_rtd(struct snd_soc_card *card)
+{
+	return snd_soc_get_pcm_runtime(card, &card->dai_link[ZERO_LINK_BASEBAND]);
+}
+
+static int zero_voice_rate_get(struct snd_kcontrol *kcontrol,
+			       struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_pcm_runtime *rtd = zero_baseband_rtd(card);
+
+	ucontrol->value.enumerated.item[0] = rtd ? rtd->c2c_params_select : 0;
+
+	return 0;
+}
+
+static int zero_voice_rate_put(struct snd_kcontrol *kcontrol,
+			       struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_pcm_runtime *rtd = zero_baseband_rtd(card);
+	unsigned int sel = ucontrol->value.enumerated.item[0];
+	int stream;
+
+	if (!rtd || sel >= ARRAY_SIZE(zero_voice_rate_text))
+		return -EINVAL;
+
+	if (sel == rtd->c2c_params_select)
+		return 0;
+
+	for_each_pcm_streams(stream)
+		if (rtd->c2c_widget[stream] && rtd->c2c_widget[stream]->power)
+			return -EBUSY;
+
+	rtd->c2c_params_select = sel;
+
+	return 1;
+}
+
 static const struct snd_soc_dapm_widget zero_dapm_widgets[] = {
 	SND_SOC_DAPM_HP("HP", NULL),
 	SND_SOC_DAPM_SPK("RCV", NULL),
@@ -247,12 +464,18 @@ static const struct snd_kcontrol_new zero_controls[] = {
 	SOC_DAPM_PIN_SWITCH("Sub Mic"),
 	SOC_DAPM_PIN_SWITCH("Third Mic"),
 	SOC_DAPM_PIN_SWITCH("Headset Mic"),
+	SOC_ENUM_EXT("Voice Call Rate", zero_voice_rate_enum,
+		     zero_voice_rate_get, zero_voice_rate_put),
 };
 
 SND_SOC_DAILINK_DEFS(aif1,
 	DAILINK_COMP_ARRAY(COMP_CPU(SAMSUNG_I2S_DAI)),
 	DAILINK_COMP_ARRAY(COMP_CODEC("cs47l85-codec", "cs47l85-aif1")),
 	DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
+SND_SOC_DAILINK_DEFS(baseband,
+	DAILINK_COMP_ARRAY(COMP_CPU("zero-baseband")),
+	DAILINK_COMP_ARRAY(COMP_CODEC("cs47l85-codec", "cs47l85-aif2")));
 
 SND_SOC_DAILINK_DEFS(amp,
 	DAILINK_COMP_ARRAY(COMP_CPU("cs47l85-aif4")),
@@ -270,6 +493,17 @@ static struct snd_soc_dai_link zero_dai_links[] = {
 		SND_SOC_DAILINK_REG(aif1),
 	},
 	{
+		.name		= "WM1840 AIF2 Baseband",
+		.stream_name	= "Baseband",
+		.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
+				  SND_SOC_DAIFMT_CBC_CFC,
+		.c2c_params	= zero_baseband_params,
+		.num_c2c_params	= ARRAY_SIZE(zero_baseband_params),
+		.init		= zero_baseband_init,
+		.ignore_suspend	= 1,
+		SND_SOC_DAILINK_REG(baseband),
+	},
+	{
 		.name		= "WM1840 AIF4 Speaker Amp",
 		.stream_name	= "Speaker Amp",
 		.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
@@ -280,6 +514,8 @@ static struct snd_soc_dai_link zero_dai_links[] = {
 		SND_SOC_DAILINK_REG(amp),
 	},
 };
+
+#define ZERO_LINK_AMP	2
 
 static struct snd_soc_card zero_card = {
 	.owner			= THIS_MODULE,
@@ -331,17 +567,22 @@ static int zero_audio_probe(struct platform_device *pdev)
 	zero_dai_links[0].cpus->of_node = i2s_node;
 	zero_dai_links[0].platforms->of_node = i2s_node;
 
-	/* Without an amp node the card has the AIF1 link only. */
+	ret = devm_snd_soc_register_component(dev, &zero_modem_component,
+					      &zero_baseband_dai, 1);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to register the CP DAI\n");
+
+	/* Without an amp node the card has no AIF4 link. */
 	amp_node = of_parse_phandle(dev->of_node, "samsung,speaker-amp", 0);
 	if (amp_node) {
 		ret = devm_add_action_or_reset(dev, zero_put_node, amp_node);
 		if (ret)
 			return ret;
 
-		zero_dai_links[1].codecs->of_node = amp_node;
+		zero_dai_links[ZERO_LINK_AMP].codecs->of_node = amp_node;
 		card->num_links = ARRAY_SIZE(zero_dai_links);
 	} else {
-		card->num_links = 1;
+		card->num_links = ZERO_LINK_AMP;
 	}
 
 	return devm_snd_soc_register_card(dev, card);
