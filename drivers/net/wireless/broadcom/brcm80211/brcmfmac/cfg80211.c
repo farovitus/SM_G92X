@@ -4151,6 +4151,11 @@ module_param_named(suspend_rx_filter, brcmf_suspend_rx_filter, bool, 0644);
 MODULE_PARM_DESC(suspend_rx_filter,
 		 "Forward only unicast frames while suspended with the link kept");
 
+static bool brcmf_suspend_listen = true;
+module_param_named(suspend_listen_interval, brcmf_suspend_listen, bool, 0644);
+MODULE_PARM_DESC(suspend_listen_interval,
+		 "Skip DTIM beacons (up to 900 ms) while suspended with the link kept");
+
 #define BRCMF_SUSPEND_PKT_FILTER_ID	100
 #define BRCMF_PKT_FILTER_FORWARD_ON_MATCH	1
 
@@ -4192,6 +4197,28 @@ static int brcmf_suspend_pkt_filter(struct brcmf_if *ifp, bool enable)
 	return err;
 }
 
+/* Listen to one beacon in up to 900 ms instead of every DTIM beacon while the
+ * host sleeps, within the listen interval the association announced (the
+ * firmware default is 10 beacons).
+ */
+#define BRCMF_SUSPEND_LISTEN_TU		900
+#define BRCMF_DEFAULT_ASSOC_LISTEN	10
+
+static u32 brcmf_suspend_bcn_li_dtim(struct brcmf_if *ifp)
+{
+	u32 bcn = 0, dtim = 0, listen = 0, n;
+
+	if (brcmf_fil_cmd_int_get(ifp, BRCMF_C_GET_BCNPRD, &bcn) || !bcn ||
+	    brcmf_fil_cmd_int_get(ifp, BRCMF_C_GET_DTIMPRD, &dtim) || !dtim)
+		return 0;
+	if (brcmf_fil_iovar_int_get(ifp, "assoc_listen", &listen) || !listen)
+		listen = BRCMF_DEFAULT_ASSOC_LISTEN;
+
+	n = BRCMF_SUSPEND_LISTEN_TU / (bcn * dtim);
+	n = min(n, listen / dtim);
+	return n > 1 ? n : 0;
+}
+
 static s32 brcmf_cfg80211_resume(struct wiphy *wiphy)
 {
 	struct brcmf_cfg80211_info *cfg = wiphy_to_cfg(wiphy);
@@ -4204,6 +4231,7 @@ static s32 brcmf_cfg80211_resume(struct wiphy *wiphy)
 		if (cfg->wowl.pkt_filter)
 			brcmf_suspend_pkt_filter(ifp, false);
 		cfg->wowl.pkt_filter = false;
+		brcmf_fil_iovar_int_set(ifp, "bcn_li_dtim", 0);
 		brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_PM,
 				      cfg->wowl.pre_pmmode);
 		cfg->wowl.keep_link = false;
@@ -4342,6 +4370,8 @@ static s32 brcmf_cfg80211_suspend(struct wiphy *wiphy,
 				      &cfg->wowl.pre_pmmode);
 		brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_PM, PM_MAX);
 		if (test_bit(BRCMF_VIF_STATUS_CONNECTED, &ifp->vif->sme_state)) {
+			u32 bcn_li_dtim = brcmf_suspend_listen ?
+					  brcmf_suspend_bcn_li_dtim(ifp) : 0;
 			int err = 0;
 			u8 state;
 
@@ -4349,13 +4379,17 @@ static s32 brcmf_cfg80211_suspend(struct wiphy *wiphy,
 			if (brcmf_suspend_rx_filter)
 				err = brcmf_suspend_pkt_filter(ifp, true);
 			cfg->wowl.pkt_filter = brcmf_suspend_rx_filter && !err;
+			if (bcn_li_dtim)
+				brcmf_fil_iovar_int_set(ifp, "bcn_li_dtim",
+							bcn_li_dtim);
 			/* Log each combination of settings once. */
-			state = BIT(0) | cfg->wowl.pkt_filter << 1;
+			state = BIT(0) | cfg->wowl.pkt_filter << 1 |
+				!!bcn_li_dtim << 2;
 			if (cfg->wowl.reported != state) {
 				cfg->wowl.reported = state;
-				brcmf_info("suspend: unicast-only rx filter %s (%d)\n",
+				brcmf_info("suspend: unicast-only rx filter %s (%d), bcn_li_dtim %u\n",
 					   cfg->wowl.pkt_filter ? "on" : "off",
-					   err);
+					   err, bcn_li_dtim);
 			}
 		} else {
 			brcmf_set_mpc(ifp, 1);
