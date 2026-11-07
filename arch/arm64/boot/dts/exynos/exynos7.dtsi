@@ -112,57 +112,11 @@
 		};
 
 		/*
-		 * The boot CPU is the first Cortex-A53 (MPIDR 0x100), so the
-		 * A53 cluster is listed first and becomes CPUs 0-3.
+		 * Linux makes the boot CPU, the first A53 (MPIDR 0x100), CPU 0 and
+		 * numbers the others in node order. Listing the A57s first gives
+		 * A57 = CPUs 1-4 and A53 = CPUs 0 and 5-7, the numbering the
+		 * cpufreq, memlat and power work on this branch was measured with.
 		 */
-		cpu_apollo0: cpu@100 {
-			device_type = "cpu";
-			compatible = "arm,cortex-a53";
-			reg = <0x100>;
-			enable-method = "psci";
-			cpu-idle-states = <&CPU_C2_A53>;
-			capacity-dmips-mhz = <677>;
-			clocks = <&clock_apollo CLK_SCLK_APOLLO>;
-			operating-points-v2 = <&cpu_apollo_opp_table>;
-			#cooling-cells = <2>;
-		};
-
-		cpu_apollo1: cpu@101 {
-			device_type = "cpu";
-			compatible = "arm,cortex-a53";
-			reg = <0x101>;
-			enable-method = "psci";
-			cpu-idle-states = <&CPU_C2_A53>;
-			capacity-dmips-mhz = <677>;
-			clocks = <&clock_apollo CLK_SCLK_APOLLO>;
-			operating-points-v2 = <&cpu_apollo_opp_table>;
-			#cooling-cells = <2>;
-		};
-
-		cpu_apollo2: cpu@102 {
-			device_type = "cpu";
-			compatible = "arm,cortex-a53";
-			reg = <0x102>;
-			enable-method = "psci";
-			cpu-idle-states = <&CPU_C2_A53>;
-			capacity-dmips-mhz = <677>;
-			clocks = <&clock_apollo CLK_SCLK_APOLLO>;
-			operating-points-v2 = <&cpu_apollo_opp_table>;
-			#cooling-cells = <2>;
-		};
-
-		cpu_apollo3: cpu@103 {
-			device_type = "cpu";
-			compatible = "arm,cortex-a53";
-			reg = <0x103>;
-			enable-method = "psci";
-			cpu-idle-states = <&CPU_C2_A53>;
-			capacity-dmips-mhz = <677>;
-			clocks = <&clock_apollo CLK_SCLK_APOLLO>;
-			operating-points-v2 = <&cpu_apollo_opp_table>;
-			#cooling-cells = <2>;
-		};
-
 		cpu_atlas0: cpu@0 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a57";
@@ -237,6 +191,54 @@
 			d-cache-line-size = <64>;
 			d-cache-sets = <256>;
 			next-level-cache = <&atlas_l2>;
+		};
+
+		cpu_apollo0: cpu@100 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x100>;
+			enable-method = "psci";
+			cpu-idle-states = <&CPU_C2_A53>;
+			capacity-dmips-mhz = <677>;
+			clocks = <&clock_apollo CLK_SCLK_APOLLO>;
+			operating-points-v2 = <&cpu_apollo_opp_table>;
+			#cooling-cells = <2>;
+		};
+
+		cpu_apollo1: cpu@101 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x101>;
+			enable-method = "psci";
+			cpu-idle-states = <&CPU_C2_A53>;
+			capacity-dmips-mhz = <677>;
+			clocks = <&clock_apollo CLK_SCLK_APOLLO>;
+			operating-points-v2 = <&cpu_apollo_opp_table>;
+			#cooling-cells = <2>;
+		};
+
+		cpu_apollo2: cpu@102 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x102>;
+			enable-method = "psci";
+			cpu-idle-states = <&CPU_C2_A53>;
+			capacity-dmips-mhz = <677>;
+			clocks = <&clock_apollo CLK_SCLK_APOLLO>;
+			operating-points-v2 = <&cpu_apollo_opp_table>;
+			#cooling-cells = <2>;
+		};
+
+		cpu_apollo3: cpu@103 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x103>;
+			enable-method = "psci";
+			cpu-idle-states = <&CPU_C2_A53>;
+			capacity-dmips-mhz = <677>;
+			clocks = <&clock_apollo CLK_SCLK_APOLLO>;
+			operating-points-v2 = <&cpu_apollo_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		atlas_l2: l2-cache0 {
