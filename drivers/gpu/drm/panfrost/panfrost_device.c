@@ -411,12 +411,12 @@ static int panfrost_device_runtime_resume(struct device *dev)
 		if (ret)
 			return ret;
 
-		ret = clk_enable(pfdev->clock);
+		ret = clk_prepare_enable(pfdev->clock);
 		if (ret)
 			goto err_clk;
 
 		if (pfdev->bus_clock) {
-			ret = clk_enable(pfdev->bus_clock);
+			ret = clk_prepare_enable(pfdev->bus_clock);
 			if (ret)
 				goto err_bus_clk;
 		}
@@ -429,7 +429,7 @@ static int panfrost_device_runtime_resume(struct device *dev)
 
 err_bus_clk:
 	if (pfdev->comp->pm_features & BIT(GPU_PM_RT))
-		clk_disable(pfdev->clock);
+		clk_disable_unprepare(pfdev->clock);
 err_clk:
 	if (pfdev->comp->pm_features & BIT(GPU_PM_RT))
 		reset_control_assert(pfdev->rstc);
@@ -449,11 +449,16 @@ static int panfrost_device_runtime_suspend(struct device *dev)
 	panfrost_gpu_suspend_irq(pfdev);
 	panfrost_gpu_power_off(pfdev);
 
+	/*
+	 * Unprepare, not only disable: a clock provider's runtime PM
+	 * follows the prepare count, so this is what lets the GPU's clock
+	 * controller and its power domain go down with the GPU.
+	 */
 	if (pfdev->comp->pm_features & BIT(GPU_PM_RT)) {
 		if (pfdev->bus_clock)
-			clk_disable(pfdev->bus_clock);
+			clk_disable_unprepare(pfdev->bus_clock);
 
-		clk_disable(pfdev->clock);
+		clk_disable_unprepare(pfdev->clock);
 		reset_control_assert(pfdev->rstc);
 	}
 
