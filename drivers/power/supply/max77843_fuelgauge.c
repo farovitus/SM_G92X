@@ -135,6 +135,8 @@ static enum power_supply_property max77843_fg_props[] = {
 	POWER_SUPPLY_PROP_TEMP,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+	POWER_SUPPLY_PROP_CHARGE_NOW,
+	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 };
 
 static int max77843_fg_get_property(struct power_supply *psy,
@@ -184,6 +186,17 @@ static int max77843_fg_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
 		ret = regmap_read(fg->regmap, MAX77843_FG_REG_FULLCAP_NOM,
 				  &raw);
+		if (ret)
+			return ret;
+		val->intval = raw * MAX77843_FG_CAPACITY_LSB;
+		return 0;
+	case POWER_SUPPLY_PROP_CHARGE_NOW:
+	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+		/*
+		 * Remaining capacity as reported (RepCap), the value Android
+		 * reads as the battery charge counter.
+		 */
+		ret = regmap_read(fg->regmap, MAX77843_FG_REG_REMCAP_REP, &raw);
 		if (ret)
 			return ret;
 		val->intval = raw * MAX77843_FG_CAPACITY_LSB;
