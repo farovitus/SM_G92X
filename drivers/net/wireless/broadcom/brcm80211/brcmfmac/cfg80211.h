@@ -289,6 +289,9 @@ struct brcmf_cfg80211_vif_event {
  * @active: set on suspend, cleared on resume.
  * @keep_link: suspended with the "any" trigger: the dongle keeps running
  *	and wakes the host through its host-wake line; cleared on resume.
+ * @pkt_filter: the unicast-only receive filter is installed for a
+ *	keep_link suspend; removed on resume.
+ * @reported: the keep_link suspend settings last logged.
  * @pre_pmmode: firmware PM mode at entering suspend.
  * @nd: net dectect data.
  * @nd_info: helper struct to pass to cfg80211.
@@ -299,6 +302,8 @@ struct brcmf_cfg80211_vif_event {
 struct brcmf_cfg80211_wowl {
 	bool active;
 	bool keep_link;
+	bool pkt_filter;
+	u8 reported;
 	u32 pre_pmmode;
 	struct cfg80211_wowlan_nd_match *nd;
 	struct cfg80211_wowlan_nd_info *nd_info;

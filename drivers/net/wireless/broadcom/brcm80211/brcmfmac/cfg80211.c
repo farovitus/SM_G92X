@@ -4140,6 +4140,58 @@ static void brcmf_report_wowl_wakeind(struct wiphy *wiphy, struct brcmf_if *ifp)
 
 #endif /* CONFIG_PM */
 
+/* While the host sleeps with the link kept, the dongle forwards only frames
+ * sent to our own MAC address. Broadcast and multicast frames would otherwise
+ * raise the host-wake line for every ARP, mDNS or IPv6 RA on the network; ARP
+ * and neighbour solicitations for our addresses are answered by the firmware
+ * offload, which runs before the filter.
+ */
+static bool brcmf_suspend_rx_filter = true;
+module_param_named(suspend_rx_filter, brcmf_suspend_rx_filter, bool, 0644);
+MODULE_PARM_DESC(suspend_rx_filter,
+		 "Forward only unicast frames while suspended with the link kept");
+
+#define BRCMF_SUSPEND_PKT_FILTER_ID	100
+#define BRCMF_PKT_FILTER_FORWARD_ON_MATCH	1
+
+static int brcmf_suspend_pkt_filter(struct brcmf_if *ifp, bool enable)
+{
+	struct brcmf_pkt_filter_enable_le en = {
+		.id = cpu_to_le32(BRCMF_SUSPEND_PKT_FILTER_ID),
+		.enable = cpu_to_le32(enable),
+	};
+	u8 buf[sizeof(struct brcmf_pkt_filter_le) + 1] = {};
+	struct brcmf_pkt_filter_le *pf = (void *)buf;
+	const size_t mp = offsetof(struct brcmf_pkt_filter_le,
+				   u.pattern.mask_and_pattern);
+	int err;
+
+	if (!enable) {
+		brcmf_fil_iovar_data_set(ifp, "pkt_filter_enable", &en,
+					 sizeof(en));
+		return brcmf_fil_iovar_int_set(ifp, "pkt_filter_delete",
+					       BRCMF_SUSPEND_PKT_FILTER_ID);
+	}
+
+	/* Match the group bit of the destination address being clear. */
+	pf->id = cpu_to_le32(BRCMF_SUSPEND_PKT_FILTER_ID);
+	pf->u.pattern.offset = 0;
+	pf->u.pattern.size_bytes = cpu_to_le32(1);
+	buf[mp] = 0x01;		/* mask */
+	buf[mp + 1] = 0x00;	/* pattern */
+	err = brcmf_fil_iovar_data_set(ifp, "pkt_filter_add", pf, mp + 2);
+	if (!err)
+		err = brcmf_fil_iovar_int_set(ifp, "pkt_filter_mode",
+					      BRCMF_PKT_FILTER_FORWARD_ON_MATCH);
+	if (!err)
+		err = brcmf_fil_iovar_data_set(ifp, "pkt_filter_enable", &en,
+					       sizeof(en));
+	if (err)
+		brcmf_fil_iovar_int_set(ifp, "pkt_filter_delete",
+					BRCMF_SUSPEND_PKT_FILTER_ID);
+	return err;
+}
+
 static s32 brcmf_cfg80211_resume(struct wiphy *wiphy)
 {
 	struct brcmf_cfg80211_info *cfg = wiphy_to_cfg(wiphy);
@@ -4149,6 +4201,9 @@ static s32 brcmf_cfg80211_resume(struct wiphy *wiphy)
 	brcmf_dbg(TRACE, "Enter\n");
 
 	if (cfg->wowl.keep_link) {
+		if (cfg->wowl.pkt_filter)
+			brcmf_suspend_pkt_filter(ifp, false);
+		cfg->wowl.pkt_filter = false;
 		brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_PM,
 				      cfg->wowl.pre_pmmode);
 		cfg->wowl.keep_link = false;
@@ -4286,10 +4341,25 @@ static s32 brcmf_cfg80211_suspend(struct wiphy *wiphy,
 		brcmf_fil_cmd_int_get(ifp, BRCMF_C_GET_PM,
 				      &cfg->wowl.pre_pmmode);
 		brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_PM, PM_MAX);
-		if (test_bit(BRCMF_VIF_STATUS_CONNECTED, &ifp->vif->sme_state))
+		if (test_bit(BRCMF_VIF_STATUS_CONNECTED, &ifp->vif->sme_state)) {
+			int err = 0;
+			u8 state;
+
 			brcmf_keepalive_start(ifp, 30);
-		else
+			if (brcmf_suspend_rx_filter)
+				err = brcmf_suspend_pkt_filter(ifp, true);
+			cfg->wowl.pkt_filter = brcmf_suspend_rx_filter && !err;
+			/* Log each combination of settings once. */
+			state = BIT(0) | cfg->wowl.pkt_filter << 1;
+			if (cfg->wowl.reported != state) {
+				cfg->wowl.reported = state;
+				brcmf_info("suspend: unicast-only rx filter %s (%d)\n",
+					   cfg->wowl.pkt_filter ? "on" : "off",
+					   err);
+			}
+		} else {
 			brcmf_set_mpc(ifp, 1);
+		}
 		cfg->wowl.keep_link = true;
 	} else if (!wowl) {
 		brcmf_bus_wowl_config(cfg->pub->bus_if, false);
