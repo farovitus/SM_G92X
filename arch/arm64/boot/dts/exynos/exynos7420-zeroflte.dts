@@ -968,10 +968,6 @@
 	status = "okay";
 };
 
-/*
- * cmu_g3d takes its bus clock from clock_topc and runs in pd_g3d; both
- * are always enabled.
- */
 &cmu_g3d {
 	status = "okay";
 };
@@ -1137,13 +1133,23 @@
 	status = "okay";
 
 	/*
-	 * The GPU runs in pd_g3d (exynos7.dtsi). The domain powers off
-	 * with the GPU only when exynos_pm_domains.g3d_off=1; by default
-	 * it stays on as the bootloader left it. Either way the GPU
-	 * clocks, G3D_PLL and the top-to-G3D clock stop while the GPU is
-	 * runtime suspended, and cmu_g3d restores its registers after a
-	 * power cycle (p207 took an SError here when nothing did).
+	 * The GPU is not attached to pd_g3d. pd_g3d stays powered on its
+	 * own: its samsung,exynos7420-g3d-pd compatible makes
+	 * exynos-pm-domains set GENPD_FLAG_ALWAYS_ON, and pd_ignore_unused
+	 * on the cmdline keeps unused domains on as well. The generic 5433
+	 * power-on sequence cannot bring G3D back (the vendor sequence also
+	 * writes CMU_TOP registers that hang this board), so the domain
+	 * must never power off.
+	 *
+	 * History: with power-domains attached and no always-on flag,
+	 * panfrost's 50 ms autosuspend let genpd power pd_g3d off; the next
+	 * runtime resume read 0x14AC0000 and took an asynchronous SError
+	 * (p207). With the always-on flag, keeping the property should be
+	 * safe too (the p211 plan), but the board runs without it (the p210
+	 * fallback) and no p211 boot is recorded. Panfrost runtime PM only
+	 * powers the GPU cores on and off.
 	 */
+	/delete-property/ power-domains;
 
 	/*
 	 * GPU DVFS through panfrost devfreq (simple_ondemand). Levels are

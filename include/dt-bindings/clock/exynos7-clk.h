@@ -41,10 +41,7 @@
 #define DOUT_SCLK_BUS0_PLL_MIF		31
 #define SCLK_BUS0_PLL_MIF		32
 #define MOUT_ACLK_MIF_PLL		33
-#define MOUT_SCLK_BUS_PLL_G3D		34
-#define DOUT_SCLK_BUS_PLL_G3D		35
-#define SCLK_BUS_PLL_G3D		36
-#define TOPC_NR_CLK			37
+#define TOPC_NR_CLK			34
 
 /* TOP0 */
 #define DOUT_ACLK_PERIC1		1

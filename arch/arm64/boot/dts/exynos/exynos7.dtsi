@@ -754,9 +754,8 @@
 			compatible = "samsung,exynos7-clock-g3d";
 			reg = <0x14aa0000 0xd00>;
 			#clock-cells = <1>;
-			clocks = <&fin_pll>, <&clock_topc SCLK_BUS_PLL_G3D>;
-			clock-names = "fin_pll", "sclk_bus_pll_g3d";
-			power-domains = <&pd_g3d>;
+			clocks = <&fin_pll>;
+			clock-names = "fin_pll";
 			status = "disabled";
 		};
 
