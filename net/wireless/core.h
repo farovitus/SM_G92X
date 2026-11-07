@@ -143,6 +143,8 @@ cfg80211_rdev_free_wowlan(struct cfg80211_registered_device *rdev)
 	kfree(rdev->wiphy.wowlan_config->tcp);
 	kfree(rdev->wiphy.wowlan_config->nd_config);
 	kfree(rdev->wiphy.wowlan_config);
+	/* A driver may register this wiphy again after unregistering it. */
+	rdev->wiphy.wowlan_config = NULL;
 #endif
 }
 
