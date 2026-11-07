@@ -121,6 +121,7 @@ struct max77843_charger {
 	u32 alert_cc_ua;		/* charge current in the alert range */
 	u32 alert_cv_uv;		/* float voltage in the alert range */
 	int health;			/* POWER_SUPPLY_HEALTH_* from temperature */
+	int last_online, last_status, last_health; /* last state notified */
 	struct delayed_work work;
 	struct mutex lock;		/* serialises max77843_chg_apply() */
 	unsigned int pmic_rev;
@@ -498,13 +499,28 @@ static void max77843_chg_work(struct work_struct *work)
 {
 	struct max77843_charger *chg = container_of(to_delayed_work(work),
 					struct max77843_charger, work);
-	int online = 0;
+	int online = 0, status = POWER_SUPPLY_STATUS_UNKNOWN;
 
 	max77843_chg_update_health(chg);
 	max77843_chg_apply(chg);
-	power_supply_changed(chg->psy);
 
-	if (!max77843_charger_online(chg, &online) && online)
+	/*
+	 * Every power_supply_changed() is a uevent, and Android's health HAL
+	 * wakes for each one. Notify while an input is present (the poll
+	 * carries the temperature) or when the state changed, not for IRQ or
+	 * extcon events that left it as it was.
+	 */
+	max77843_charger_online(chg, &online);
+	max77843_charger_status(chg, &status);
+	if (online || online != chg->last_online ||
+	    status != chg->last_status || chg->health != chg->last_health) {
+		chg->last_online = online;
+		chg->last_status = status;
+		chg->last_health = chg->health;
+		power_supply_changed(chg->psy);
+	}
+
+	if (online)
 		schedule_delayed_work(&chg->work,
 				      msecs_to_jiffies(MAX77843_CHG_POLL_MS));
 }
@@ -640,9 +656,11 @@ static irqreturn_t max77843_charger_irq(int irq, void *data)
 	struct max77843_charger *chg = data;
 
 	pm_wakeup_event(chg->dev, 2000);
+	/* The work notifies when the state changed */
 	if (chg->bat)
 		mod_delayed_work(system_wq, &chg->work, 0);
-	power_supply_changed(chg->psy);
+	else
+		power_supply_changed(chg->psy);
 
 	return IRQ_HANDLED;
 }
