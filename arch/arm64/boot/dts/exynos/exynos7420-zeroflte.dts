@@ -1627,9 +1627,11 @@
 	 * DRAM controller: per channel the DREX, its LPDDR4 PHY, VT monitor
 	 * and CMU_MIF, plus the MIF PLL muxes in CMU_TOPC. OPPs are the DRAM
 	 * clock; voltages are the stock MIF ASV table v15 entries for this
-	 * chip's group (ASV9). G925F needs its own values. Stock LV12
-	 * (100 MHz) is left out: switching LV11 -> LV12 hangs this phone
-	 * (test-79, twice), and LV11 is 133 MHz at the same voltage.
+	 * chip's group (ASV9). G925F needs its own values. The driver's
+	 * lowest level is LV9 (259 MHz), stock's default MIF QoS; LV10 and
+	 * LV11 stay listed for experiments (min_khz). Stock LV12 (100 MHz)
+	 * is left out: switching LV11 -> LV12 hangs this phone (test-79,
+	 * twice), and LV11 is 133 MHz at the same voltage.
 	 */
 	dmc: memory-controller@10800000 {
 		compatible = "samsung,exynos7420-dmc";

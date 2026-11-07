@@ -26,8 +26,16 @@
  *
  * Demand: a devfreq device with simple_ondemand on the DREX PPMUs (CPU
  * and general port of each channel; the busiest channel counts), plus
- * minimum rates from interconnect votes. The driver is an interconnect
- * provider with one node, which the display bus links to. The CPU floor
+ * minimum rates from interconnect votes. The lowest level in use is LV9
+ * (259 MHz), stock's default MIF QoS (exynos7_bus_mif.c, default_qos
+ * 518000/2): Samsung never ran LV10..LV12 in production. LV12 (100 MHz)
+ * hangs every switch into it (test-79). LV11 (133 MHz) hung the SoC on
+ * or shortly after a switch into it three times (test-182/183/185), and
+ * without a floor the SoC reset in s2idle cycles (test-126), while 226
+ * switches under load survived (test-189): the trigger is not pinned
+ * down. min_khz lowers the floor for experiments only. The driver is an
+ * interconnect provider with one node, which the display bus links to.
+ * The CPU floor
  * is memlat: every 10 ms the per-CPU PMU counters give each busy core's
  * clock (busy cycles per time) and its instructions per bus access; a
  * core under the ceiling waits on or streams to DRAM and gets the stock
@@ -73,6 +81,7 @@
 #include <linux/sched.h>
 #include <linux/seq_file.h>
 #include <linux/smp.h>
+#include <linux/string.h>
 #include <linux/workqueue.h>
 
 #define NR_CH			4
@@ -328,6 +337,7 @@ struct exynos7420_dmc {
 	bool can_switch;
 	unsigned int nr_switch;
 	s64 last_us, max_us;		/* switch_level() time */
+	s64 stage_us[5];		/* switch_level() stages, cumulative */
 	struct dentry *debugfs;
 
 	struct devfreq *df;
@@ -368,6 +378,21 @@ struct exynos7420_dmc {
 static bool trace;
 module_param(trace, bool, 0644);
 MODULE_PARM_DESC(trace, "log every level switch");
+
+/*
+ * /sys/module/exynos7420_dmc/parameters/min_khz: the lowest DRAM clock
+ * the governor may pick, stock's default MIF QoS (259 MHz, LV9). Lower
+ * values are for experiments: stock never used LV10 and LV11, LV11 has
+ * hung the SoC under fast clusters, and LV12 hangs every time.
+ */
+static unsigned int min_khz = 259000;
+module_param(min_khz, uint, 0644);
+MODULE_PARM_DESC(min_khz, "lowest DRAM clock in kHz (default 259000, stock's minimum)");
+
+/* /sys/module/exynos7420_dmc/parameters/memlat: 0 drops the CPU votes */
+static bool memlat_enabled = true;
+module_param_named(memlat, memlat_enabled, bool, 0644);
+MODULE_PARM_DESC(memlat, "vote DRAM from the per-CPU memlat samples (default 1)");
 
 /*
  * /sys/module/exynos7420_dmc/parameters/memlat_ipb: a core below this
@@ -623,12 +648,14 @@ static int switch_level(struct exynos7420_dmc *dmc, int lv)
 {
 	int old = dmc->cur, safe, safe_uv, ccore, final, ret;
 	unsigned long rate, safe_rate;
+	ktime_t t0 = ktime_get();
 	struct clk_hw *hw;
 	u32 vt;
 
 	if (lv < 0 || lv >= NR_LEVELS || old < 0 || !dmc->uv[lv])
 		return -EINVAL;
 	rate = levels[lv].khz * 2000;
+	memset(dmc->stage_us, 0, sizeof(dmc->stage_us));
 	if (!mux_ctrl_by_cmuc(dmc)) {
 		dev_err(dmc->dev, "MIF muxes not under CMU_TOPC control\n");
 		return -EIO;
@@ -677,6 +704,8 @@ static int switch_level(struct exynos7420_dmc *dmc, int lv)
 			goto abort;
 	}
 
+	/* stages: 0 prepared, 1 on the safe PLL, 2 MIF PLL set, 3 back, 4 done */
+	dmc->stage_us[0] = ktime_us_delta(ktime_get(), t0);
 	preset(dmc, safe, 1);
 	set_hpm_div(dmc, safe);
 	ret = clk_set_parent(dmc->mout_aclk_mif_pll, dmc->sclk_bus0_pll_mif);
@@ -686,6 +715,7 @@ static int switch_level(struct exynos7420_dmc *dmc, int lv)
 		ret = -ETIMEDOUT;
 		goto back;
 	}
+	dmc->stage_us[1] = ktime_us_delta(ktime_get(), t0);
 
 	/* The target voltage before the target clock */
 	ret = set_volt(dmc, max(safe_uv, dmc->uv[lv]));
@@ -694,6 +724,7 @@ static int switch_level(struct exynos7420_dmc *dmc, int lv)
 		if (ret)
 			dev_err(dmc->dev, "MIF PLL to %lu Hz: %d\n", rate, ret);
 	}
+	dmc->stage_us[2] = ktime_us_delta(ktime_get(), t0);
 
 back:
 	/* Return to the MIF PLL whatever failed, on the level it now feeds */
@@ -705,12 +736,14 @@ back:
 	if (clk_set_parent(dmc->mout_aclk_mif_pll, dmc->mout_topc_mif_pll) ||
 	    wait_pause(dmc))
 		goto stuck;
+	dmc->stage_us[3] = ktime_us_delta(ktime_get(), t0);
 	clk_disable_unprepare(dmc->sclk_bus0_pll_mif);
 	set_ccore(dmc, final);
 	vtmon_comp_restore(dmc, vt);
 	set_volt(dmc, dmc->uv[final]);
 	set_pbr(dmc, final < 4);
 	set_dsref_cycle(dmc, final);
+	dmc->stage_us[4] = ktime_us_delta(ktime_get(), t0);
 	dmc->cur = final;
 	dmc->nr_switch++;
 	return final == lv ? ret : (ret ?: -EIO);
@@ -764,10 +797,10 @@ static int state_show(struct seq_file *s, void *unused)
 		   clk_get_rate(dmc->dout_aclk_ccore_532),
 		   clk_get_rate(dmc->dout_aclk_ccore_133),
 		   dmc->cur_uv, regulator_get_voltage(dmc->vdd));
-	seq_printf(s, "load ppm %u %u %u %u, icc floor %u kHz, gpu floor %u kHz, cpu floor %u kHz\n",
+	seq_printf(s, "load ppm %u %u %u %u, icc floor %u kHz, gpu floor %u kHz, cpu floor %u kHz, min %u kHz\n",
 		   dmc->last_load[0], dmc->last_load[1], dmc->last_load[2],
 		   dmc->last_load[3], dmc->icc_khz, dmc->gpu_khz,
-		   dmc->cpu_khz);
+		   dmc->cpu_khz, READ_ONCE(min_khz));
 	for (ch = 0; ch < NR_CH; ch++) {
 		void __iomem *d = dmc->drex[ch];
 
@@ -807,7 +840,8 @@ static int level_of_khz(unsigned long khz)
 static int dmc_target(struct device *dev, unsigned long *freq, u32 flags)
 {
 	struct exynos7420_dmc *dmc = dev_get_drvdata(dev);
-	unsigned long floor = (unsigned long)READ_ONCE(dmc->floor_khz) * 1000;
+	unsigned long floor = (unsigned long)max(READ_ONCE(dmc->floor_khz),
+						 READ_ONCE(min_khz)) * 1000;
 	struct dev_pm_opp *opp;
 	int lv, ret = 0;
 
@@ -843,8 +877,12 @@ static int dmc_target(struct device *dev, unsigned long *freq, u32 flags)
 		if (ret)
 			dev_err(dev, "LV%d -> LV%d: %d\n", old, lv, ret);
 		else if (trace)
-			dev_info(dev, "LV%d -> LV%d, %lld us, vdd_mif %d uV\n",
-				 old, lv, dmc->last_us, dmc->cur_uv);
+			dev_info(dev, "LV%d -> LV%d, %lld us (%lld %lld %lld %lld %lld), vdd_mif %d uV, floor icc %u gpu %u cpu %u kHz\n",
+				 old, lv, dmc->last_us, dmc->stage_us[0],
+				 dmc->stage_us[1], dmc->stage_us[2],
+				 dmc->stage_us[3], dmc->stage_us[4],
+				 dmc->cur_uv, dmc->icc_khz, dmc->gpu_khz,
+				 dmc->cpu_khz);
 	}
 	if (dmc->cur >= 0)
 		*freq = levels[dmc->cur].khz * 1000;
@@ -1157,6 +1195,19 @@ static void dmc_memlat_sample(struct exynos7420_dmc *dmc)
 		dmc->ml_running = true;
 		dev_info(dmc->dev, "memlat: sampling every %d ms, IPB ceiling %u\n",
 			 MEMLAT_PERIOD_MS, ceil);
+	}
+
+	/* memlat=0: no CPU vote; look again every 100 ms without IPIs */
+	if (!READ_ONCE(memlat_enabled)) {
+		for_each_possible_cpu(cpu)
+			dmc->ml_cpu[cpu].vote = 0;
+		if (dmc->cpu_khz) {
+			dmc->cpu_khz = 0;
+			dmc_update_floor(dmc);
+		}
+		queue_delayed_work(dmc->ml_wq, &dmc->ml_idle_work,
+				   msecs_to_jiffies(10 * MEMLAT_PERIOD_MS));
+		return;
 	}
 
 	self = raw_smp_processor_id();
