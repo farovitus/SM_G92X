@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Samsung Galaxy S6 (SM-G920F) touchscreen supplies
+ *
+ * The STM FTS touchscreen takes its I/O rail from S2MPS15 LDO15 and its
+ * analog rail from S2MPB02 LDO17. Neither PMIC bus has a controller node
+ * here, so both are bit-banged on their stock pins.
+ */
+
+/ {
+	i2c-tsp-main-pmic {
+		compatible = "i2c-gpio";
+		sda-gpios = <&gpg3 0 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&gpg3 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		pmic@66 {
+			compatible = "samsung,s2mps15-pmic";
+			reg = <0x66>;
+
+			regulators {
+				tsp_io_ldo15: LDO15 {
+					regulator-name = "tsp_io";
+					regulator-min-microvolt = <1850000>;
+					regulator-max-microvolt = <1850000>;
+					regulator-always-on;
+					regulator-boot-on;
+				};
+			};
+		};
+	};
+
+	i2c-tsp-analog-pmic {
+		compatible = "i2c-gpio";
+		sda-gpios = <&gpd0 2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&gpd0 3 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		pmic@59 {
+			compatible = "samsung,s2mpb02";
+			reg = <0x59>;
+
+			regulators {
+				tsp_avdd_ldo17: ldo17 {
+					regulator-name = "tsp_avdd";
+					regulator-min-microvolt = <3300000>;
+					regulator-max-microvolt = <3300000>;
+					regulator-always-on;
+				};
+			};
+		};
+	};
+};

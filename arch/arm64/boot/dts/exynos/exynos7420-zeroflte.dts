@@ -1,0 +1,537 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Samsung Galaxy S6 (SM-G920F, zeroflte) device tree
+ *
+ * Exynos 7420, EUR single SIM, board revisions 00 to 07.
+ * Hardware facts are taken from the stock 3.10 kernel (exynos7420.dtsi,
+ * exynos7420-zero_common.dtsi, exynos7420-zeroflte_eur_open_*.dts).
+ */
+
+/dts-v1/;
+#include "exynos7.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include "exynos7420-zeroflte-touch-power.dtsi"
+
+/ {
+	model = "Samsung Galaxy S6 (SM-G920F)";
+	compatible = "samsung,zeroflte", "samsung,exynos7420",
+		     "samsung,exynos7";
+
+	aliases {
+		serial0 = &serial_4;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* Left running by S-Boot; DECON takes it over at bind. */
+		framebuffer@e2a00000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0xe2a00000 0x0 0x1000000>;
+			width = <1440>;
+			height = <2560>;
+			stride = <(1440 * 4)>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0x0 0x40000000 0x0 0xc0000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* S-Boot debug area */
+		sec-debug@40000000 {
+			reg = <0x0 0x40000000 0x0 0x10000>;
+			no-map;
+		};
+
+		ramoops@46d80000 {
+			compatible = "ramoops";
+			reg = <0x0 0x46d80000 0x0 0x80000>;
+			record-size = <0x10000>;
+			console-size = <0x40000>;
+			pmsg-size = <0x20000>;
+		};
+
+		/* TIMA and AVC logs written by the secure world */
+		tima@48002000 {
+			reg = <0x0 0x48002000 0x0 0x200000>;
+			no-map;
+		};
+
+		avc@48204000 {
+			reg = <0x0 0x48204000 0x0 0x40000>;
+			no-map;
+		};
+
+		framebuffer@e2a00000 {
+			reg = <0x0 0xe2a00000 0x0 0x1000000>;
+			no-map;
+		};
+
+		/* Secure world; stock /memreserve/ 0xfe800000 0x1800000 */
+		trustzone@fe800000 {
+			reg = <0x0 0xfe800000 0x0 0x1800000>;
+			no-map;
+		};
+	};
+
+	/*
+	 * Fixed stand-ins for the TOPC/TOP0/TOP1 outputs. Those CMUs are
+	 * disabled below, so S-Boot's PLL and divider setup stays as is;
+	 * the leaf CMUs find these parents by name.
+	 */
+	clocks {
+		aclk_peris_66: clock-aclk-peris-66 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <66000000>;
+			clock-output-names = "aclk_peris_66";
+		};
+
+		aclk_fsys0_200: clock-aclk-fsys0-200 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <200000000>;
+			clock-output-names = "aclk_fsys0_200";
+		};
+
+		sclk_mmc2: clock-sclk-mmc2 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <800000000>;
+			clock-output-names = "sclk_mmc2";
+		};
+
+		sclk_usbdrd300: clock-sclk-usbdrd300 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <50000000>;
+			clock-output-names = "sclk_usbdrd300";
+		};
+
+		aclk_fsys1_200: clock-aclk-fsys1-200 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <200000000>;
+			clock-output-names = "aclk_fsys1_200";
+		};
+
+		sclk_mmc0: clock-sclk-mmc0 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <800000000>;
+			clock-output-names = "sclk_mmc0";
+		};
+
+		sclk_mmc1: clock-sclk-mmc1 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <800000000>;
+			clock-output-names = "sclk_mmc1";
+		};
+
+		sclk_ufsunipro20: clock-sclk-ufsunipro20 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <166666667>;
+			clock-output-names = "sclk_ufsunipro20";
+		};
+
+		fin_pll_26m: clock-fin-pll-26m {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <26000000>;
+			clock-output-names = "fin_pll_26m";
+		};
+
+		sclk_phy_fsys1_26m: clock-sclk-phy-fsys1-26m {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <26000000>;
+			clock-output-names = "sclk_phy_fsys1_26m";
+		};
+
+		fout_aud_pll: clock-fout-aud-pll {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <196608000>;
+			clock-output-names = "fout_aud_pll";
+		};
+
+		aclk_disp_400: clock-aclk-disp-400 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <266666667>;
+			clock-output-names = "aclk_disp_400";
+		};
+
+		sclk_decon_int_eclk: clock-sclk-decon-int-eclk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <126000000>;
+			clock-output-names = "sclk_decon_int_eclk";
+		};
+
+		sclk_decon_vclk: clock-sclk-decon-vclk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <126000000>;
+			clock-output-names = "sclk_decon_vclk";
+		};
+
+		hsi2c7_clk: clock-hsi2c7 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <133000000>;
+			clock-output-names = "hsi2c7_pclk";
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys-polled";
+		poll-interval = <20>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&key_power_pins &key_volup_pins &key_voldown_pins
+			     &key_home_pins>;
+		status = "disabled";
+
+		key-power {
+			label = "Power";
+			gpios = <&gpa2 2 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_POWER>;
+		};
+
+		key-volume-up {
+			label = "Volume Up";
+			gpios = <&gpa0 2 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+		};
+
+		key-volume-down {
+			label = "Volume Down";
+			gpios = <&gpa0 3 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEDOWN>;
+		};
+
+		key-home {
+			label = "Home";
+			gpios = <&gpa0 5 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_HOMEPAGE>;
+		};
+	};
+
+	i2c_touchkey: i2c-touchkey {
+		compatible = "i2c-gpio";
+		sda-gpios = <&gpd1 2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&gpd1 3 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		touchkey@20 {
+			compatible = "cypress,mbr31x5-touchkey";
+			reg = <0x20>;
+			interrupt-parent = <&gpa0>;
+			interrupts = <0 IRQ_TYPE_EDGE_FALLING>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&touchkey_irq_pins>;
+			linux,keycodes = <KEY_APPSELECT KEY_BACK>;
+		};
+	};
+
+	/* Bus for the MAX77843 MUIC/charger/fuel gauge (stock hsi2c_1 pins) */
+	i2c_max77843: i2c-max77843 {
+		compatible = "i2c-gpio";
+		sda-gpios = <&gpd2 2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&gpd2 3 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+	/* PCIe channel 1, BCM4358 Wi-Fi */
+	pcie1: pcie@157b0000 {
+		compatible = "samsung,exynos7420-pcie";
+		reg = <0x0 0x157b0000 0x0 0x1000>,
+		      <0x0 0x15660000 0x0 0x1000>,
+		      <0x0 0x15630000 0x0 0x1000>,
+		      <0x0 0x1005265c 0x0 0x4>,
+		      <0x0 0x105c071c 0x0 0x4>,
+		      <0x0 0x156e0f00 0x0 0x4>,
+		      <0x0 0x156f00e4 0x0 0x4>,
+		      <0x0 0x156e0000 0x0 0xd00>,
+		      <0x0 0x1c000000 0x0 0x1000>;
+		reg-names = "dbi", "elbi", "phy", "block", "pmu", "cmu",
+			    "phy_pcs", "gates", "config";
+		interrupts = <GIC_SPI 205 IRQ_TYPE_LEVEL_HIGH>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+		device_type = "pci";
+		ranges = <0x82000000 0x0 0x1c011000 0x0 0x1c011000 0x0 0x3feefff>;
+		dma-ranges = <0x42000000 0x0 0x0 0x0 0x0 0x1 0x0>;
+		bus-range = <0x00 0xff>;
+		num-lanes = <1>;
+		perst-gpios = <&gpg2 0 GPIO_ACTIVE_LOW>;
+		wl-en-gpios = <&gpf4 6 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pcie1_clkreq &pcie1_perst &cfg_wlanen
+			     &wlan_host_wake>;
+	};
+};
+
+/* Leave the S-Boot root clock setup alone; see the stand-ins above. */
+&clock_topc {
+	status = "disabled";
+};
+
+&clock_top0 {
+	status = "disabled";
+};
+
+&clock_top1 {
+	status = "disabled";
+};
+
+&clock_ccore {
+	status = "disabled";
+};
+
+&clock_peric0 {
+	status = "disabled";
+};
+
+&clock_peric1 {
+	status = "disabled";
+};
+
+&clock_peris {
+	clocks = <&fin_pll>, <&aclk_peris_66>;
+};
+
+&clock_fsys0 {
+	clocks = <&fin_pll>, <&aclk_fsys0_200>, <&sclk_mmc2>;
+};
+
+&clock_fsys1 {
+	/* fin_pll_26m stands in for dout_sclk_phy_fsys1 (not used by name). */
+	clocks = <&fin_pll>, <&aclk_fsys1_200>, <&sclk_mmc0>, <&sclk_mmc1>,
+		 <&sclk_ufsunipro20>, <&fin_pll_26m>, <&sclk_phy_fsys1_26m>;
+};
+
+&cmu_aud {
+	clocks = <&fin_pll>, <&fout_aud_pll>;
+	status = "okay";
+};
+
+&cmu_disp {
+	clocks = <&fin_pll>, <&aclk_disp_400>, <&sclk_decon_int_eclk>,
+		 <&sclk_decon_vclk>;
+	status = "okay";
+};
+
+&cmu_g3d {
+	status = "okay";
+};
+
+&decon {
+	status = "okay";
+
+	/* Command-mode (i80) MIPI panel, S6E3HA2 */
+	i80-if-timings {
+	};
+
+	display-timings {
+		native-mode = <&decon_timing0>;
+
+		decon_timing0: timing-0 {
+			clock-frequency = <222371232>;
+			hactive = <1440>;
+			vactive = <2560>;
+			hfront-porch = <1>;
+			hback-porch = <1>;
+			hsync-len = <1>;
+			vfront-porch = <1>;
+			vback-porch = <15>;
+			vsync-len = <1>;
+		};
+	};
+};
+
+&fin_pll {
+	clock-frequency = <24000000>;
+};
+
+&gpu {
+	status = "okay";
+};
+
+&hsi2c_7 {
+	/* PCLK_HSI2C7 lives in the disabled CMU_PERIC1; S-Boot leaves it on. */
+	clocks = <&hsi2c7_clk>;
+	/delete-property/ pinctrl-names;
+	/delete-property/ pinctrl-0;
+	clock-frequency = <400000>;
+	status = "okay";
+
+	touchscreen@49 {
+		compatible = "st,stmfts";
+		reg = <0x49>;
+		interrupt-parent = <&gpa1>;
+		interrupts = <6 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&tsp_attn_pin>;
+		vdd-supply = <&tsp_io_ldo15>;
+		avdd-supply = <&tsp_avdd_ldo17>;
+		touchscreen-size-x = <4096>;
+		touchscreen-size-y = <4096>;
+	};
+};
+
+&mct {
+	status = "okay";
+};
+
+&pd_g3d {
+	status = "okay";
+};
+
+&pinctrl_alive {
+	key_power_pins: key-power-pins {
+		samsung,pins = "gpa2-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+	};
+
+	key_volup_pins: key-volup-pins {
+		samsung,pins = "gpa0-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+	};
+
+	key_voldown_pins: key-voldown-pins {
+		samsung,pins = "gpa0-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+	};
+
+	key_home_pins: key-home-pins {
+		samsung,pins = "gpa0-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+	};
+
+	touchkey_irq_pins: touchkey-irq-pins {
+		samsung,pins = "gpa0-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+	};
+
+	tsp_attn_pin: tsp-attn-pins {
+		samsung,pins = "gpa1-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	bt_host_wake: bt-host-wake-pins {
+		samsung,pins = "gpa2-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	wlan_host_wake: wlan-host-wake-pins {
+		samsung,pins = "gpa2-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+	};
+};
+
+&pinctrl_aud {
+	bt_uart_bus: bt-uart-bus-pins {
+		samsung,pins = "gpz1-0", "gpz1-1", "gpz1-2", "gpz1-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+	};
+};
+
+&pinctrl_bus1 {
+	bt_en_pin: bt-en-pins {
+		samsung,pins = "gpf4-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	pcie1_clkreq: pcie1-clkreq-pins {
+		samsung,pins = "gpf0-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+
+	pcie1_perst: pcie1-perst-pins {
+		samsung,pins = "gpg2-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+
+	cfg_wlanen: cfg-wlanen-pins {
+		samsung,pins = "gpf4-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+};
+
+&pinctrl_fsys1 {
+	bt_wake_pin: bt-wake-pins {
+		samsung,pins = "gpr3-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
+/* Bluetooth UART (BCM4358) */
+&serial_4 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&bt_uart_bus &bt_host_wake &bt_en_pin &bt_wake_pin>;
+	status = "okay";
+};
+
+&sysmmu_disp_ro {
+	status = "okay";
+};
+
+&sysmmu_disp_rw {
+	status = "okay";
+};
+
+&{/timer} {
+	/* S-Boot enters every CPU at EL1 and never programs CNTVOFF_EL2. */
+	arm,cpu-registers-not-fw-configured;
+};
+
+&ufs {
+	compatible = "samsung,exynos7420-ufs", "samsung,exynos7-ufs";
+	/* S-Boot has already configured the reset and refclk pins. */
+	/delete-property/ pinctrl-names;
+	/delete-property/ pinctrl-0;
+	status = "okay";
+};
+
+&usbdrd {
+	usb@0 {
+		dr_mode = "peripheral";
+		maximum-speed = "high-speed";
+	};
+};
