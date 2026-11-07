@@ -528,13 +528,64 @@ static int max77843_muic_adc_handler(struct max77843_muic_info *info)
 	return 0;
 }
 
+/* Drop the extcon states a plain charger type set when it was attached. */
+static void max77843_muic_chg_clear(struct max77843_muic_info *info,
+				    int chg_type)
+{
+	switch (chg_type) {
+	case MAX77843_MUIC_CHG_USB:
+		extcon_set_state_sync(info->edev, EXTCON_USB, false);
+		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_SDP, false);
+		break;
+	case MAX77843_MUIC_CHG_DOWNSTREAM:
+		extcon_set_state_sync(info->edev, EXTCON_USB, false);
+		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_CDP, false);
+		break;
+	case MAX77843_MUIC_CHG_DEDICATED:
+		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_DCP, false);
+		break;
+	case MAX77843_MUIC_CHG_SPECIAL_500MA:
+		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_SLOW, false);
+		break;
+	case MAX77843_MUIC_CHG_SPECIAL_1A:
+		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_FAST, false);
+		break;
+	default:
+		break;
+	}
+}
+
 static int max77843_muic_chg_handler(struct max77843_muic_info *info)
 {
-	int ret, chg_type, gnd_type;
+	int ret, chg_type, gnd_type, prev_chg_type;
 	bool attached;
 
+	/*
+	 * While charger detection runs, CHGTYP can report a passing type,
+	 * for example a dedicated charger while the data pins of a slowly
+	 * inserted micro-USB plug have not touched yet. Acting on it opens
+	 * the USB switch. The CHGDETRUN interrupt at the end of the run
+	 * brings us back with the final type.
+	 */
+	if (info->status[MAX77843_MUIC_STATUS2] &
+	    MAX77843_MUIC_STATUS2_CHGDETRUN_MASK)
+		return 0;
+
+	prev_chg_type = info->prev_chg_type;
 	chg_type = max77843_muic_get_cable_type(info,
 			MAX77843_CABLE_GROUP_CHG, &attached);
+
+	/*
+	 * CHGTYP can move from one attached type to another without passing
+	 * NONE. Detach the old type first, or its extcon states stay set
+	 * (USB and DCP online together).
+	 */
+	if (attached && prev_chg_type != MAX77843_MUIC_CHG_NONE &&
+	    prev_chg_type != chg_type) {
+		dev_info(info->dev, "charger type 0x%x -> 0x%x\n",
+			 prev_chg_type, chg_type);
+		max77843_muic_chg_clear(info, prev_chg_type);
+	}
 
 	dev_dbg(info->dev,
 		"external connector is %s(chg_type:0x%x, prev_chg_type:0x%x)\n",
@@ -554,12 +605,18 @@ static int max77843_muic_chg_handler(struct max77843_muic_info *info)
 					attached);
 		break;
 	case MAX77843_MUIC_CHG_DOWNSTREAM:
+		/*
+		 * A charging downstream port is a USB host port that also
+		 * supplies 1.5 A: keep D+/D- on the USB PHY, as for a
+		 * standard port, or the host loses the device.
+		 */
 		ret = max77843_muic_set_path(info,
-					     MAX77843_MUIC_CONTROL1_SW_OPEN,
+					     MAX77843_MUIC_CONTROL1_SW_USB,
 					     attached, false);
 		if (ret < 0)
 			return ret;
 
+		extcon_set_state_sync(info->edev, EXTCON_USB, attached);
 		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_CDP,
 					attached);
 		break;
