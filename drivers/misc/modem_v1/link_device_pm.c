@@ -858,8 +858,13 @@ int init_link_device_pm(struct link_device *ld,
 	 * Stock requested level-triggered IRQs and flipped the level in the
 	 * handler. Both edges with the level read in the handler give the
 	 * same events without irq_set_irq_type() from hard-IRQ context.
+	 *
+	 * The lines are wake IRQs (mif_request_irq() arms them), not
+	 * IRQF_NO_SUSPEND: the core then wakes the system on an edge and
+	 * replays it after resume_noirq, instead of running the link state
+	 * machine, and its link reload, while devices are suspended.
 	 */
-	flags = IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_NO_SUSPEND;
+	flags = IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
 
 	num = gpiod_to_irq(pm->gpio_cp2ap_wakeup);
 	if (num < 0) {

@@ -524,7 +524,7 @@ int ss333_init_modemctl_device(struct modem_ctl *mc, struct modem_data *pdata)
 
 	snprintf(name, MAX_NAME_LEN, "%s_active", mc->name);
 	mif_init_irq(&mc->irq_cp_active, irq, name,
-		     IRQF_TRIGGER_RISING | IRQF_NO_THREAD | IRQF_NO_SUSPEND);
+		     IRQF_TRIGGER_RISING | IRQF_NO_THREAD);
 	ret = mif_request_irq(mc->dev, &mc->irq_cp_active, cp_active_handler,
 			      mc);
 	if (ret) {
