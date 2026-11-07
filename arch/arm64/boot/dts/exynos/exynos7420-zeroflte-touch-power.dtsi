@@ -175,7 +175,7 @@
 			compatible = "samsung,s2mpb02";
 			reg = <0x59>;
 
-			regulators {
+			s2mpb02_regulators: regulators {
 				tsp_avdd_ldo17: ldo17 {
 					regulator-name = "tsp_avdd";
 					regulator-min-microvolt = <3300000>;

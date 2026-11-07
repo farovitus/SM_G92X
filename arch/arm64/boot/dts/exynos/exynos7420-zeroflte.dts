@@ -2361,3 +2361,152 @@
 		};
 	};
 };
+
+/*
+ * Camera modules. Rails on the S2MPB02, with the stock names and ranges:
+ * the rear module is the sensor plus the 73C2 companion, the front one the
+ * S5K4E6 ("VT"). BUCK1, LDO10 and LDO16 feed other parts and stay out.
+ */
+&s2mpb02_regulators {
+	cam_comp_core: buck2 {
+		regulator-name = "VDDD_CORE_0.8V_COMP";
+		regulator-min-microvolt = <650000>;
+		regulator-max-microvolt = <850000>;
+	};
+
+	cam_comp_noret: ldo1 {
+		regulator-name = "VDDD_NORET_0.9V_COMP";
+		regulator-min-microvolt = <900000>;
+		regulator-max-microvolt = <900000>;
+	};
+
+	cam_comp_core1: ldo2 {
+		regulator-name = "VDDD_CORE_1.0V_COMP";
+		regulator-min-microvolt = <1000000>;
+		regulator-max-microvolt = <1000000>;
+	};
+
+	cam_vddd: ldo3 {
+		regulator-name = "VDDD_1.2V_CAM";
+		regulator-min-microvolt = <1000000>;
+		regulator-max-microvolt = <1200000>;
+	};
+
+	cam_comp_ret: ldo4 {
+		regulator-name = "VDDD_RET_1.0V_COMP";
+		regulator-min-microvolt = <700000>;
+		regulator-max-microvolt = <1000000>;
+	};
+
+	vt_vddd: ldo5 {
+		regulator-name = "VDDD_1.2V_VT";
+		regulator-min-microvolt = <1200000>;
+		regulator-max-microvolt = <1200000>;
+	};
+
+	vt_vddio: ldo6 {
+		regulator-name = "VDDIO_1.8V_VT";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
+
+	cam_vddio: ldo7 {
+		regulator-name = "VDDIO_1.8V_CAM";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
+
+	cam_comp_vddio: ldo8 {
+		regulator-name = "VDDIO_1.8V_COMP";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
+
+	cam_comp_vdda: ldo9 {
+		regulator-name = "VDDA_1.8V_COMP";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
+
+	cam_vdda: ldo11 {
+		regulator-name = "VDDA_2.9V_CAM";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2950000>;
+	};
+
+	cam_vddaf: ldo12 {
+		regulator-name = "VDDAF_2.8V_CAM";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+	};
+
+	vt_vdda: ldo13 {
+		regulator-name = "VDDA_2.9V_VT";
+		regulator-min-microvolt = <2900000>;
+		regulator-max-microvolt = <2900000>;
+	};
+
+	cam_ois_vm: ldo14 {
+		regulator-name = "OIS_VM_2.8V";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+	};
+
+	cam_ois_vdd: ldo15 {
+		regulator-name = "OIS_VDD_2.8V";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+	};
+};
+
+&pinctrl_bus0 {
+	/* MCLK0 rear sensor, MCLK1 companion, MCLK2 front sensor */
+	cam_mclk01_off: cam-mclk01-off-pins {
+		samsung,pins = "gpd7-0", "gpd7-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+	};
+
+	cam_mclk2_off: cam-mclk2-off-pins {
+		samsung,pins = "gpd7-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+	};
+
+	cam_mclk01_on: cam-mclk01-on-pins {
+		samsung,pins = "gpd7-0", "gpd7-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	cam_mclk2_on: cam-mclk2-on-pins {
+		samsung,pins = "gpd7-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
+/ {
+	/*
+	 * The camera I2C pins belong to the ISP's own I2C blocks, which its
+	 * firmware drives on stock. The AP bit-bangs them, as stock already
+	 * does on the rear bus for the companion.
+	 */
+	cam_i2c0: i2c-cam0 {
+		compatible = "i2c-gpio";
+		sda-gpios = <&gpc2 0 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&gpc2 1 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+	cam_i2c1: i2c-cam1 {
+		compatible = "i2c-gpio";
+		sda-gpios = <&gpc2 2 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&gpc2 3 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+};
