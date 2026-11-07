@@ -306,6 +306,7 @@ struct sysmmu_drvdata {
 	bool has_vcr;			/* virtual machine control register */
 
 	bool wait_master;		/* enable only once the owner is ready */
+	bool fault_stalled;		/* unhandled fault: master held blocked */
 };
 
 #define SYSMMU_REG(data, reg) ((data)->sfrbase + (data)->variant->reg)
@@ -443,9 +444,11 @@ static struct exynos_iommu_domain *to_exynos_domain(struct iommu_domain *dom)
 	return container_of(dom, struct exynos_iommu_domain, domain);
 }
 
+/* A master stalled on an unhandled fault stays blocked, see the IRQ handler */
 static void sysmmu_unblock(struct sysmmu_drvdata *data)
 {
-	writel(CTRL_ENABLE, data->sfrbase + REG_MMU_CTRL);
+	writel(data->fault_stalled ? CTRL_BLOCK : CTRL_ENABLE,
+	       data->sfrbase + REG_MMU_CTRL);
 }
 
 static bool sysmmu_block(struct sysmmu_drvdata *data)
@@ -607,11 +610,20 @@ static irqreturn_t exynos_sysmmu_irq(int irq, void *dev_id)
 		ret = report_iommu_fault(&data->domain->domain, data->master,
 					 fault.addr, fault.type);
 	}
-	/* Log and resume: a panic here leaves no usable log on 7420 boards */
-	if (ret)
-		dev_err_ratelimited(data->sysmmu,
-				    "unhandled fault at %#x, resuming\n",
-				    fault.addr);
+	/*
+	 * The faulting transaction is stalled, and unblocking replays it: with
+	 * the page still unmapped it faults again at once, an interrupt storm
+	 * that locks up the CPU. Unless the master's fault handler fixed the
+	 * mapping, keep the SysMMU blocked. That stops the master's DMA until
+	 * the SysMMU is next disabled or enabled (the master's runtime PM),
+	 * instead of panicking as mainline does.
+	 */
+	if (ret) {
+		dev_err(data->sysmmu,
+			"%s: unhandled fault at %#x, master stalled\n",
+			dev_name(data->master), fault.addr);
+		data->fault_stalled = true;
+	}
 
 out:
 	writel(1 << itype, SYSMMU_REG(data, int_clear));
@@ -634,6 +646,7 @@ static void __sysmmu_disable(struct sysmmu_drvdata *data)
 	writel(CTRL_DISABLE, data->sfrbase + REG_MMU_CTRL);
 	writel(0, data->sfrbase + REG_MMU_CFG);
 	data->active = false;
+	data->fault_stalled = false;
 	spin_unlock_irqrestore(&data->lock, flags);
 
 	__sysmmu_disable_clocks(data);
@@ -684,6 +697,7 @@ static void __sysmmu_enable(struct sysmmu_drvdata *data)
 	__sysmmu_init_config(data);
 	__sysmmu_set_ptbase(data, data->pgtable);
 	__sysmmu_enable_vid(data);
+	data->fault_stalled = false;
 	writel(CTRL_ENABLE, data->sfrbase + REG_MMU_CTRL);
 	data->active = true;
 	spin_unlock_irqrestore(&data->lock, flags);
