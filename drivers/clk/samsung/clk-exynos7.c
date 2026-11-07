@@ -296,18 +296,21 @@ CLK_OF_DECLARE(exynos7_clk_topc, "samsung,exynos7-clock-topc",
 #define MUX_SEL_TOP01			0x0204
 #define MUX_SEL_TOP03			0x020C
 #define MUX_SEL_TOP0_DISP		0x0220
+#define MUX_SEL_TOP0_CAM11		0x0228
 #define MUX_SEL_TOP0_PERIC0		0x0230
 #define MUX_SEL_TOP0_PERIC1		0x0234
 #define MUX_SEL_TOP0_PERIC2		0x0238
 #define MUX_SEL_TOP0_PERIC3		0x023C
 #define DIV_TOP03			0x060C
 #define DIV_TOP0_DISP			0x0620
+#define DIV_TOP0_CAM11			0x0628
 #define DIV_TOP0_PERIC0			0x0630
 #define DIV_TOP0_PERIC1			0x0634
 #define DIV_TOP0_PERIC2			0x0638
 #define DIV_TOP0_PERIC3			0x063C
 #define ENABLE_ACLK_TOP03		0x080C
 #define ENABLE_SCLK_TOP0_DISP		0x0A20
+#define ENABLE_SCLK_TOP0_CAM11		0x0A28
 #define ENABLE_SCLK_TOP0_PERIC0		0x0A30
 #define ENABLE_SCLK_TOP0_PERIC1		0x0A34
 #define ENABLE_SCLK_TOP0_PERIC2		0x0A38
@@ -332,6 +335,9 @@ PNAME(mout_top0_mfc_pll_half_p) = {"mout_top0_mfc_pll_user",
 PNAME(mout_top0_group1) = {"mout_top0_bus0_pll_half",
 	"mout_top0_bus1_pll_half", "mout_top0_cc_pll_half",
 	"mout_top0_mfc_pll_half"};
+/* Camera sensor master clocks (MCLK0-2) */
+PNAME(mout_top0_isp_sensor_p) = {"mout_top0_bus0_pll_user",
+	"mout_top0_bus1_pll_user", "mout_top0_cc_pll_user", "fin_pll"};
 PNAME(mout_top0_group3) = {"ioclk_audiocdclk0",
 	"ioclk_audiocdclk1", "ioclk_spdif_extclk",
 	"mout_top0_aud_pll_user", "mout_top0_bus0_pll_half",
@@ -344,18 +350,21 @@ static const unsigned long top0_clk_regs[] __initconst = {
 	MUX_SEL_TOP01,
 	MUX_SEL_TOP03,
 	MUX_SEL_TOP0_DISP,
+	MUX_SEL_TOP0_CAM11,
 	MUX_SEL_TOP0_PERIC0,
 	MUX_SEL_TOP0_PERIC1,
 	MUX_SEL_TOP0_PERIC2,
 	MUX_SEL_TOP0_PERIC3,
 	DIV_TOP03,
 	DIV_TOP0_DISP,
+	DIV_TOP0_CAM11,
 	DIV_TOP0_PERIC0,
 	DIV_TOP0_PERIC1,
 	DIV_TOP0_PERIC2,
 	DIV_TOP0_PERIC3,
 	ENABLE_ACLK_TOP03,
 	ENABLE_SCLK_TOP0_DISP,
+	ENABLE_SCLK_TOP0_CAM11,
 	ENABLE_SCLK_TOP0_PERIC0,
 	ENABLE_SCLK_TOP0_PERIC1,
 	ENABLE_SCLK_TOP0_PERIC2,
@@ -393,6 +402,13 @@ static const struct samsung_mux_clock top0_mux_clks[] __initconst = {
 	MUX(CLK_MOUT_SCLK_DECON_INT_ECLK, "mout_sclk_decon_int_eclk",
 		mout_top0_group1, MUX_SEL_TOP0_DISP, 28, 2),
 
+	MUX(CLK_MOUT_SCLK_ISP_SENSOR0, "mout_sclk_isp_sensor0",
+		mout_top0_isp_sensor_p, MUX_SEL_TOP0_CAM11, 16, 2),
+	MUX(CLK_MOUT_SCLK_ISP_SENSOR1, "mout_sclk_isp_sensor1",
+		mout_top0_isp_sensor_p, MUX_SEL_TOP0_CAM11, 8, 2),
+	MUX(CLK_MOUT_SCLK_ISP_SENSOR2, "mout_sclk_isp_sensor2",
+		mout_top0_isp_sensor_p, MUX_SEL_TOP0_CAM11, 0, 2),
+
 	MUX(0, "mout_sclk_spdif", mout_top0_group3, MUX_SEL_TOP0_PERIC0, 4, 3),
 	MUX(0, "mout_sclk_pcm1", mout_top0_group4, MUX_SEL_TOP0_PERIC0, 8, 2),
 	MUX(0, "mout_sclk_i2s1", mout_top0_group4, MUX_SEL_TOP0_PERIC0, 20, 2),
@@ -421,6 +437,13 @@ static const struct samsung_div_clock top0_div_clks[] __initconst = {
 		"mout_sclk_decon_vclk", DIV_TOP0_DISP, 20, 4),
 	DIV(CLK_DOUT_SCLK_DECON_INT_ECLK, "dout_sclk_decon_int_eclk",
 		"mout_sclk_decon_int_eclk", DIV_TOP0_DISP, 28, 4),
+
+	DIV(CLK_DOUT_SCLK_ISP_SENSOR0, "dout_sclk_isp_sensor0",
+		"mout_sclk_isp_sensor0", DIV_TOP0_CAM11, 16, 8),
+	DIV(CLK_DOUT_SCLK_ISP_SENSOR1, "dout_sclk_isp_sensor1",
+		"mout_sclk_isp_sensor1", DIV_TOP0_CAM11, 8, 8),
+	DIV(CLK_DOUT_SCLK_ISP_SENSOR2, "dout_sclk_isp_sensor2",
+		"mout_sclk_isp_sensor2", DIV_TOP0_CAM11, 0, 8),
 
 	DIV(0, "dout_sclk_spdif", "mout_sclk_spdif", DIV_TOP0_PERIC0, 4, 4),
 	DIV(0, "dout_sclk_pcm1", "mout_sclk_pcm1", DIV_TOP0_PERIC0, 8, 12),
@@ -460,6 +483,12 @@ static const struct samsung_gate_clock top0_gate_clks[] __initconst = {
 	GATE(CLK_SCLK_DECON_INT_ECLK, "sclk_decon_int_eclk",
 		"dout_sclk_decon_int_eclk", ENABLE_SCLK_TOP0_DISP, 28,
 		CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_SCLK_ISP_SENSOR0, "sclk_isp_sensor0", "dout_sclk_isp_sensor0",
+		ENABLE_SCLK_TOP0_CAM11, 16, CLK_SET_RATE_PARENT, 0),
+	GATE(CLK_SCLK_ISP_SENSOR1, "sclk_isp_sensor1", "dout_sclk_isp_sensor1",
+		ENABLE_SCLK_TOP0_CAM11, 8, CLK_SET_RATE_PARENT, 0),
+	GATE(CLK_SCLK_ISP_SENSOR2, "sclk_isp_sensor2", "dout_sclk_isp_sensor2",
+		ENABLE_SCLK_TOP0_CAM11, 0, CLK_SET_RATE_PARENT, 0),
 
 	GATE(CLK_SCLK_SPDIF, "sclk_spdif", "dout_sclk_spdif",
 		ENABLE_SCLK_TOP0_PERIC0, 4, CLK_SET_RATE_PARENT, 0),
