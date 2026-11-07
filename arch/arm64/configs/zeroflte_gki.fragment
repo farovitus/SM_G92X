@@ -297,3 +297,69 @@ CONFIG_SEC_MODEM_SS333=y
 
 # Entropy: the secure-world TRNG seeds the CRNG before /init.
 CONFIG_HW_RANDOM_EXYNOS7420_SWD=y
+
+# Room in BOOT: drop what this phone cannot use. log_buf_len=4M in the
+# cmdline reallocates the log buffer early, so the 128 KB static one (and
+# its 450 KB of record tables) only has to cover the first lines.
+CONFIG_LOG_BUF_SHIFT=12
+# /data is ext4 (f2fs without the compress option is the alternative),
+# zram uses lz4 and the ramdisk is xz: nothing reads or writes zstd.
+# CONFIG_F2FS_FS_ZSTD is not set
+# CONFIG_CRYPTO_ZSTD is not set
+# Non-A/B, no dm devices: no snapshots, checkpoint or userspace snapshot
+# daemon; no erofs images; no RAM, ublk or network-emulation test devices.
+# CONFIG_DM_SNAPSHOT is not set
+# CONFIG_DM_BOW is not set
+# CONFIG_DM_USER is not set
+# CONFIG_EROFS_FS is not set
+# CONFIG_BLK_DEV_RAM is not set
+# CONFIG_BLK_DEV_UBLK is not set
+# CONFIG_NET_SCH_NETEM is not set
+# No camera driver, and Android 13 has no USB webcam or webcam-gadget
+# support configured here: the V4L2 and media stack has no user. GKI
+# forces it, with other groups, through GKI_HACKS_TO_FIX for vendor
+# modules built out of tree; every module here is built in this tree,
+# so keep only the groups the board or Android uses: XFRM (Android's
+# network tests), crypto engine, DRM helpers, regmap IRQ/MMIO, sound,
+# UFS, pinctrl/GPIO, wireless extensions, USB PHY, SoC bus, GPU memory
+# tracing, IRQ domains, page pool/devlink, MIPI D-PHY and DMA. Media,
+# CAN, Qualcomm, MMC, virtio, RPMSG, hypervisor and balloon stay out.
+# CONFIG_GKI_HACKS_TO_FIX is not set
+CONFIG_GKI_NET_XFRM_HACKS=y
+CONFIG_GKI_HIDDEN_CRYPTO_CONFIGS=y
+CONFIG_GKI_HIDDEN_DRM_CONFIGS=y
+CONFIG_GKI_HIDDEN_REGMAP_CONFIGS=y
+CONFIG_GKI_HIDDEN_SND_CONFIGS=y
+CONFIG_GKI_HIDDEN_SND_SOC_CONFIGS=y
+CONFIG_GKI_HIDDEN_UFS_CONFIGS=y
+CONFIG_GKI_HIDDEN_GPIO_CONFIGS=y
+CONFIG_GKI_LEGACY_WEXT_ALLCONFIG=y
+CONFIG_GKI_HIDDEN_USB_CONFIGS=y
+CONFIG_GKI_HIDDEN_SOC_BUS_CONFIGS=y
+CONFIG_GKI_HIDDEN_GPU_CONFIGS=y
+CONFIG_GKI_HIDDEN_IRQ_CONFIGS=y
+CONFIG_GKI_HIDDEN_NET_CONFIGS=y
+CONFIG_GKI_HIDDEN_PHY_CONFIGS=y
+CONFIG_GKI_HIDDEN_DMA_CONFIGS=y
+# CONFIG_GKI_HIDDEN_MEDIA_CONFIGS is not set
+# CONFIG_GKI_HIDDEN_MCP251XFD_CONFIGS is not set
+# CONFIG_GKI_HIDDEN_QCOM_CONFIGS is not set
+# CONFIG_GKI_HIDDEN_MMC_CONFIGS is not set
+# CONFIG_GKI_HIDDEN_VIRTUAL_CONFIGS is not set
+# CONFIG_GKI_HIDDEN_RPMSG_CONFIGS is not set
+# CONFIG_GKI_HIDDEN_HYPERVISOR_CONFIGS is not set
+# CONFIG_GKI_HIDDEN_MM_CONFIGS is not set
+# CONFIG_MEDIA_SUPPORT is not set
+# Only the Samsung UART exists; the DRD controller has no EHCI companion;
+# there is no DisplayPort; the only PCIe device is the Wi-Fi chip on the
+# Exynos 7420 root complex, with no endpoint mode.
+# CONFIG_SERIAL_8250 is not set
+# CONFIG_SERIAL_AMBA_PL011 is not set
+# CONFIG_SERIAL_SPRD is not set
+# CONFIG_USB_EHCI_HCD is not set
+# CONFIG_DRM_EXYNOS_DP is not set
+# CONFIG_PCIE_KIRIN is not set
+# CONFIG_PCI_HOST_GENERIC is not set
+# CONFIG_PCI_ENDPOINT is not set
+# CONFIG_SCSI_UFSHCD_PCI is not set
+# CONFIG_SND_PCI is not set
