@@ -296,6 +296,7 @@ static void exynos7_pmu_init(void)
 	register_reboot_notifier(&exynos7_pmu_reboot_nb);
 	register_sys_off_handler(SYS_OFF_MODE_POWER_OFF, SYS_OFF_PRIO_HIGH,
 				 exynos7_pmu_power_off, NULL);
+	exynos7_pm_init();
 }
 
 static const struct exynos_pmu_data exynos7_pmu_data = {

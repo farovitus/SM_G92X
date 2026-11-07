@@ -12,6 +12,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/interconnect.h>
+#include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -96,6 +97,8 @@ struct decon_context {
 	unsigned long			irq_flags;
 	bool				i80_if;
 	bool				bootloader_display;
+	u32				sleep_trigcon;
+	bool				sleep_stopped;
 	wait_queue_head_t		wait_vsync_queue;
 	atomic_t			wait_vsync_event;
 
@@ -1353,23 +1356,86 @@ err_pclk_enable:
 	return ret;
 }
 
+#define DECON_VSTATUS_MASK		(0x7 << 13)
+
+/*
+ * In command mode with the TE trigger enabled (TRIGCON HWTRIGMASK_DISPIF0
+ * set), DECON fetches a whole frame from DRAM on every TE pulse, screen on
+ * or off. That traffic keeps the memory interface busy, so the SoC cannot
+ * enter sleep. Stop it the way Samsung's decon_reg_stop() did for command
+ * mode: disable the TE trigger, let the current frame finish, then clear
+ * ENVID and wait for DECON to report stopped. Without the software reset
+ * Samsung followed it with, the configuration survives for the restart.
+ */
+static void exynos7_decon_stop_output(struct decon_context *ctx)
+{
+	u32 val;
+	int ret;
+
+	val = readl(ctx->regs + VIDCON0);
+	ctx->sleep_stopped = false;
+	if (!(val & VIDCON0_DECON_STOP_STATUS))
+		return;
+
+	ctx->sleep_trigcon = readl(ctx->regs + TRIGCON);
+	writel(ctx->sleep_trigcon & ~(TRIGCON_HWTRIGMASK_DISPIF0 |
+				      TRIGCON_HWTRIGMASK_DISPIF1),
+	       ctx->regs + TRIGCON);
+
+	ret = readl_poll_timeout(ctx->regs + VIDCON1(0), val,
+				 !VIDCON1_LINECNT_GET(val) &&
+				 !(val & DECON_VSTATUS_MASK), 10, 50000);
+	if (ret)
+		dev_warn(ctx->dev, "frame did not finish: VIDCON1 %#x\n", val);
+
+	writel(readl(ctx->regs + VIDCON0) &
+	       ~(VIDCON0_ENVID | VIDCON0_ENVID_F), ctx->regs + VIDCON0);
+	ret = readl_poll_timeout(ctx->regs + VIDCON0, val,
+				 !(val & VIDCON0_DECON_STOP_STATUS), 10, 20000);
+	if (ret)
+		dev_warn(ctx->dev, "did not stop: VIDCON0 %#x\n", val);
+	ctx->sleep_stopped = true;
+	dev_dbg(ctx->dev, "output stopped for sleep (TRIGCON %#x)\n",
+		 ctx->sleep_trigcon);
+}
+
+static void exynos7_decon_start_output(struct decon_context *ctx)
+{
+	if (!ctx->sleep_stopped)
+		return;
+
+	writel(readl(ctx->regs + VIDCON0) | VIDCON0_ENVID | VIDCON0_ENVID_F,
+	       ctx->regs + VIDCON0);
+	writel(ctx->sleep_trigcon, ctx->regs + TRIGCON);
+	ctx->sleep_stopped = false;
+	dev_dbg(ctx->dev, "output restarted after sleep\n");
+}
+
 /*
  * With "samsung,bootloader-display" the DSI link and panel are only set up
  * by the bootloader. Gating DECON's clocks through system sleep stalled the
- * panel after resume (one frame, then no frame-done), so keep them running.
+ * panel after resume (one frame, then no frame-done), so keep them running;
+ * only the frame fetch is stopped.
  */
 static int exynos7_decon_sys_suspend(struct device *dev)
 {
 	struct decon_context *ctx = dev_get_drvdata(dev);
 
-	return ctx->bootloader_display ? 0 : pm_runtime_force_suspend(dev);
+	if (!ctx->bootloader_display)
+		return pm_runtime_force_suspend(dev);
+	if (ctx->i80_if && pm_runtime_active(dev))
+		exynos7_decon_stop_output(ctx);
+	return 0;
 }
 
 static int exynos7_decon_sys_resume(struct device *dev)
 {
 	struct decon_context *ctx = dev_get_drvdata(dev);
 
-	return ctx->bootloader_display ? 0 : pm_runtime_force_resume(dev);
+	if (!ctx->bootloader_display)
+		return pm_runtime_force_resume(dev);
+	exynos7_decon_start_output(ctx);
+	return 0;
 }
 
 static const struct dev_pm_ops exynos7_decon_pm_ops = {
