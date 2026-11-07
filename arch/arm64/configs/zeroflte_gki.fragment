@@ -92,11 +92,16 @@ CONFIG_TRUSTONIC_MOBICORE=y
 # PCIe (BCM4358 Wi-Fi)
 CONFIG_PCI_EXYNOS7420=y
 # Wi-Fi: mainline brcmfmac drives the BCM4358 over PCIe, with the
-# firmware and NVRAM from the ROM. cfg80211 and the driver are modules the
-# ROM loads, because BOOT has no room for them in the Image.
-CONFIG_CFG80211=m
+# firmware and NVRAM from the ROM. Built in, so the driver always matches
+# the Image (cfg80211 built in needs rfkill built in too).
+CONFIG_RFKILL=y
+CONFIG_CFG80211=y
 CONFIG_WLAN_VENDOR_BROADCOM=y
-CONFIG_BRCMFMAC=m
+CONFIG_BRCMFMAC=y
+# The built-in driver requests its firmware while probing, before /vendor
+# is mounted. Let each request wait for ueventd, which serves it from
+# /vendor/firmware once it runs, instead of failing at once.
+CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y
 CONFIG_BRCMFMAC_PCIE=y
 # CONFIG_BRCMFMAC_USB is not set
 
