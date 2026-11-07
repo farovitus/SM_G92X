@@ -494,7 +494,13 @@ static void scsi_report_sense(struct scsi_device *sdev,
 				    "threshold.\n");
 		}
 
-		if (sshdr->asc == 0x29) {
+		if (sshdr->asc == 0x29 && sdev->expect_power_on_ua) {
+			/*
+			 * The LLD reset the device itself (power management);
+			 * do not report it to userspace as a reset.
+			 */
+			sdev->expect_power_on_ua = 0;
+		} else if (sshdr->asc == 0x29) {
 			evt_type = SDEV_EVT_POWER_ON_RESET_OCCURRED;
 			/*
 			 * Do not print message if it is an expected side-effect

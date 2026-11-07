@@ -9997,6 +9997,20 @@ static int __ufshcd_wl_resume(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 	}
 
 	/*
+	 * A link-off suspend power-cycles the device, so each LU holds a
+	 * POWER ON RESET unit attention. Each SDEV_EVT_POWER_ON_RESET_OCCURRED
+	 * is a KOBJ_CHANGE uevent, and Android's health HAL holds a wakeup
+	 * source for every uevent, which aborts the next suspend attempt.
+	 * The reset is ours: mark it expected so SCSI consumes it quietly.
+	 */
+	if (old_link_state == UIC_LINK_OFF_STATE) {
+		struct scsi_device *sdev;
+
+		shost_for_each_device(sdev, hba->host)
+			sdev->expect_power_on_ua = 1;
+	}
+
+	/*
 	 * After a link-off suspend the device comes back from a power-on
 	 * reset and holds a POWER ON RESET unit attention on the device
 	 * W-LUN, which nothing else addresses. Left pending, it fails the
