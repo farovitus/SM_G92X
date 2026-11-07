@@ -160,8 +160,8 @@ CONFIG_LTO_NONE=y
 
 # S-Boot's arguments follow this string (CMDLINE_EXTEND). GKI's defaults
 # without the pKVM ones, plus what the port needs: S-Boot's display clocks
-# and power domains stay on. Permissive SELinux is for the boot tests;
-# Android keeps the first androidboot.selinux, so S-Boot's enforcing loses.
+# and power domains stay on. No androidboot.selinux here: Android keeps
+# the first one it finds, and S-Boot's enforcing must be that one.
 # The kernel keeps the last loglevel, S-Boot's 4, so ignore_loglevel keeps
 # every message in the RAM log. log_buf_len keeps the kernel's boot
 # messages through Android's /dev/kmsg traffic, and dsh_autorecovery
@@ -169,7 +169,7 @@ CONFIG_LTO_NONE=y
 # unless userspace cancels it once the boot completes. The hardware
 # watchdog runs from its probe (s3c2410_wdt.tmr_atboot). firmware_class.path
 # lets drivers such as brcmfmac load firmware straight from /vendor/firmware.
-CONFIG_CMDLINE="stack_depot_disable=on cgroup_disable=pressure kasan.stacktrace=off bootconfig clk_ignore_unused pd_ignore_unused deferred_probe_timeout=0 rodata=on loglevel=8 printk.devkmsg=on androidboot.selinux=permissive ignore_loglevel log_buf_len=4M dsh_autorecovery=150 s3c2410_wdt.tmr_atboot=1 firmware_class.path=/vendor/firmware"
+CONFIG_CMDLINE="stack_depot_disable=on cgroup_disable=pressure kasan.stacktrace=off bootconfig clk_ignore_unused pd_ignore_unused deferred_probe_timeout=0 rodata=on loglevel=8 printk.devkmsg=on ignore_loglevel log_buf_len=4M dsh_autorecovery=150 s3c2410_wdt.tmr_atboot=1 firmware_class.path=/vendor/firmware"
 
 # Size: the Image must fit the 28 MiB BOOT partition with the ROM ramdisk.
 # The A57/A53 have no pointer authentication, so the PAC-to-SCS patching
