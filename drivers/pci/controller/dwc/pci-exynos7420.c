@@ -17,6 +17,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
 #include <linux/suspend.h>
@@ -41,6 +42,9 @@
 #define PCIE_LTSSM_STATE_MASK		0x1f
 #define PCIE_LTSSM_L0			0x0d
 #define PCIE_LTSSM_L2_IDLE		0x15
+#define PCIE_PM_DSTATE			0x088
+#define PCIE_PM_DSTATE_MASK		0x7
+#define PCIE_D0_UNINIT			0x4
 #define PCIE_CORE_RESETN_DISABLE	0x0f0
 #define PCIE_APP_REQ_EXIT_L1_MODE	0x0f4
 #define PCIE_PCS_GLOBAL_RESET		0x130
@@ -121,8 +125,14 @@ struct exynos7420_pcie {
 	struct gpio_desc	*perst_gpio;
 	struct gpio_desc	*wlen_gpio;
 	int			irq;
-	/* the link was powered off for system sleep */
-	bool			sleep_off;
+	/* WAKE pin pull states of the link reset pulse, if the DT has them */
+	struct pinctrl		*pinctrl;
+	struct pinctrl_state	*pins_default;
+	struct pinctrl_state	*pins_link_reset;
+	/* the controller clocks and PHY are on, registers may be touched */
+	bool			powered;
+	/* the link was put into reset for system sleep */
+	bool			asleep;
 
 	/* L1-exit request around DBI and config accesses, may nest */
 	raw_spinlock_t		l1_lock;
@@ -133,6 +143,15 @@ struct exynos7420_pcie {
 };
 
 #define to_exynos7420_pcie(x)	dev_get_drvdata((x)->dev)
+
+static bool link_reset_pulse = true;
+module_param(link_reset_pulse, bool, 0644);
+MODULE_PARM_DESC(link_reset_pulse,
+		 "pulse the WAKE pin before each link training after sleep");
+
+static unsigned int retrain_tries = 10;
+module_param(retrain_tries, uint, 0644);
+MODULE_PARM_DESC(retrain_tries, "link training attempts after sleep");
 
 static void exynos7420_pcie_l1_exit_get(struct exynos7420_pcie *ep)
 {
@@ -164,6 +183,9 @@ static u32 exynos7420_pcie_read_dbi(struct dw_pcie *pci, void __iomem *base,
 	struct exynos7420_pcie *ep = to_exynos7420_pcie(pci);
 	u32 val;
 
+	if (!ep->powered)
+		return ~0U;
+
 	exynos7420_pcie_l1_exit_get(ep);
 	dw_pcie_read(base + reg, size, &val);
 	exynos7420_pcie_l1_exit_put(ep);
@@ -175,6 +197,9 @@ static void exynos7420_pcie_write_dbi(struct dw_pcie *pci, void __iomem *base,
 				      u32 reg, size_t size, u32 val)
 {
 	struct exynos7420_pcie *ep = to_exynos7420_pcie(pci);
+
+	if (!ep->powered)
+		return;
 
 	exynos7420_pcie_l1_exit_get(ep);
 	dw_pcie_write(base + reg, size, val);
@@ -194,6 +219,11 @@ static int exynos7420_pcie_rd_own_conf(struct pci_bus *bus, unsigned int devfn,
 	struct exynos7420_pcie *ep = bus_to_exynos7420_pcie(bus);
 	int ret;
 
+	if (!ep->powered) {
+		PCI_SET_ERROR_RESPONSE(val);
+		return PCIBIOS_DEVICE_NOT_FOUND;
+	}
+
 	exynos7420_pcie_l1_exit_get(ep);
 	ret = pci_generic_config_read(bus, devfn, where, size, val);
 	exynos7420_pcie_l1_exit_put(ep);
@@ -206,6 +236,9 @@ static int exynos7420_pcie_wr_own_conf(struct pci_bus *bus, unsigned int devfn,
 {
 	struct exynos7420_pcie *ep = bus_to_exynos7420_pcie(bus);
 	int ret;
+
+	if (!ep->powered)
+		return PCIBIOS_DEVICE_NOT_FOUND;
 
 	exynos7420_pcie_l1_exit_get(ep);
 	ret = pci_generic_config_write(bus, devfn, where, size, val);
@@ -266,8 +299,13 @@ static int exynos7420_pcie_wr_other_conf(struct pci_bus *bus,
 static int exynos7420_pcie_link_up(struct dw_pcie *pci)
 {
 	struct exynos7420_pcie *ep = to_exynos7420_pcie(pci);
-	u32 state = readl(ep->elbi_base + PCIE_ELBI_RDLH_LINKUP) &
-		    PCIE_LTSSM_STATE_MASK;
+	u32 state;
+
+	if (!ep->powered)
+		return 0;
+
+	state = readl(ep->elbi_base + PCIE_ELBI_RDLH_LINKUP) &
+		PCIE_LTSSM_STATE_MASK;
 
 	return state >= PCIE_LTSSM_L0 && state <= PCIE_LTSSM_L2_IDLE;
 }
@@ -403,6 +441,7 @@ static void exynos7420_pcie_power_up(struct exynos7420_pcie *ep)
 	msleep(100);
 
 	exynos7420_pcie_phy_power_on(ep);
+	ep->powered = true;
 
 	exynos7420_pcie_irq_mask_all(ep);
 }
@@ -435,6 +474,7 @@ static void exynos7420_pcie_power_off(struct exynos7420_pcie *ep)
 {
 	gpiod_set_value_cansleep(ep->perst_gpio, 1);
 	writel(0, ep->elbi_base + PCIE_APP_LTSSM_ENABLE);
+	ep->powered = false;
 	exynos7420_pcie_phy_power_off(ep);
 	gpiod_set_value_cansleep(ep->wlen_gpio, 0);
 
@@ -572,6 +612,20 @@ static int exynos7420_pcie_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(ep->wlen_gpio),
 				     "failed to get wl-en gpio\n");
 
+	/* The WAKE pin pull states of the link reset pulse, when the DT has them */
+	ep->pinctrl = devm_pinctrl_get(dev);
+	if (!IS_ERR(ep->pinctrl)) {
+		ep->pins_default = pinctrl_lookup_state(ep->pinctrl,
+							PINCTRL_STATE_DEFAULT);
+		ep->pins_link_reset = pinctrl_lookup_state(ep->pinctrl,
+							   "pcie_reset");
+		if (IS_ERR(ep->pins_default) || IS_ERR(ep->pins_link_reset)) {
+			dev_info(dev, "no link reset pin state, not pulsing WAKE\n");
+			ep->pins_default = NULL;
+			ep->pins_link_reset = NULL;
+		}
+	}
+
 	ep->irq = platform_get_irq(pdev, 0);
 	if (ep->irq < 0)
 		return ep->irq;
@@ -649,29 +703,98 @@ static void exynos7420_pcie_pme_turn_off(struct exynos7420_pcie *ep)
 		writel(saved[i], ep->phy_base + PHY_REG(phy_reg[i]));
 }
 
+#define PCIE_PERST_RETRY_DELAY_MS	15
+#define PCIE_LINK_RESET_PULSE_US	20
+#define PCIE_RETRAIN_WAIT_US		20000
+
 /*
- * An active link keeps the PCIe PHY and FSYS1 busy, and the SoC cannot
- * power down with it. Samsung's kernel sent PME_Turn_Off and held PERST
- * through sleep; here the whole link is powered off, as on remove, and
- * brought up again from scratch on resume, as on probe.
+ * Samsung's "link reset by using wake pin": the WAKE# line is pulled down
+ * for a moment and released again before the link is trained after sleep.
+ */
+static void exynos7420_pcie_link_reset_pulse(struct exynos7420_pcie *ep)
+{
+	if (!link_reset_pulse || !ep->pins_link_reset)
+		return;
+
+	pinctrl_select_state(ep->pinctrl, ep->pins_link_reset);
+	udelay(PCIE_LINK_RESET_PULSE_US);
+	pinctrl_select_state(ep->pinctrl, ep->pins_default);
+}
+
+/*
+ * Train the link again after sleep the way Samsung's exynos_pcie_reset()
+ * did: a short wait per attempt, and a full PERST cycle with the PHY set
+ * up from scratch before the next one.
+ */
+static int exynos7420_pcie_retrain(struct exynos7420_pcie *ep)
+{
+	struct dw_pcie *pci = &ep->pci;
+	struct device *dev = pci->dev;
+	void __iomem *elbi = ep->elbi_base;
+	unsigned int tries = max(retrain_tries, 1U);
+	unsigned int i;
+	u32 val, dstate;
+	int ret;
+
+	for (i = 0; i < tries; i++) {
+		if (i) {
+			gpiod_set_value_cansleep(ep->perst_gpio, 1);
+			exynos7420_pcie_stop_link(pci);
+			msleep(PCIE_PERST_RETRY_DELAY_MS);
+		}
+		exynos7420_pcie_link_reset_pulse(ep);
+		exynos7420_pcie_hw_init(ep);
+		dw_pcie_setup_rc(&pci->pp);
+		dw_pcie_start_link(pci);
+
+		ret = readl_poll_timeout(elbi + PCIE_ELBI_RDLH_LINKUP, val,
+					 (val & PCIE_LTSSM_STATE_MASK) >= PCIE_LTSSM_L0 &&
+					 (val & PCIE_LTSSM_STATE_MASK) <= PCIE_LTSSM_L2_IDLE,
+					 100, PCIE_RETRAIN_WAIT_US);
+		/* a link that drops into D0 uninit right away is not up */
+		usleep_range(1000, 1100);
+		dstate = readl(elbi + PCIE_PM_DSTATE) & PCIE_PM_DSTATE_MASK;
+		if (!ret && dstate != PCIE_D0_UNINIT) {
+			writel(readl(elbi + PCIE_IRQ_SPECIAL),
+			       elbi + PCIE_IRQ_SPECIAL);
+			dev_info(dev, "link trained on attempt %u, LTSSM %#x D%u\n",
+				 i + 1, val & PCIE_LTSSM_STATE_MASK, dstate);
+			return 0;
+		}
+		dev_warn(dev,
+			 "attempt %u: link not up, LINKUP %#x DSTATE %#x IRQ %#x/%#x/%#x\n",
+			 i + 1, readl(elbi + PCIE_ELBI_RDLH_LINKUP),
+			 readl(elbi + PCIE_PM_DSTATE),
+			 readl(elbi + PCIE_IRQ_PULSE),
+			 readl(elbi + PCIE_IRQ_LEVEL),
+			 readl(elbi + PCIE_IRQ_SPECIAL));
+	}
+
+	return -ETIMEDOUT;
+}
+
+/*
+ * System sleep follows Samsung's kernel: the endpoint is told to turn off
+ * (it stays powered, keeping its firmware and the association for wake on
+ * wireless), the link is held in PERST through sleep, and the controller
+ * and PHY are set up from scratch on resume. Nothing is powered off here:
+ * a real sleep cuts FSYS1 itself, and after an aborted sleep the blocks
+ * are simply still running.
  */
 static int exynos7420_pcie_suspend_noirq(struct device *dev)
 {
 	struct exynos7420_pcie *ep = dev_get_drvdata(dev);
 
-	/*
-	 * Only a system power-down needs the link off. In s2idle the SoC
-	 * stays powered, and the link did not retrain after a power cycle,
-	 * leaving the root port to be resumed on an unpowered controller.
-	 */
+	/* Only a system power-down needs the link down; s2idle keeps it up. */
 	if (pm_suspend_target_state != PM_SUSPEND_MEM)
 		return 0;
 	if (exynos7420_pcie_link_up(&ep->pci))
 		exynos7420_pcie_pme_turn_off(ep);
+	gpiod_set_value_cansleep(ep->perst_gpio, 1);
+	exynos7420_pcie_stop_link(&ep->pci);
 	exynos7420_pcie_irq_mask_all(ep);
-	exynos7420_pcie_power_off(ep);
-	ep->sleep_off = true;
-	dev_info(dev, "link powered off for sleep\n");
+	ep->asleep = true;
+	dev_info(dev, "link held in reset for sleep\n");
 
 	return 0;
 }
@@ -682,27 +805,30 @@ static int exynos7420_pcie_resume_noirq(struct device *dev)
 	struct dw_pcie *pci = &ep->pci;
 	int ret;
 
-	if (!ep->sleep_off)
+	if (!ep->asleep)
 		return 0;
-	ep->sleep_off = false;
+	ep->asleep = false;
 
-	exynos7420_pcie_power_up(ep);
-	exynos7420_pcie_hw_init(ep);
-	dw_pcie_setup_rc(&pci->pp);
-	ret = dw_pcie_start_link(pci);
-	if (ret)
-		goto err;
-	ret = dw_pcie_wait_for_link(pci);
-	if (ret)
-		goto err;
-	dev_info(dev, "link up again after sleep\n");
-	return 0;
-
-err:
-	/* Leave the link off; the rest of the system can still resume. */
-	dev_err(dev, "link did not come back after sleep: %d\n", ret);
+	/* the PME_Turn_Off request the suspend path left set */
+	writel(0, ep->elbi_base + 0xa8);
+	exynos7420_pcie_phy_power_on(ep);
 	exynos7420_pcie_irq_mask_all(ep);
-	exynos7420_pcie_power_off(ep);
+
+	ret = exynos7420_pcie_retrain(ep);
+	if (ret) {
+		/*
+		 * Leave the controller powered with the link in reset: root
+		 * port config accesses still work, and the child is reported
+		 * absent through link_up. The system resumes without Wi-Fi.
+		 */
+		dev_err(dev, "link did not come back after sleep: %d\n", ret);
+		gpiod_set_value_cansleep(ep->perst_gpio, 1);
+		exynos7420_pcie_stop_link(pci);
+		return 0;
+	}
+	dw_pcie_wait_for_link(pci); /* logs the speed and width */
+	dev_info(dev, "link up again after sleep\n");
+
 	return 0;
 }
 

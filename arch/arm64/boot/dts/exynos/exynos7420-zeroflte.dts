@@ -683,9 +683,11 @@
 		num-lanes = <1>;
 		perst-gpios = <&gpg2 0 GPIO_ACTIVE_LOW>;
 		wl-en-gpios = <&gpf4 6 GPIO_ACTIVE_HIGH>;
-		pinctrl-names = "default";
-		pinctrl-0 = <&pcie1_clkreq &pcie1_perst &cfg_wlanen
-			     &wlan_host_wake>;
+		pinctrl-names = "default", "pcie_reset";
+		pinctrl-0 = <&pcie1_clkreq &pcie1_perst &pcie1_reset_clear
+			     &cfg_wlanen &wlan_host_wake>;
+		pinctrl-1 = <&pcie1_clkreq &pcie1_perst &pcie1_reset
+			     &cfg_wlanen &wlan_host_wake>;
 
 		/* Root port 00:00.0 */
 		pcie@0,0 {
@@ -1357,11 +1359,14 @@
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
 
+	/* The PCIe pins keep their state through sleep, as on the stock kernel */
 	pcie1_clkreq: pcie1-clkreq-pins {
 		samsung,pins = "gpf0-6";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
 	};
 
 	pcie1_perst: pcie1-perst-pins {
@@ -1369,6 +1374,27 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+	};
+
+	/*
+	 * WAKE# pull states: pulled up normally, pulled down for the short
+	 * link reset pulse the driver gives before training the link again.
+	 */
+	pcie1_reset_clear: pcie1-reset-clear-pins {
+		samsung,pins = "gpg2-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_UP>;
+	};
+
+	pcie1_reset: pcie1-reset-pins {
+		samsung,pins = "gpg2-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_DOWN>;
 	};
 
 	cfg_wlanen: cfg-wlanen-pins {
@@ -1376,6 +1402,7 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
 	};
 
 	/* WM1840 reset */
