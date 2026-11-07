@@ -374,6 +374,13 @@
 
 &gpu {
 	status = "okay";
+
+	/*
+	 * Keep the GPU off pd_g3d. The generic power-on sequence cannot
+	 * bring the G3D domain back once genpd has turned it off, so the
+	 * domain must stay on and the GPU must not be its consumer.
+	 */
+	/delete-property/ power-domains;
 };
 
 &hsi2c_7 {
