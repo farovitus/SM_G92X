@@ -7,7 +7,8 @@
 #   ./build.sh --clean ...      remove the previous output first
 #
 # Environment: KERNEL_OUT, PRODUCT_OUT, JOBS, USE_CCACHE (default 1),
-# LLVM_BIN (default: Android Studio NDK 27.1 clang 18), MAKE.
+# LLVM_BIN (default: the newest NDK in Android Studio's SDK),
+# LLVM_MAJOR (optional: fail unless clang has this major version), MAKE.
 
 set -euo pipefail
 
@@ -22,8 +23,17 @@ dtb_name=${DTB_NAME:-exynos/exynos7420-zeroflte.dtb}
 product_out=${PRODUCT_OUT:-"$build_root_dir/kernel_out/ack66"}
 kernel_out=${KERNEL_OUT:-"$product_out/KERNEL_OBJ"}
 tools_dir=${TOOLS_DIR:-"$build_root_dir/tools"}
-llvm_bin=${LLVM_BIN:-"$HOME/Library/Android/sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/darwin-x86_64/bin"}
-llvm_major=${LLVM_MAJOR:-18}
+# Default to the newest NDK Android Studio has installed, so the compiler
+# follows the IDE's SDK Manager instead of a pinned version.
+ndk_dir=${ANDROID_NDK_DIR:-"$HOME/Library/Android/sdk/ndk"}
+if [[ -z "${LLVM_BIN:-}" ]]; then
+	ndk_version=$(ls -1 "$ndk_dir" 2>/dev/null | sort -V | tail -n1)
+	[[ -n "$ndk_version" ]] ||
+		{ echo "error: no NDK in $ndk_dir (install one with Android Studio's SDK Manager)" >&2; exit 1; }
+	LLVM_BIN="$ndk_dir/$ndk_version/toolchains/llvm/prebuilt/darwin-x86_64/bin"
+fi
+llvm_bin=$LLVM_BIN
+llvm_major=${LLVM_MAJOR:-}
 openssl_dir=${OPENSSL_DIR:-/opt/homebrew/opt/openssl@3}
 make_cmd=${MAKE:-gmake}
 jobs=${JOBS:-$(sysctl -n hw.ncpu)}
@@ -98,10 +108,11 @@ command -v "$make_cmd" >/dev/null || { echo "error: $make_cmd not found (GNU mak
 [[ -x "$llvm_bin/clang" && -x "$llvm_bin/ld.lld" ]] ||
 	{ echo "error: clang/ld.lld not found in $llvm_bin" >&2; exit 1; }
 clang_major=$("$llvm_bin/clang" -dM -E -x c /dev/null | sed -n 's/^#define __clang_major__ //p')
-if [[ "$clang_major" != "$llvm_major" ]]; then
-	echo "error: clang $clang_major found, LLVM $llvm_major expected (set LLVM_MAJOR to override)" >&2
+if [[ -n "$llvm_major" && "$clang_major" != "$llvm_major" ]]; then
+	echo "error: clang $clang_major found, LLVM $llvm_major expected" >&2
 	exit 1
 fi
+echo "Compiler: $("$llvm_bin/clang" --version | head -n1)"
 
 if [[ "$clean_build" == 1 ]]; then
 	rm -rf -- "$kernel_out" "$product_out"
