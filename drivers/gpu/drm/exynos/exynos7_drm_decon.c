@@ -90,6 +90,15 @@ module_param_named(te_replay, decon_te_replay, uint, 0444);
 static bool decon_vblank_fast_off = true;
 module_param_named(vblank_fast_off, decon_vblank_fast_off, bool, 0644);
 
+/*
+ * DECON clocks in command mode, VCLKCON0: 0 keeps what S-Boot left (VCLK
+ * free-running, ECLK always on), 1 gates ECLK while DECON idles, 2 also
+ * stops VCLK between frames, as Samsung's driver set it. Applied at the
+ * next frame.
+ */
+static int decon_clk_gate = 2;
+module_param_named(clk_gate, decon_clk_gate, int, 0644);
+
 /* an edge this soon after the TE interrupt is enabled is a replay */
 #define DECON_TE_REPLAY_US	1000
 
@@ -146,6 +155,7 @@ struct decon_context {
 	ktime_t				te_last;	/* last TE edge */
 	u32				te_period_ns;	/* measured, 0 = not yet */
 	ktime_t				te_on_time;	/* TE irq last enabled */
+	int				clk_gate;	/* VCLKCON0 setting applied */
 	/* i80: completes once DECON scans the committed state, under te_lock */
 	struct drm_pending_vblank_event	*flip_event;
 	wait_queue_head_t		te_wq;
@@ -842,9 +852,28 @@ static void decon_i80_trigger(struct decon_context *ctx)
 	writel(val, ctx->regs + TRIGCON);
 }
 
+/* Apply the clk_gate setting while no frame is being sent. */
+static void decon_apply_clk_gate(struct decon_context *ctx)
+{
+	int gate = READ_ONCE(decon_clk_gate);
+	u32 val;
+
+	if (gate == ctx->clk_gate)
+		return;
+	val = readl(ctx->regs + VCLKCON0);
+	val &= ~(VCLKCON0_ECLK_IDLE_GATE_EN | VCLKCON0_VCLKFREE);
+	if (gate >= 1)
+		val |= VCLKCON0_ECLK_IDLE_GATE_EN;
+	if (gate < 2)
+		val |= VCLKCON0_VCLKFREE;
+	writel(val, ctx->regs + VCLKCON0);
+	ctx->clk_gate = gate;
+}
+
 /* Start sending the committed frame. Called with te_lock held. */
 static void decon_te_send(struct decon_context *ctx)
 {
+	decon_apply_clk_gate(ctx);
 	decon_i80_trigger(ctx);
 	ctx->trig_pending = false;
 	ctx->xfer_busy = true;
@@ -1015,6 +1044,7 @@ static void decon_te_start(struct decon_context *ctx)
 	WRITE_ONCE(decon_te_active, false);
 	ctx->te_last = 0;
 	ctx->te_period_ns = period;
+	ctx->clk_gate = -1;	/* set it again on the first frame */
 	ctx->te_count = 0;
 	ctx->te_misses = 0;
 	ctx->trig_pending = false;
@@ -1045,8 +1075,10 @@ static void decon_te_start(struct decon_context *ctx)
 	spin_unlock_irqrestore(&ctx->te_lock, flags);
 
 	if (ctx->te_sync)
-		dev_info(ctx->dev, "TE sync on: %u edges in %lld us\n",
-			 ctx->te_count, us);
+		dev_info(ctx->dev, "TE sync on: %u edges in %lld us; VCLKCON0 %#x CMU %#x VIDCON1 %#x TRIGCON %#x\n",
+			 ctx->te_count, us, readl(ctx->regs + VCLKCON0),
+			 readl(ctx->regs + 0x704), readl(ctx->regs + VIDCON1(0)),
+			 readl(ctx->regs + TRIGCON));
 	else
 		dev_warn(ctx->dev, "no TE (%u edges in %lld us), frames sent on commit\n",
 			 ctx->te_count, us);
