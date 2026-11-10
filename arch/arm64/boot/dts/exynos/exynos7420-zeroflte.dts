@@ -1121,7 +1121,7 @@
 		native-mode = <&decon_timing0>;
 
 		decon_timing0: timing-0 {
-			clock-frequency = <222371232>;
+			clock-frequency = <221042000>;
 			hactive = <1440>;
 			vactive = <2560>;
 			hfront-porch = <1>;
