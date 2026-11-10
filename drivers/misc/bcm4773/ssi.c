@@ -50,6 +50,8 @@ struct bbd_ssi {
 	struct mutex xfer_lock;		/* SPI bursts and the power state */
 	u8 *tx;
 	u8 *rx;
+	unsigned int max_rw;		/* payload per frame, from the controller */
+	unsigned int max_read;
 	bool powered;
 
 	spinlock_t fifo_lock;
@@ -112,7 +114,7 @@ static int ssi_read(struct bbd_ssi *ssi)
 	if (ssi->rx[0])
 		return -EIO;
 
-	len = min_t(unsigned int, ssi->rx[1], SSI_MAX_READ);
+	len = min_t(unsigned int, ssi->rx[1], ssi->max_read);
 	if (!len)
 		return 0;
 
@@ -134,7 +136,7 @@ static int ssi_write(struct bbd_ssi *ssi)
 	unsigned int n, got;
 	int ret;
 
-	n = kfifo_out_spinlocked(&ssi->tx_fifo, ssi->tx + 2, SSI_MAX_RW,
+	n = kfifo_out_spinlocked(&ssi->tx_fifo, ssi->tx + 2, ssi->max_rw,
 				 &ssi->fifo_lock);
 	if (!n)
 		return 0;
@@ -362,6 +364,7 @@ static int bbd_ssi_probe(struct spi_device *spi)
 	struct device *dev = &spi->dev;
 	struct bbd_device *bbd;
 	struct bbd_ssi *ssi;
+	size_t max;
 	int ret;
 
 	bbd = devm_kzalloc(dev, sizeof(*bbd), GFP_KERNEL);
@@ -405,6 +408,20 @@ static int bbd_ssi_probe(struct spi_device *spi)
 	ret = spi_setup(spi);
 	if (ret)
 		return dev_err_probe(dev, ret, "spi setup\n");
+
+	/*
+	 * A frame is one transfer: a 2-byte header and the payload. Keep it
+	 * within what the controller moves in one piece; without DMA,
+	 * spi-s3c64xx splits larger transfers in a way the chip does not
+	 * follow.
+	 */
+	max = spi_max_transfer_size(spi);
+	if (max < 3)
+		return dev_err_probe(dev, -EINVAL, "transfer limit %zu\n", max);
+	ssi->max_rw = min_t(size_t, SSI_MAX_RW, max - 2);
+	ssi->max_read = min_t(size_t, SSI_MAX_READ, max - 2);
+	if (ssi->max_rw < SSI_MAX_RW)
+		dev_info(dev, "SSI frames of %u bytes at most\n", ssi->max_rw + 2);
 
 	spi_set_drvdata(spi, bbd);
 	ret = bbd_core_init(bbd);
