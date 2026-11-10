@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Samsung Galaxy S6 edge (SM-G925F, zerolte) device tree
+ *
+ * Exynos 7420, EUR single SIM. The board is the S6 board with an edge
+ * panel; this file takes the S6 description and changes only what the
+ * stock 3.10 exynos7420-zerolte_eur_open_08.dts and its battery, sensor
+ * and LED includes set differently.
+ *
+ * Built only; not yet booted on a G925F. ASV voltages are per chip and the
+ * board revision of a given unit is unknown.
+ */
+
+#include "exynos7420-zeroflte.dts"
+
+/ {
+	model = "Samsung Galaxy S6 edge (SM-G925F)";
+	compatible = "samsung,zerolte", "samsung,exynos7420",
+		     "samsung,exynos7";
+
+	/* S-Boot DTBH match: EUR rev06 boards and later */
+	model_info-hw_rev = <10>;
+	model_info-hw_rev_end = <255>;
+
+	aliases {
+		/delete-property/ i2c0;
+	};
+};
+
+/*
+ * No Cypress touchkey: the two capacitive keys are read by the STM
+ * touchscreen, and LDO21 powers their LEDs (stock regulator "key_led").
+ */
+/delete-node/ &i2c_touchkey;
+
+&touchkey_vdd_ldo21 {
+	regulator-name = "key_led";
+};
+
+&hsi2c_7 {
+	touchscreen@49 {
+		touch-key-connected;
+		ledvdd-supply = <&touchkey_vdd_ldo21>;
+	};
+};
+
+/* S6E3HF2 edge panel, 1440x2560 like the S6 (stock lcd_info s6e3hf2_wqhd) */
+&dsim_cmd {
+	panel@0 {
+		compatible = "samsung,s6e3hf2-zerolte", "samsung,s6e3hf2";
+	};
+};
+
+/* Stock zerolte battery: fast charge 2.05 A, swelling-range 1.15 A */
+&battery {
+	constant-charge-current-max-microamp = <2050000>;
+};
+
+&max77843 {
+	charger {
+		maxim,alert-charge-current-microamp = <1150000>;
+	};
+
+	/* LRA period of the 3.10 G925F */
+	haptic {
+		pwms = <&pwm 1 33670 0>;
+	};
+
+	/* Edge RGB LED: stock brt-code-max 10/4/4 */
+	led-controller {
+		multi-led {
+			led@1 {
+				maxim,brt-code-max = <10>;
+			};
+
+			led@2 {
+				maxim,brt-code-max = <4>;
+			};
+
+			led@3 {
+				maxim,brt-code-max = <4>;
+			};
+		};
+	};
+};
+
+/* YAS537 placement and static matrix of the G925F */
+&spi_1 {
+	gnss@0 {
+		sensorhub {
+			samsung,mag-position = <6>;
+			samsung,glass-type = <1>;
+			samsung,mag-matrix = <9930 866 (-228) 263 9197
+					      121 (-135) 387 10378>;
+		};
+	};
+};
