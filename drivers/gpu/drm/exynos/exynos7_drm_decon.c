@@ -78,9 +78,19 @@ module_param_named(te_early_latch, decon_te_early_latch, uint, 0444);
 static unsigned int decon_te_period;
 module_param_named(te_period_ns, decon_te_period, uint, 0444);
 
-/* TE edges dropped as replays of an edge latched while the irq was off */
+/*
+ * TE edges dropped as replays of an edge latched while the irq was off:
+ * those within te_replay_us of enabling the irq. te_first counts the
+ * first edge after each enable by its delay: under 100 us, 100-250 us,
+ * 250 us-1 ms and later. Replays fill the first two; the third staying
+ * near 0 shows the window catches them all.
+ */
 static unsigned int decon_te_replay;
+static unsigned int decon_te_replay_us = 250;
+static unsigned int decon_te_first[4];
 module_param_named(te_replay, decon_te_replay, uint, 0444);
+module_param_named(te_replay_us, decon_te_replay_us, uint, 0644);
+module_param_array_named(te_first, decon_te_first, uint, NULL, 0444);
 
 /*
  * Vblank (the TE interrupt) goes off at the first TE with no user left,
@@ -117,9 +127,6 @@ module_param_named(st_fb_noper, decon_st_fb_noper, uint, 0444);
 module_param_named(st_late_us, decon_st_late_us, uint, 0444);
 module_param_named(te_novbl, decon_te_novbl, uint, 0444);
 module_param_named(te_overwrite, decon_te_overwrite, uint, 0444);
-
-/* an edge this soon after the TE interrupt is enabled is a replay */
-#define DECON_TE_REPLAY_US	1000
 
 /* a pending frame waits at most this long for TE before it is sent anyway */
 #define DECON_TE_TIMEOUT_MS	50
@@ -174,6 +181,7 @@ struct decon_context {
 	ktime_t				te_last;	/* last TE edge */
 	u32				te_period_ns;	/* measured, 0 = not yet */
 	ktime_t				te_on_time;	/* TE irq last enabled */
+	bool				te_first;	/* no edge since the enable */
 	int				clk_gate;	/* VCLKCON0 setting applied */
 	/* i80: completes once DECON scans the committed state, under te_lock */
 	struct drm_pending_vblank_event	*flip_event;
@@ -367,6 +375,7 @@ static void decon_te_irq_get(struct decon_context *ctx)
 	if (!ctx->te_irq_on) {
 		ctx->te_irq_on = true;
 		ctx->te_on_time = ktime_get();
+		ctx->te_first = true;
 		enable_irq(ctx->te_irq);
 	}
 }
@@ -980,6 +989,7 @@ static irqreturn_t decon_te_irq_handler(int irq, void *dev_id)
 	struct decon_context *ctx = dev_id;
 	struct drm_pending_vblank_event *flip;
 	ktime_t now = ktime_get();
+	s64 d_on;
 	bool vblank;
 
 	spin_lock(&ctx->te_lock);
@@ -988,10 +998,16 @@ static irqreturn_t decon_te_irq_handler(int irq, void *dev_id)
 	 * replays it as soon as the interrupt is enabled again: at an
 	 * arbitrary point of the panel's refresh, not at a TE. Sending a
 	 * frame then could tear, and its time would be a false vblank. A
-	 * real TE inside that first millisecond is skipped too; its frame
-	 * then goes out one refresh later.
+	 * real TE inside that window is skipped too; its frame then goes
+	 * out one refresh later.
 	 */
-	if (ktime_us_delta(now, ctx->te_on_time) < DECON_TE_REPLAY_US) {
+	d_on = ktime_us_delta(now, ctx->te_on_time);
+	if (ctx->te_first) {
+		ctx->te_first = false;
+		decon_te_first[d_on < 100 ? 0 : d_on < 250 ? 1 :
+			       d_on < 1000 ? 2 : 3]++;
+	}
+	if (d_on < READ_ONCE(decon_te_replay_us)) {
 		WRITE_ONCE(decon_te_replay, decon_te_replay + 1);
 		spin_unlock(&ctx->te_lock);
 		return IRQ_HANDLED;
