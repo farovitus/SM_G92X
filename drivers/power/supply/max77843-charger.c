@@ -121,6 +121,7 @@ struct max77843_charger {
 	u32 alert_cc_ua;		/* charge current in the alert range */
 	u32 alert_cv_uv;		/* float voltage in the alert range */
 	int health;			/* POWER_SUPPLY_HEALTH_* from temperature */
+	int behaviour;			/* POWER_SUPPLY_CHARGE_BEHAVIOUR_* */
 	int last_online, last_status, last_health; /* last state notified */
 	struct delayed_work work;
 	struct mutex lock;		/* serialises max77843_chg_apply() */
@@ -430,10 +431,16 @@ static int max77843_chg_apply(struct max77843_charger *chg)
 
 	/*
 	 * Buck on, so the system runs from the input; charger on unless the
-	 * battery is too hot or too cold; OTG and boost off.
+	 * battery is too hot or too cold or charging is inhibited; OTG and
+	 * boost off. Force-discharge turns the buck off as well, so the
+	 * battery carries the system with the input attached: stock's slate
+	 * mode.
 	 */
-	mode = MAX77843_CNFG00_BUCK;
-	if (chg->health != POWER_SUPPLY_HEALTH_OVERHEAT &&
+	mode = 0;
+	if (chg->behaviour != POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE)
+		mode = MAX77843_CNFG00_BUCK;
+	if (chg->behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO &&
+	    chg->health != POWER_SUPPLY_HEALTH_OVERHEAT &&
 	    chg->health != POWER_SUPPLY_HEALTH_COLD)
 		mode |= MAX77843_CNFG00_CHG;
 	ret = max77843_chg_update(chg, MAX77843_CHG_REG_CHG_CNFG_00,
@@ -596,6 +603,7 @@ static enum power_supply_property max77843_charger_props[] = {
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
 };
 
 static int max77843_charger_get_property(struct power_supply *psy,
@@ -616,9 +624,46 @@ static int max77843_charger_get_property(struct power_supply *psy,
 		return max77843_charger_fast_current(chg, &val->intval);
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
 		return max77843_charger_input_limit(chg, &val->intval);
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		val->intval = READ_ONCE(chg->behaviour);
+		return 0;
 	default:
 		return -EINVAL;
 	}
+}
+
+static int max77843_charger_set_property(struct power_supply *psy,
+					 enum power_supply_property psp,
+					 const union power_supply_propval *val)
+{
+	struct max77843_charger *chg = power_supply_get_drvdata(psy);
+
+	if (psp != POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR)
+		return -EINVAL;
+	/* Without battery data the driver leaves the charger as S-Boot set it */
+	if (!chg->bat)
+		return -EOPNOTSUPP;
+
+	switch (val->intval) {
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE:
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	mutex_lock(&chg->lock);
+	chg->behaviour = val->intval;
+	mutex_unlock(&chg->lock);
+	mod_delayed_work(system_wq, &chg->work, 0);
+	return 0;
+}
+
+static int max77843_charger_property_is_writeable(struct power_supply *psy,
+						  enum power_supply_property psp)
+{
+	return psp == POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR;
 }
 
 static const struct power_supply_desc max77843_charger_desc = {
@@ -627,6 +672,8 @@ static const struct power_supply_desc max77843_charger_desc = {
 	.properties	= max77843_charger_props,
 	.num_properties	= ARRAY_SIZE(max77843_charger_props),
 	.get_property	= max77843_charger_get_property,
+	.set_property	= max77843_charger_set_property,
+	.property_is_writeable = max77843_charger_property_is_writeable,
 };
 
 static const struct regmap_irq max77843_chg_irqs[] = {
