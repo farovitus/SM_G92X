@@ -129,6 +129,14 @@ module_param_named(st_late_us, decon_st_late_us, uint, 0444);
 module_param_named(te_novbl, decon_te_novbl, uint, 0444);
 module_param_named(te_overwrite, decon_te_overwrite, uint, 0444);
 
+/*
+ * TE-sent transfers by trigger-to-frame-done time, in 2 ms steps (the last
+ * bucket: 18 ms or more). A transfer longer than the TE period makes the
+ * next frame miss its TE; a full-screen frame takes 14-16 ms.
+ */
+static unsigned int decon_xfer_ms[10];
+module_param_array_named(xfer_ms, decon_xfer_ms, uint, NULL, 0444);
+
 /* a pending frame waits at most this long for TE before it is sent anyway */
 #define DECON_TE_TIMEOUT_MS	50
 /* after this many such frames in a row, frames go out on commit again */
@@ -182,6 +190,7 @@ struct decon_context {
 	ktime_t				te_last;	/* last TE edge */
 	u32				te_period_ns;	/* measured, 0 = not yet */
 	ktime_t				te_on_time;	/* TE irq last enabled */
+	ktime_t				trig_time;	/* last TE-sent trigger */
 	bool				te_first;	/* no edge since the enable */
 	int				clk_gate;	/* VCLKCON0 setting applied */
 	/* i80: completes once DECON scans the committed state, under te_lock */
@@ -981,6 +990,7 @@ static void decon_te_send(struct decon_context *ctx)
 	decon_i80_trigger(ctx);
 	ctx->trig_pending = false;
 	ctx->xfer_busy = true;
+	ctx->trig_time = ktime_get();
 }
 
 /*
@@ -1458,6 +1468,11 @@ static irqreturn_t decon_irq_handler(int irq, void *dev_id)
 		if (ctx->trig_pending &&
 		    !(readl(ctx->regs + DECON_UPDATE) & DECON_UPDATE_STANDALONE_F))
 			decon_te_early_latch++;
+		if (ctx->xfer_busy && ctx->trig_time) {
+			s64 x = ktime_us_delta(ktime_get(), ctx->trig_time) / 2000;
+
+			decon_xfer_ms[min_t(s64, x, 9)]++;
+		}
 		ctx->xfer_busy = false;
 		spin_unlock(&ctx->te_lock);
 		wake_up(&ctx->te_wq);
