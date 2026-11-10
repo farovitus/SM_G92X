@@ -124,6 +124,8 @@ struct decon_context {
 	bool				xfer_busy;	/* sending, until frame done */
 	unsigned int			te_count;
 	unsigned int			te_misses;	/* watchdog sends in a row */
+	ktime_t				te_last;	/* last TE edge */
+	u32				te_period_ns;	/* measured, 0 = not yet */
 	/* i80: completes once DECON scans the committed state, under te_lock */
 	struct drm_pending_vblank_event	*flip_event;
 	wait_queue_head_t		te_wq;
@@ -370,6 +372,52 @@ static void decon_send_flip(struct decon_context *ctx,
 	drm_crtc_send_vblank_event(crtc, event);
 	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
 	drm_crtc_vblank_put(crtc);
+}
+
+/*
+ * Send a flip whose frame goes out at the next TE, stamped with that TE:
+ * its vblank count and the time the panel starts showing the frame. The
+ * event and the out-fence carry this stamp, as drm_crtc_send_vblank_event()
+ * would give them at that TE. Returns false, sending nothing, when the TE
+ * period is not known yet or that TE is already past. Not with te_lock held.
+ */
+static bool decon_send_flip_next_te(struct decon_context *ctx,
+				    struct drm_pending_vblank_event *e,
+				    u32 period_ns)
+{
+	struct drm_crtc *crtc = &ctx->crtc->base;
+	struct drm_device *dev = crtc->dev;
+	struct timespec64 tv;
+	unsigned long flags;
+	ktime_t when;
+	u64 seq;
+
+	if (!period_ns)
+		return false;
+	seq = drm_crtc_vblank_count_and_time(crtc, &when) + 1;
+	when = ktime_add_ns(when, period_ns);
+	if (ktime_before(when, ktime_get()))
+		return false;
+
+	tv = ktime_to_timespec64(when);
+	spin_lock_irqsave(&dev->event_lock, flags);
+	e->pipe = drm_crtc_index(crtc);
+	switch (e->event.base.type) {
+	case DRM_EVENT_VBLANK:
+	case DRM_EVENT_FLIP_COMPLETE:
+		e->event.vbl.sequence = seq;
+		e->event.vbl.tv_sec = tv.tv_sec;
+		e->event.vbl.tv_usec = tv.tv_nsec / 1000;
+		break;
+	case DRM_EVENT_CRTC_SEQUENCE:
+		e->event.seq.sequence = seq;
+		e->event.seq.time_ns = ktime_to_ns(when);
+		break;
+	}
+	drm_send_event_timestamp_locked(dev, &e->base, when);
+	spin_unlock_irqrestore(&dev->event_lock, flags);
+	drm_crtc_vblank_put(crtc);
+	return true;
 }
 
 static int decon_enable_vblank(struct exynos_drm_crtc *crtc)
@@ -752,21 +800,31 @@ static void decon_te_send(struct decon_context *ctx)
 
 /*
  * TE sync: leave the transfer to the next TE edge. The flip completes at
- * the first TE or frame done that finds the new state latched. te_lock is
- * not held around event_lock, which the vblank core takes before calling
- * disable_vblank.
+ * the frame done of a transfer still running, stamped with the TE that
+ * will send the new frame, or else at that TE. Its event and the trigger
+ * are armed together, so a TE in between never sees the event without the
+ * frame. te_lock is not held around event_lock, which the vblank core
+ * takes before calling disable_vblank. Returns an event left over from a
+ * flip_done timeout.
  */
-static void decon_te_flush(struct decon_context *ctx)
+static struct drm_pending_vblank_event *
+decon_te_flush(struct decon_context *ctx, struct drm_pending_vblank_event *event)
 {
+	struct drm_pending_vblank_event *old = NULL;
 	unsigned long flags;
 
 	spin_lock_irqsave(&ctx->te_lock, flags);
+	if (event) {
+		old = ctx->flip_event;
+		ctx->flip_event = event;
+	}
 	ctx->trig_pending = true;
 	decon_te_irq_get(ctx);
 	spin_unlock_irqrestore(&ctx->te_lock, flags);
 
 	mod_delayed_work(system_highpri_wq, &ctx->te_watchdog,
 			 msecs_to_jiffies(DECON_TE_TIMEOUT_MS));
+	return old;
 }
 
 /* A frame that got no TE in time is sent anyway, so the display never stalls. */
@@ -812,15 +870,36 @@ static irqreturn_t decon_te_irq_handler(int irq, void *dev_id)
 {
 	struct decon_context *ctx = dev_id;
 	struct drm_pending_vblank_event *flip;
+	ktime_t now = ktime_get();
 	bool vblank;
 
 	spin_lock(&ctx->te_lock);
 	ctx->te_count++;
-	/* before the send below requests the next latch */
-	flip = decon_take_latched_flip(ctx);
+	/* the panel's own refresh period, for stamping flips ahead of TE */
+	if (ctx->te_last) {
+		s64 d = ktime_to_ns(ktime_sub(now, ctx->te_last));
+		s64 p = ctx->te_period_ns;
+
+		if (!p && d >= 8000000 && d <= 34000000)
+			ctx->te_period_ns = d;
+		else if (p && d > p * 3 / 4 && d < p * 5 / 4)
+			ctx->te_period_ns = p + (d - p) / 16;
+	}
+	ctx->te_last = now;
 	if (ctx->te_sync && ctx->trig_pending && !ctx->xfer_busy) {
 		decon_te_send(ctx);
 		ctx->te_misses = 0;
+		/*
+		 * A commit made after the last frame done: its frame goes
+		 * out from this TE, so complete its flip here, stamped with
+		 * this TE.
+		 */
+		flip = ctx->flip_event;
+		ctx->flip_event = NULL;
+	} else if (ctx->te_sync && ctx->trig_pending) {
+		flip = NULL;
+	} else {
+		flip = decon_take_latched_flip(ctx);
 	}
 	vblank = ctx->te_sync && ctx->vblank_on;
 	if (ctx->te_sync && !ctx->trig_pending && !vblank) {
@@ -924,9 +1003,9 @@ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
 	if (ctx->i80_if) {
 		struct drm_crtc *crtc_base = &crtc->base;
 		struct drm_pending_vblank_event *event = crtc_base->state->event;
-		unsigned long flags;
-
 		struct drm_pending_vblank_event *old = NULL;
+		bool te_sync = READ_ONCE(ctx->te_sync);
+		unsigned long flags;
 
 		/*
 		 * Request the latch only now that every window is unprotected,
@@ -938,6 +1017,15 @@ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
 		if (event) {
 			crtc_base->state->event = NULL;
 			WARN_ON(drm_crtc_vblank_get(crtc_base) != 0);
+		}
+
+		if (ctx->icc_bw)
+			mod_delayed_work(system_wq, &ctx->bw_idle_work,
+					 msecs_to_jiffies(DECON_BW_IDLE_MS));
+
+		if (te_sync) {
+			old = decon_te_flush(ctx, event);
+		} else if (event) {
 			spin_lock_irqsave(&ctx->te_lock, flags);
 			old = ctx->flip_event;
 			ctx->flip_event = event;
@@ -946,20 +1034,10 @@ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
 		/* only after a flip_done timeout: do not leak it */
 		if (WARN_ON_ONCE(old))
 			decon_send_flip(ctx, old);
-	}
 
-	if (ctx->i80_if && ctx->icc_bw)
-		mod_delayed_work(system_wq, &ctx->bw_idle_work,
-				 msecs_to_jiffies(DECON_BW_IDLE_MS));
-
-	if (ctx->i80_if && ctx->te_sync) {
-		decon_te_flush(ctx);
-		return;
-	}
-
-	if (ctx->i80_if) {
-		/* the frame done of this transfer completes the flip */
-		decon_i80_trigger(ctx);
+		/* without TE, the frame done of this transfer completes the flip */
+		if (!te_sync)
+			decon_i80_trigger(ctx);
 		return;
 	}
 
@@ -1163,10 +1241,26 @@ static irqreturn_t decon_irq_handler(int irq, void *dev_id)
 	}
 
 	if (ctx->i80_if) {
+		bool ahead;
+		u32 period;
+
 		spin_lock(&ctx->te_lock);
 		flip = decon_take_latched_flip(ctx);
+		ahead = ctx->te_sync && ctx->trig_pending;
+		period = ctx->te_period_ns;
 		spin_unlock(&ctx->te_lock);
-		decon_send_flip(ctx, flip);
+		/*
+		 * A commit made while this transfer ran: DECON is done with
+		 * the old framebuffers now, so complete the flip and let them
+		 * go, but its frame only goes out at the next TE. Stamp the
+		 * event and out-fence with that TE: the vblank count would
+		 * give the TE before, a refresh earlier than the panel shows
+		 * the frame, and SurfaceFlinger, which takes the out-fence
+		 * time as the present time, saw such frames as presented
+		 * early, and two in a row with one time as a duplicate.
+		 */
+		if (!flip || !ahead || !decon_send_flip_next_te(ctx, flip, period))
+			decon_send_flip(ctx, flip);
 	}
 
 	/* set wait vsync event to zero and wake up queue. */
