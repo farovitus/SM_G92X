@@ -17,6 +17,7 @@
 #include <linux/kmemleak.h>
 #include <linux/list.h>
 #include <linux/of.h>
+#include <linux/of_iommu.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -1577,6 +1578,10 @@ EXPORT_SYMBOL_GPL(exynos_iommu_master_ready);
  * Maps [@phys, @phys + @size), widened to 2 MiB boundaries, at IOVA == PA
  * read/write into the master's current domain. Used to keep a buffer the
  * bootloader left in scanout reachable once translation is turned on.
+ * Sections already mapped, such as a direct region the IOMMU core set up
+ * from the master's "memory-region", are left alone. Only such a region is
+ * also reserved in the DMA allocator; the rest of the range is not, and
+ * stays mapped.
  *
  * Return: 0 on success, -ENODEV if @master has no SysMMU or domain, or the
  * error from iommu_map().
@@ -1585,7 +1590,8 @@ int exynos_iommu_map_identity(struct device *master, phys_addr_t phys,
 			      size_t size)
 {
 	struct exynos_iommu_owner *owner = dev_iommu_priv_get(master);
-	phys_addr_t start, end;
+	phys_addr_t start, end, addr;
+	int ret;
 
 	if (!owner || !owner->domain)
 		return -ENODEV;
@@ -1593,8 +1599,17 @@ int exynos_iommu_map_identity(struct device *master, phys_addr_t phys,
 	start = ALIGN_DOWN(phys, SZ_2M);
 	end = ALIGN(phys + size, SZ_2M);
 
-	return iommu_map(owner->domain, start, start, end - start,
-			 IOMMU_READ | IOMMU_WRITE, GFP_KERNEL);
+	for (addr = start; addr < end; addr += SECT_SIZE) {
+		if (iommu_iova_to_phys(owner->domain, addr))
+			continue;
+
+		ret = iommu_map(owner->domain, addr, addr, SECT_SIZE,
+				IOMMU_READ | IOMMU_WRITE, GFP_KERNEL);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(exynos_iommu_map_identity);
 
@@ -1608,6 +1623,7 @@ static const struct iommu_ops exynos_iommu_ops = {
 	.release_device = exynos_iommu_release_device,
 	.pgsize_bitmap = SECT_SIZE | LPAGE_SIZE | SPAGE_SIZE,
 	.of_xlate = exynos_iommu_of_xlate,
+	.get_resv_regions = of_iommu_get_resv_regions,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= exynos_iommu_attach_device,
 		.map		= exynos_iommu_map,
