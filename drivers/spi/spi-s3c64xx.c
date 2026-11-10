@@ -746,8 +746,19 @@ static int s3c64xx_spi_prepare_message(struct spi_controller *host,
 static size_t s3c64xx_spi_max_transfer_size(struct spi_device *spi)
 {
 	struct spi_controller *ctlr = spi->controller;
+	struct s3c64xx_spi_driver_data *sdd = spi_controller_get_devdata(ctlr);
 
-	return ctlr->can_dma ? S3C64XX_SPI_PACKET_CNT_MASK : SIZE_MAX;
+	if (ctlr->can_dma)
+		return S3C64XX_SPI_PACKET_CNT_MASK;
+
+	/*
+	 * Without DMA, a transfer that does not fit the FIFO is moved in
+	 * chunks, and the channel is reset between them with chip select
+	 * still asserted. Not every target survives that: a BCM4773 in mode
+	 * 3 loses every transfer of FIFO size or more. Report what one chunk
+	 * moves so that clients can size their transfers to it.
+	 */
+	return sdd->fifo_depth - 1;
 }
 
 static int s3c64xx_spi_transfer_one(struct spi_controller *host,
