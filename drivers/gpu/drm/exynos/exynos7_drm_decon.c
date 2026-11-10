@@ -99,6 +99,25 @@ module_param_named(vblank_fast_off, decon_vblank_fast_off, bool, 0644);
 static int decon_clk_gate = 2;
 module_param_named(clk_gate, decon_clk_gate, int, 0644);
 
+/*
+ * Flip stamps, for checking SurfaceFlinger's present times: flips sent at
+ * the TE that sends their frame, at frame done stamped with the next TE,
+ * and at frame done with the last vblank's stamp because the next TE was
+ * already past (fb_late, with the last such lateness in us) or the period
+ * unknown. te_novbl counts TEs while vblank was off; te_overwrite counts
+ * commits that replaced one still waiting for its TE, a frame never shown.
+ */
+static unsigned int decon_st_te, decon_st_next, decon_st_fb_late,
+		    decon_st_fb_noper, decon_st_late_us, decon_te_novbl,
+		    decon_te_overwrite;
+module_param_named(st_te, decon_st_te, uint, 0444);
+module_param_named(st_next, decon_st_next, uint, 0444);
+module_param_named(st_fb_late, decon_st_fb_late, uint, 0444);
+module_param_named(st_fb_noper, decon_st_fb_noper, uint, 0444);
+module_param_named(st_late_us, decon_st_late_us, uint, 0444);
+module_param_named(te_novbl, decon_te_novbl, uint, 0444);
+module_param_named(te_overwrite, decon_te_overwrite, uint, 0444);
+
 /* an edge this soon after the TE interrupt is enabled is a replay */
 #define DECON_TE_REPLAY_US	1000
 
@@ -423,12 +442,19 @@ static bool decon_send_flip_next_te(struct decon_context *ctx,
 	ktime_t when;
 	u64 seq;
 
-	if (!period_ns)
+	if (!period_ns) {
+		WRITE_ONCE(decon_st_fb_noper, decon_st_fb_noper + 1);
 		return false;
+	}
 	seq = drm_crtc_vblank_count_and_time(crtc, &when) + 1;
 	when = ktime_add_ns(when, period_ns);
-	if (ktime_before(when, ktime_get()))
+	if (ktime_before(when, ktime_get())) {
+		WRITE_ONCE(decon_st_fb_late, decon_st_fb_late + 1);
+		WRITE_ONCE(decon_st_late_us,
+			   ktime_us_delta(ktime_get(), when));
 		return false;
+	}
+	WRITE_ONCE(decon_st_next, decon_st_next + 1);
 
 	tv = ktime_to_timespec64(when);
 	spin_lock_irqsave(&dev->event_lock, flags);
@@ -895,6 +921,8 @@ decon_te_flush(struct decon_context *ctx, struct drm_pending_vblank_event *event
 	unsigned long flags;
 
 	spin_lock_irqsave(&ctx->te_lock, flags);
+	if (ctx->trig_pending)
+		WRITE_ONCE(decon_te_overwrite, decon_te_overwrite + 1);
 	if (event) {
 		old = ctx->flip_event;
 		ctx->flip_event = event;
@@ -996,12 +1024,16 @@ static irqreturn_t decon_te_irq_handler(int irq, void *dev_id)
 		 */
 		flip = ctx->flip_event;
 		ctx->flip_event = NULL;
+		if (flip)
+			decon_st_te++;
 	} else if (ctx->te_sync && ctx->trig_pending) {
 		flip = NULL;
 	} else {
 		flip = decon_take_latched_flip(ctx);
 	}
 	vblank = ctx->te_sync && ctx->vblank_on;
+	if (ctx->te_sync && !vblank)
+		decon_te_novbl++;
 	if (ctx->te_sync && !ctx->trig_pending && !vblank) {
 		disable_irq_nosync(irq);
 		ctx->te_irq_on = false;
