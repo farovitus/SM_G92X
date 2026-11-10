@@ -2550,3 +2550,71 @@
 		#size-cells = <0>;
 	};
 };
+
+/*
+ * Rear module companion (73C2). Registers and firmware go over the pins of
+ * the ISP's SPI1 (spi_7 at 0x143A0000 on stock), whose controller is in
+ * CMU_CAM1, which has no driver here: SCLK gpc3-4, CS gpc3-5, MISO gpc3-6,
+ * MOSI gpc3-7, bit-banged by spi-exynos-gpio. The chip answers on
+ * the rear camera I2C bus at 0x3d. Its node carries the power of the whole
+ * rear module, in the stock order: sensor rails, then its own, then MCLK,
+ * its reset (gpc0-7) and the sensor's (gpc0-5).
+ */
+&pinctrl_bus0 {
+	cam_spi_pins: cam-spi-pins {
+		samsung,pins = "gpc3-4", "gpc3-5", "gpc3-6", "gpc3-7";
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+};
+
+/ {
+	spi-cam {
+		compatible = "samsung,exynos-spi-gpio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		sck-gpios = <&gpc3 4 GPIO_ACTIVE_HIGH>;
+		miso-gpios = <&gpc3 6 GPIO_ACTIVE_HIGH>;
+		mosi-gpios = <&gpc3 7 GPIO_ACTIVE_HIGH>;
+		cs-gpios = <&gpc3 5 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_spi_pins>;
+
+		cam_comp_spi: companion@0 {
+			compatible = "samsung,s5c73c2-spi";
+			reg = <0>;
+			spi-max-frequency = <50000000>;
+		};
+	};
+};
+
+&cam_i2c0 {
+	companion@3d {
+		compatible = "samsung,s5c73c2";
+		reg = <0x3d>;
+		samsung,spi-device = <&cam_comp_spi>;
+		vddaf-supply = <&cam_vddaf>;
+		vdda-supply = <&cam_vdda>;
+		ois-vdd-supply = <&cam_ois_vdd>;
+		ois-vm-supply = <&cam_ois_vm>;
+		vddio-supply = <&cam_vddio>;
+		vddd-supply = <&cam_vddd>;
+		comp-ret-supply = <&cam_comp_ret>;
+		comp-vddio-supply = <&cam_comp_vddio>;
+		comp-vdda-supply = <&cam_comp_vdda>;
+		comp-vddd-supply = <&cam_comp_core1>;
+		comp-noret-supply = <&cam_comp_noret>;
+		comp-core-supply = <&cam_comp_core>;
+		clocks = <&clock_top0 CLK_SCLK_ISP_SENSOR1>,
+			 <&clock_top0 CLK_SCLK_ISP_SENSOR0>;
+		clock-names = "mclk", "sensor-mclk";
+		assigned-clocks = <&clock_top0 CLK_MOUT_SCLK_ISP_SENSOR1>,
+				  <&clock_top0 CLK_MOUT_SCLK_ISP_SENSOR0>;
+		assigned-clock-parents = <&fin_pll>, <&fin_pll>;
+		pinctrl-names = "default", "active";
+		pinctrl-0 = <&cam_mclk01_off>;
+		pinctrl-1 = <&cam_mclk01_on>;
+		reset-gpios = <&gpc0 7 GPIO_ACTIVE_LOW>;
+		sensor-reset-gpios = <&gpc0 5 GPIO_ACTIVE_LOW>;
+	};
+};
