@@ -738,6 +738,16 @@ static void decon_win_set_colkey(struct decon_context *ctx, unsigned int win)
 	writel(keycon1, ctx->regs + WKEYCON1_BASE(win));
 }
 
+/*
+ * The share of the DRAM bus's raw rate (16 bytes per clock) DECON gets
+ * next to the CPUs and the GPU, in percent; the request is divided by it.
+ * Two full-screen windows (an overlay) then ask for 543 MHz, one window
+ * still for the 259 MHz floor. At 60, 45 and 100 the overlay's transfers
+ * ran past the TE period and 4-10% of frames came a refresh late.
+ */
+static unsigned int decon_bw_util = 35;
+module_param_named(bw_util, decon_bw_util, uint, 0644);
+
 static void decon_release_bandwidth(struct decon_context *ctx)
 {
 	icc_set_bw(ctx->icc_path, 0, 0);
@@ -755,10 +765,10 @@ static void decon_bw_idle_work(struct work_struct *work)
 
 /*
  * Ask the display bus for the bandwidth the enabled windows read: their
- * source size times the refresh rate, with half again as headroom for
- * the burst at the start of each frame. While the previous frame may
- * still be scanned out, keep the larger of its request and this one;
- * a drop takes effect at the next update.
+ * source size times the refresh rate over the bus share DECON gets, with
+ * half again as headroom for the burst at the start of each frame. While
+ * the previous frame may still be scanned out, keep the larger of its
+ * request and this one; a drop takes effect at the next update.
  *
  * In command mode DECON reads memory only while it sends a frame, so the
  * request is released once no update came for DECON_BW_IDLE_MS. The
@@ -784,8 +794,8 @@ static void decon_update_bandwidth(struct decon_context *ctx)
 			 state->base.fb->format->cpp[0];
 	}
 
-	bw = div_u64(bytes * drm_mode_vrefresh(&crtc->state->adjusted_mode),
-		     1000);
+	bw = div_u64(bytes * drm_mode_vrefresh(&crtc->state->adjusted_mode) * 100,
+		     1000 * clamp(READ_ONCE(decon_bw_util), 10U, 100U));
 	icc_set_bw(ctx->icc_path, kBps_to_icc(max(bw, ctx->icc_bw)),
 		   kBps_to_icc(max(bw, ctx->icc_bw) / 2 * 3));
 	ctx->icc_bw = bw;
