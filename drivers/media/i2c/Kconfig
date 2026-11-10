@@ -3,6 +3,20 @@
 # Multimedia Video device configuration
 #
 
+config VIDEO_S5C73C2
+	tristate "Samsung S5C73C2 camera companion"
+	depends on I2C && SPI && OF
+	select CRC32
+	select FW_LOADER
+	help
+	  Firmware loader for the Samsung S5C73C2 ("73C2") companion chip
+	  that sits between the rear sensor and the MIPI CSI-2 receiver on
+	  the Galaxy S6 (SM-G920F, SM-G925F). The chip passes no image
+	  until its firmware runs.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called s5c73c2.
+
 if VIDEO_DEV
 
 comment "IR I2C driver auto-selected by 'Autoselect ancillary drivers'"
