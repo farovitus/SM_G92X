@@ -1897,11 +1897,16 @@
  * (YAS537), barometer (LPS25H), light/proximity (TMD4903) and grip (SX9306)
  * sensors. Board facts are from the stock rev06 DT.
  *
- * The chip sits on SPI1, whose controller is clocked from CMU_PERIC1, which
- * hangs the bus on this board, so the bus is bit-banged on the same pins
- * (SCLK gpd6-2, CS gpd6-3, MISO gpd6-4, MOSI gpd6-5), mode 3 as on stock.
- * samsung,exynos-spi-gpio writes gpd6's data register once per edge and
- * loads lhd's RAM patch in 6.8 s, against 10.5 s through spi-gpio.
+ * The chip sits on SPI1 as on stock: SCLK gpd6-2, MISO gpd6-4 and MOSI
+ * gpd6-5 in their SPI function, CS gpd6-3 as a GPIO, mode 3. CMU_PERIC1
+ * reads fine but is not registered; S-Boot leaves PCLK_SPI1 and
+ * SCLK_SPI1_USER on with the user mux on CMU_TOP0, so a fixed clock stands
+ * in for the PCLK and SCLK_SPI1 comes from CMU_TOP0.
+ * No dmas: stock used PDMA0 requests 9 (TX) and 8 (RX), but through
+ * mainline pl330 those transfers never move a byte. Without DMA the
+ * controller takes at most 63 bytes per transfer, which bcm4773 keeps its
+ * SSI frames to, and transfers above 32 bytes sleep on the RX FIFO
+ * interrupt.
  * HOST_REQ gpa3-6 is the chip's data-ready interrupt; MCU_REQ gpf4-5 and
  * MCU_RESP gpf4-4 are the SSI handshake; nSTANDBY gpf4-7 powers the chip
  * and belongs to lhd, which loads the chip's RAM patch on every power-up.
@@ -1915,10 +1920,19 @@
 };
 
 &pinctrl_bus0 {
+	/* As stock: full drive, SCLK/MOSI pulled up, MISO pulled down. */
 	gnss_spi: gnss-spi-pins {
-		samsung,pins = "gpd6-2", "gpd6-3", "gpd6-4", "gpd6-5";
-		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
-		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+		samsung,pins = "gpd6-2", "gpd6-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+	};
+
+	gnss_spi_miso: gnss-spi-miso-pins {
+		samsung,pins = "gpd6-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
 	};
 };
 
@@ -1937,16 +1951,35 @@
 };
 
 / {
-	spi-gnss {
-		compatible = "samsung,exynos-spi-gpio";
+	aliases {
+		/* spi-s3c64xx takes its FIFO depth from the alias index. */
+		spi1 = &spi_1;
+	};
+
+	clocks {
+		spi1_pclk: clock-spi1-pclk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <66666667>;
+			clock-output-names = "spi1_pclk";
+		};
+	};
+};
+
+&soc {
+	spi_1: spi@14d30000 {
+		compatible = "samsung,exynos7-spi";
+		reg = <0x14d30000 0x100>;
+		interrupts = <GIC_SPI 465 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&spi1_pclk>, <&clock_top0 CLK_SCLK_SPI1>;
+		clock-names = "spi", "spi_busclk0";
+		num-cs = <1>;
+		cs-gpios = <&gpd6 3 GPIO_ACTIVE_LOW>;
 		#address-cells = <1>;
 		#size-cells = <0>;
-		sck-gpios = <&gpd6 2 GPIO_ACTIVE_HIGH>;
-		miso-gpios = <&gpd6 4 GPIO_ACTIVE_HIGH>;
-		mosi-gpios = <&gpd6 5 GPIO_ACTIVE_HIGH>;
-		cs-gpios = <&gpd6 3 GPIO_ACTIVE_LOW>;
 		pinctrl-names = "default";
-		pinctrl-0 = <&gnss_spi &gnss_host_req &gnss_ctrl &gnss_mcu_resp>;
+		pinctrl-0 = <&gnss_spi &gnss_spi_miso &gnss_host_req &gnss_ctrl
+			     &gnss_mcu_resp>;
 
 		gnss@0 {
 			compatible = "brcm,bcm4773";
