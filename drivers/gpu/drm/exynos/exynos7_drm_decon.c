@@ -82,6 +82,14 @@ module_param_named(te_period_ns, decon_te_period, uint, 0444);
 static unsigned int decon_te_replay;
 module_param_named(te_replay, decon_te_replay, uint, 0444);
 
+/*
+ * Vblank (the TE interrupt) goes off at the first TE with no user left,
+ * instead of 5 s later: with TE timestamps the vblank count stays exact
+ * across off and on. Applies from the next vblank enable.
+ */
+static bool decon_vblank_fast_off = true;
+module_param_named(vblank_fast_off, decon_vblank_fast_off, bool, 0644);
+
 /* an edge this soon after the TE interrupt is enabled is a replay */
 #define DECON_TE_REPLAY_US	1000
 
@@ -433,6 +441,35 @@ static bool decon_send_flip_next_te(struct decon_context *ctx,
 	return true;
 }
 
+/*
+ * The vblank time is the last TE edge, carried forward by the measured TE
+ * period to the latest edge before now. The vblank core then counts the
+ * TEs that passed while vblank was off, so the TE interrupt can go off as
+ * soon as nobody waits for vblank.
+ */
+static bool decon_get_vblank_timestamp(struct exynos_drm_crtc *crtc,
+				       ktime_t *vblank_time)
+{
+	struct decon_context *ctx = crtc->ctx;
+	unsigned long flags;
+	ktime_t last;
+	u32 period;
+	s64 d;
+
+	spin_lock_irqsave(&ctx->te_lock, flags);
+	last = ctx->te_last;
+	period = ctx->te_sync ? ctx->te_period_ns : 0;
+	spin_unlock_irqrestore(&ctx->te_lock, flags);
+	if (!period || !last)
+		return false;
+
+	d = ktime_to_ns(ktime_sub(ktime_get(), last));
+	if (d > 0)
+		last = ktime_add_ns(last, div_u64(d, period) * period);
+	*vblank_time = last;
+	return true;
+}
+
 static int decon_enable_vblank(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
@@ -440,6 +477,8 @@ static int decon_enable_vblank(struct exynos_drm_crtc *crtc)
 	u32 val;
 
 	if (ctx->te_sync) {
+		ctx->drm_dev->vblank_disable_immediate =
+			READ_ONCE(decon_vblank_fast_off);
 		spin_lock_irqsave(&ctx->te_lock, flags);
 		ctx->vblank_on = true;
 		decon_te_irq_get(ctx);
@@ -1236,6 +1275,7 @@ static const struct exynos_drm_crtc_ops decon_crtc_ops = {
 	.atomic_disable = decon_atomic_disable,
 	.enable_vblank = decon_enable_vblank,
 	.disable_vblank = decon_disable_vblank,
+	.get_vblank_timestamp = decon_get_vblank_timestamp,
 	.atomic_begin = decon_atomic_begin,
 	.update_plane = decon_update_plane,
 	.disable_plane = decon_disable_plane,

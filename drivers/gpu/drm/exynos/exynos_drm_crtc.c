@@ -159,6 +159,19 @@ static void exynos_drm_crtc_disable_vblank(struct drm_crtc *crtc)
 		exynos_crtc->ops->disable_vblank(exynos_crtc);
 }
 
+static bool exynos_drm_crtc_get_vblank_timestamp(struct drm_crtc *crtc,
+						 int *max_error,
+						 ktime_t *vblank_time,
+						 bool in_vblank_irq)
+{
+	struct exynos_drm_crtc *exynos_crtc = to_exynos_crtc(crtc);
+
+	if (exynos_crtc->ops->get_vblank_timestamp)
+		return exynos_crtc->ops->get_vblank_timestamp(exynos_crtc,
+							      vblank_time);
+	return false;
+}
+
 static const struct drm_crtc_funcs exynos_crtc_funcs = {
 	.set_config	= drm_atomic_helper_set_config,
 	.page_flip	= drm_atomic_helper_page_flip,
@@ -168,6 +181,7 @@ static const struct drm_crtc_funcs exynos_crtc_funcs = {
 	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state,
 	.enable_vblank = exynos_drm_crtc_enable_vblank,
 	.disable_vblank = exynos_drm_crtc_disable_vblank,
+	.get_vblank_timestamp = exynos_drm_crtc_get_vblank_timestamp,
 };
 
 struct exynos_drm_crtc *exynos_drm_crtc_create(struct drm_device *drm_dev,
