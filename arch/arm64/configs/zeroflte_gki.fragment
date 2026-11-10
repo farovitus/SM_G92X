@@ -249,7 +249,10 @@ CONFIG_MFD_EXYNOS_LPASS=y
 # SPI0's controller clock is in CMU_PERIC1, which hangs the bus: bit-bang it.
 CONFIG_SPI_GPIO=y
 # Galaxy S6 sensor hub: the BCM4773 GNSS chip runs the SSP hub firmware
-# that lhd loads, on a bit-banged SPI1. Modules, as the BOOT size requires.
+# that lhd loads, on SPI1. The controller is built in, so the vendor
+# modprobe list needs no change; spi-exynos-gpio stays a module only
+# because that list still names it.
+CONFIG_SPI_S3C64XX=y
 CONFIG_SPI_EXYNOS_GPIO=m
 CONFIG_BCM4773=m
 CONFIG_IIO_SSP_SENSORHUB=m
