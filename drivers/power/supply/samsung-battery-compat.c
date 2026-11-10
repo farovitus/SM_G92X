@@ -17,12 +17,18 @@
  *
  * Lineage's health HAL only starts when battery/charging_enabled exists
  * (added to the 3.10 sec_battery driver for Lineage), and system_server
- * waits for that HAL. Charging stays as S-Boot set it up: the attribute
- * reads 1, and writing 0 fails until the charger driver can stop charging.
+ * waits for that HAL. Writing 0 inhibits charging and 1 resumes it,
+ * through the charger's charge_behaviour.
+ *
+ * batt_slate_mode is stock's switch for running the system from the
+ * battery with the input attached, used to measure the load over USB.
+ * Writing 1 sets the charger's charge_behaviour to force-discharge; 0
+ * returns to what charging_enabled asks for.
  */
 
 #include <linux/kstrtox.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
@@ -30,6 +36,9 @@
 struct sec_compat {
 	struct power_supply *fg;
 	struct power_supply *chg;
+	struct mutex lock;	/* serialises the two switches below */
+	bool inhibit;		/* charging_enabled 0 */
+	bool slate;		/* batt_slate_mode 1 */
 };
 
 static void sec_compat_put(void *data)
@@ -60,28 +69,75 @@ static int sec_compat_ac_get(struct power_supply *psy,
 	return power_supply_get_property(sc->chg, psp, val);
 }
 
+static struct sec_compat *sec_compat_of(struct device *dev)
+{
+	return power_supply_get_drvdata(dev_get_drvdata(dev));
+}
+
+/*
+ * Slate mode wins over charging_enabled: the health HAL rewrites
+ * charging_enabled on battery updates, and that must not end slate mode.
+ */
+static ssize_t sec_compat_set(struct device *dev, const char *buf,
+			      size_t count, bool *flag, bool invert)
+{
+	struct sec_compat *sc = sec_compat_of(dev);
+	union power_supply_propval val;
+	bool on, old;
+	int ret;
+
+	ret = kstrtobool(buf, &on);
+	if (ret)
+		return ret;
+
+	on ^= invert;
+	mutex_lock(&sc->lock);
+	old = *flag;
+	*flag = on;
+	val.intval = sc->slate ? POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE :
+		     sc->inhibit ? POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE :
+		     POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO;
+	ret = power_supply_set_property(sc->chg,
+					POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR, &val);
+	if (ret)
+		*flag = old;
+	mutex_unlock(&sc->lock);
+	return ret ? ret : count;
+}
+
 static ssize_t charging_enabled_show(struct device *dev,
 				     struct device_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "1\n");
+	return sysfs_emit(buf, "%d\n", !READ_ONCE(sec_compat_of(dev)->inhibit));
 }
 
 static ssize_t charging_enabled_store(struct device *dev,
 				      struct device_attribute *attr,
 				      const char *buf, size_t count)
 {
-	bool enable;
-	int ret;
-
-	ret = kstrtobool(buf, &enable);
-	if (ret)
-		return ret;
-	return enable ? count : -EOPNOTSUPP;
+	return sec_compat_set(dev, buf, count, &sec_compat_of(dev)->inhibit,
+			      true);
 }
 static DEVICE_ATTR_RW(charging_enabled);
 
+static ssize_t batt_slate_mode_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%d\n", READ_ONCE(sec_compat_of(dev)->slate));
+}
+
+static ssize_t batt_slate_mode_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	return sec_compat_set(dev, buf, count, &sec_compat_of(dev)->slate,
+			      false);
+}
+static DEVICE_ATTR_RW(batt_slate_mode);
+
 static struct attribute *sec_compat_battery_attrs[] = {
 	&dev_attr_charging_enabled.attr,
+	&dev_attr_batt_slate_mode.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(sec_compat_battery);
@@ -146,6 +202,7 @@ static int sec_compat_probe(struct platform_device *pdev)
 	sc = devm_kzalloc(dev, sizeof(*sc), GFP_KERNEL);
 	if (!sc)
 		return -ENOMEM;
+	mutex_init(&sc->lock);
 
 	sc->fg = sec_compat_get(dev, "max77843-fuelgauge");
 	if (IS_ERR(sc->fg))
