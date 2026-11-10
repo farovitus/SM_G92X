@@ -74,6 +74,10 @@ module_param_named(te_mid_xfer, decon_te_mid_xfer, uint, 0444);
 static unsigned int decon_te_early_latch;
 module_param_named(te_early_latch, decon_te_early_latch, uint, 0444);
 
+/* The TE period in use for stamping flips ahead of TE, in ns. */
+static unsigned int decon_te_period;
+module_param_named(te_period_ns, decon_te_period, uint, 0444);
+
 /* a pending frame waits at most this long for TE before it is sent anyway */
 #define DECON_TE_TIMEOUT_MS	50
 /* after this many such frames in a row, frames go out on commit again */
@@ -875,15 +879,21 @@ static irqreturn_t decon_te_irq_handler(int irq, void *dev_id)
 
 	spin_lock(&ctx->te_lock);
 	ctx->te_count++;
-	/* the panel's own refresh period, for stamping flips ahead of TE */
+	/*
+	 * The panel's own refresh period, for stamping flips ahead of TE.
+	 * It starts from the display mode and follows the measured TE
+	 * intervals; a gap that is not one period (a missed TE, the
+	 * interrupt off) is not a sample.
+	 */
 	if (ctx->te_last) {
 		s64 d = ktime_to_ns(ktime_sub(now, ctx->te_last));
 		s64 p = ctx->te_period_ns;
 
 		if (!p && d >= 8000000 && d <= 34000000)
 			ctx->te_period_ns = d;
-		else if (p && d > p * 3 / 4 && d < p * 5 / 4)
+		else if (p && d > p * 7 / 8 && d < p * 9 / 8)
 			ctx->te_period_ns = p + (d - p) / 16;
+		WRITE_ONCE(decon_te_period, ctx->te_period_ns);
 	}
 	ctx->te_last = now;
 	if (ctx->te_sync && ctx->trig_pending && !ctx->xfer_busy) {
@@ -925,7 +935,9 @@ static irqreturn_t decon_te_irq_handler(int irq, void *dev_id)
  */
 static void decon_te_start(struct decon_context *ctx)
 {
+	const struct drm_display_mode *mode;
 	unsigned long flags;
+	u32 period;
 	ktime_t t0;
 	s64 us;
 	u32 val;
@@ -933,9 +945,15 @@ static void decon_te_start(struct decon_context *ctx)
 	if (!ctx->i80_if || ctx->te_irq <= 0 || !decon_te_enable)
 		return;
 
+	mode = &ctx->crtc->base.state->adjusted_mode;
+	period = mode->clock ? div_u64((u64)mode->htotal * mode->vtotal *
+				       1000000, mode->clock) : 0;
+
 	spin_lock_irqsave(&ctx->te_lock, flags);
 	ctx->te_sync = false;
 	WRITE_ONCE(decon_te_active, false);
+	ctx->te_last = 0;
+	ctx->te_period_ns = period;
 	ctx->te_count = 0;
 	ctx->te_misses = 0;
 	ctx->trig_pending = false;
