@@ -115,8 +115,14 @@
 			no-map;
 		};
 
-		framebuffer@e2a00000 {
+		/*
+		 * DECON keeps scanning it out through its SysMMU until the
+		 * first frame of its own: map it 1:1 and keep the DMA
+		 * allocator off that IOVA range.
+		 */
+		boot_fb: framebuffer@e2a00000 {
 			reg = <0x0 0xe2a00000 0x0 0x1000000>;
+			iommu-addresses = <&decon 0xe2a00000 0x1000000>;
 			no-map;
 		};
 
@@ -1098,6 +1104,7 @@
 	 * running through system sleep.
 	 */
 	samsung,bootloader-display;
+	memory-region = <&boot_fb>;
 
 	/*
 	 * The panel's tearing-effect output on GPG0-0, an EINT (3.10:
