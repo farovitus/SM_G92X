@@ -1448,6 +1448,16 @@ static const struct s6e3ha2_panel_desc samsung_s6e3hf2 = {
 	.type = HF2_TYPE,
 };
 
+/*
+ * Galaxy S6 edge (zerolte): S6E3HF2 driven at 1440x2560 with the same DSI
+ * timings as the S6's S6E3HA2 (stock lcd_info s6e3hf2_wqhd). There is no
+ * per-panel gamma table for it here, so brightness uses the TM2 steps.
+ */
+static const struct s6e3ha2_panel_desc samsung_s6e3hf2_zerolte = {
+	.mode = &s6e3ha2_mode,
+	.type = HF2_TYPE,
+};
+
 static int s6e3ha2_get_modes(struct drm_panel *panel,
 			     struct drm_connector *connector)
 {
@@ -1613,6 +1623,8 @@ static const struct of_device_id s6e3ha2_of_match[] = {
 	{ .compatible = "samsung,s6e3ha2-zeroflte",
 	  .data = &samsung_s6e3ha2_zeroflte },
 	{ .compatible = "samsung,s6e3hf2", .data = &samsung_s6e3hf2 },
+	{ .compatible = "samsung,s6e3hf2-zerolte",
+	  .data = &samsung_s6e3hf2_zerolte },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, s6e3ha2_of_match);
