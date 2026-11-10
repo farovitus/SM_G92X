@@ -51,6 +51,17 @@
 
 #define SHADOWCON_WINx_PROTECT(_win)		(1 << (10 + (_win)))
 
+/*
+ * WINCHMAP0: the DMA channel that feeds each window, 4 bits per window.
+ * G0 and G1 read memory directly; the VG/VGR channels go through the VPP
+ * scaler blocks, which this driver does not run.
+ */
+#define WINCHMAP0				0x40
+#define WINCHMAP_MASK(_win)			(0x7 << ((_win) * 4))
+#define WINCHMAP_DMA(_ch, _win)			((_ch) << ((_win) * 4))
+#define WINCHMAP_DMA_G0				0
+#define WINCHMAP_DMA_G1				1
+
 /* WINCONx */
 #define WINCON(_win)				(0x50 + ((_win) * 4))
 

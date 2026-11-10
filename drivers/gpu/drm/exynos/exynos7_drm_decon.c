@@ -24,6 +24,7 @@
 #include <video/of_display_timing.h>
 #include <video/of_videomode.h>
 
+#include <drm/drm_blend.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_vblank.h>
@@ -207,9 +208,20 @@ static const uint32_t decon_formats[] = {
 	DRM_FORMAT_BGRA8888,
 };
 
+/*
+ * Window 0 reads through DMA channel G0 and window 1 through G1, the two
+ * channels that need no VPP. Window 1 is an overlay that blends over
+ * window 0, so the composer can scan out one layer on window 0 and the
+ * GPU's client target over it.
+ */
 static const enum drm_plane_type decon_win_types[WINDOWS_NR] = {
 	DRM_PLANE_TYPE_PRIMARY,
-	DRM_PLANE_TYPE_CURSOR,
+	DRM_PLANE_TYPE_OVERLAY,
+};
+
+static const unsigned int decon_win_dma[WINDOWS_NR] = {
+	WINCHMAP_DMA_G0,
+	WINCHMAP_DMA_G1,
 };
 
 /**
@@ -581,6 +593,53 @@ static void decon_disable_vblank(struct exynos_drm_crtc *crtc)
 	}
 }
 
+/*
+ * Blend window win (1 and up) over the windows below it: A is this
+ * window, B what lies under it, as in the 3.10 decon driver's blendeq().
+ * Window 0 has no blend equation; it lies on the background.
+ *
+ *   opaque format or NONE:  A = 1,       B = 0
+ *   PREMULTI (the default): A = 1,       B = 1 - alpha_A
+ *   COVERAGE:               A = alpha_A, B = 1 - alpha_A
+ *
+ * Per-pixel alpha (BLD_PIX, ALPHA_SEL) is on only when the equation
+ * uses it. Returns the WINCON value with the blend bits set.
+ */
+static u32 decon_win_set_blend(struct decon_context *ctx, unsigned int win,
+			       struct drm_framebuffer *fb, u32 wincon)
+{
+	const struct drm_plane_state *state = ctx->planes[win].base.state;
+	unsigned int mode = DRM_MODE_BLEND_PIXEL_NONE;
+	u32 a = BLENDE_COEF_ONE, b = BLENDE_COEF_ZERO;
+
+	if (fb->format->has_alpha)
+		mode = state->pixel_blend_mode;
+
+	switch (mode) {
+	case DRM_MODE_BLEND_PREMULTI:
+		b = BLENDE_COEF_ONE_MINUS_ALPHA_A;
+		break;
+	case DRM_MODE_BLEND_COVERAGE:
+		a = BLENDE_COEF_ALPHA_A;
+		b = BLENDE_COEF_ONE_MINUS_ALPHA_A;
+		break;
+	default:
+		break;
+	}
+
+	wincon &= ~(WINCONx_BLD_PIX | WINCONx_ALPHA_SEL | WINCONx_ALPHA_MUL);
+	if (mode != DRM_MODE_BLEND_PIXEL_NONE)
+		wincon |= WINCONx_BLD_PIX | WINCONx_ALPHA_SEL;
+
+	writel(BLENDCON_NEW_8BIT_ALPHA_VALUE, ctx->regs + BLENDCON);
+	writel(BLENDE_A_FUNC(a) | BLENDE_B_FUNC(b) |
+	       BLENDE_P_FUNC(BLENDE_COEF_ZERO) |
+	       BLENDE_Q_FUNC(BLENDE_COEF_ZERO),
+	       ctx->regs + BLENDE(win - 1));
+
+	return wincon;
+}
+
 static void decon_win_set_pixfmt(struct decon_context *ctx, unsigned int win,
 				 struct drm_framebuffer *fb)
 {
@@ -588,7 +647,8 @@ static void decon_win_set_pixfmt(struct decon_context *ctx, unsigned int win,
 	int padding;
 
 	val = readl(ctx->regs + WINCON(win));
-	val &= ~WINCONx_BPPMODE_MASK;
+	val &= ~(WINCONx_BPPMODE_MASK | WINCONx_BURSTLEN_MASK |
+		 WINCONx_BLD_PIX | WINCONx_ALPHA_SEL | WINCONx_ALPHA_MUL);
 
 	switch (fb->format->format) {
 	case DRM_FORMAT_RGB565:
@@ -649,6 +709,9 @@ static void decon_win_set_pixfmt(struct decon_context *ctx, unsigned int win,
 		val &= ~WINCONx_BURSTLEN_MASK;
 		val |= WINCONx_BURSTLEN_8WORD;
 	}
+
+	if (win)
+		val = decon_win_set_blend(ctx, win, fb, val);
 
 	writel(val, ctx->regs + WINCON(win));
 }
@@ -822,6 +885,12 @@ static void decon_update_plane(struct exynos_drm_crtc *crtc,
 	writel(alpha, ctx->regs + VIDOSD_D(win));
 
 	decon_win_set_pixfmt(ctx, win, fb);
+
+	/* the DMA channel that feeds this window */
+	val = readl(ctx->regs + WINCHMAP0);
+	val &= ~WINCHMAP_MASK(win);
+	val |= WINCHMAP_DMA(decon_win_dma[win], win);
+	writel(val, ctx->regs + WINCHMAP0);
 
 	/* hardware window 0 doesn't support color key. */
 	if (win != 0)
@@ -1451,6 +1520,9 @@ static int decon_bind(struct device *dev, struct device *master, void *data)
 		ctx->configs[i].num_pixel_formats = ARRAY_SIZE(decon_formats);
 		ctx->configs[i].zpos = i;
 		ctx->configs[i].type = decon_win_types[i];
+		if (i)
+			ctx->configs[i].capabilities =
+				EXYNOS_DRM_PLANE_CAP_PIX_BLEND;
 
 		ret = exynos_plane_init(drm_dev, &ctx->planes[i], i,
 					&ctx->configs[i]);
