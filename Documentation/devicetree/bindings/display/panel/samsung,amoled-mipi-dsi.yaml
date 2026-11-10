@@ -21,7 +21,9 @@ allOf:
               - samsung,s6e3hf2
           not:
             contains:
-              const: samsung,s6e3ha2-zeroflte
+              enum:
+                - samsung,s6e3ha2-zeroflte
+                - samsung,s6e3hf2-zerolte
     then:
       required:
         - enable-gpios
@@ -41,6 +43,11 @@ properties:
       - items:
           - const: samsung,s6e3ha2-zeroflte
           - const: samsung,s6e3ha2
+        # Samsung S6E3HF2 5.1" 1440x2560 edge AMOLED panel of the Galaxy S6
+        # edge (SM-G925F), which has no enable line
+      - items:
+          - const: samsung,s6e3hf2-zerolte
+          - const: samsung,s6e3hf2
 
   reg: true
   reset-gpios: true
