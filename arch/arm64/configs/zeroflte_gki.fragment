@@ -323,15 +323,16 @@ CONFIG_LOG_BUF_SHIFT=12
 # CONFIG_BLK_DEV_RAM is not set
 # CONFIG_BLK_DEV_UBLK is not set
 # CONFIG_NET_SCH_NETEM is not set
-# No camera driver, and Android 13 has no USB webcam or webcam-gadget
-# support configured here: the V4L2 and media stack has no user. GKI
-# forces it, with other groups, through GKI_HACKS_TO_FIX for vendor
-# modules built out of tree; every module here is built in this tree,
-# so keep only the groups the board or Android uses: XFRM (Android's
-# network tests), crypto engine, DRM helpers, regmap IRQ/MMIO, sound,
-# UFS, pinctrl/GPIO, wireless extensions, USB PHY, SoC bus, GPU memory
-# tracing, IRQ domains, page pool/devlink, MIPI D-PHY and DMA. Media,
-# CAN, Qualcomm, MMC, virtio, RPMSG, hypervisor and balloon stay out.
+# Android 13 has no USB webcam or webcam-gadget support configured here,
+# and the camera driver turns on only the media options it needs (see
+# the camera section). GKI forces the media stack, with other groups,
+# through GKI_HACKS_TO_FIX for vendor modules built out of tree; every
+# module here is built in this tree, so keep only the groups the board
+# or Android uses: XFRM (Android's network tests), crypto engine, DRM
+# helpers, regmap IRQ/MMIO, sound, UFS, pinctrl/GPIO, wireless
+# extensions, USB PHY, SoC bus, GPU memory tracing, IRQ domains, page
+# pool/devlink, MIPI D-PHY and DMA. Media, CAN, Qualcomm, MMC, virtio,
+# RPMSG, hypervisor and balloon stay out.
 # CONFIG_GKI_HACKS_TO_FIX is not set
 CONFIG_GKI_NET_XFRM_HACKS=y
 CONFIG_GKI_HIDDEN_CRYPTO_CONFIGS=y
@@ -357,7 +358,6 @@ CONFIG_GKI_HIDDEN_DMA_CONFIGS=y
 # CONFIG_GKI_HIDDEN_RPMSG_CONFIGS is not set
 # CONFIG_GKI_HIDDEN_HYPERVISOR_CONFIGS is not set
 # CONFIG_GKI_HIDDEN_MM_CONFIGS is not set
-# CONFIG_MEDIA_SUPPORT is not set
 # Only the Samsung UART exists; the DRD controller has no EHCI companion;
 # there is no DisplayPort; the only PCIe device is the Wi-Fi chip on the
 # Exynos 7420 root complex, with no endpoint mode.
@@ -371,3 +371,11 @@ CONFIG_GKI_HIDDEN_DMA_CONFIGS=y
 # CONFIG_PCI_ENDPOINT is not set
 # CONFIG_SCSI_UFSHCD_PCI is not set
 # CONFIG_SND_PCI is not set
+
+# Camera: the rear module's 73C2 companion, which needs its firmware before
+# any image passes. Only its loader so far: V4L2 and the media controller
+# come with the capture drivers, so the filter keeps the rest of the media
+# tree out.
+CONFIG_MEDIA_SUPPORT=m
+CONFIG_MEDIA_SUPPORT_FILTER=y
+CONFIG_VIDEO_S5C73C2=m
