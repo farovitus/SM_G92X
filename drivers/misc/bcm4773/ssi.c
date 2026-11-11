@@ -53,6 +53,7 @@ struct bbd_ssi {
 	unsigned int max_rw;		/* payload per frame, from the controller */
 	unsigned int max_read;
 	bool powered;
+	bool quiet;			/* no wakeup events, see bbd_ssi_prepare() */
 
 	spinlock_t fifo_lock;
 	DECLARE_KFIFO(tx_fifo, u8, SSI_FIFO_SIZE);
@@ -195,7 +196,7 @@ static bool ssi_tx_pending(struct bbd_ssi *ssi)
 static int ssi_run(struct bbd_ssi *ssi)
 {
 	struct device *dev = &ssi->spi->dev;
-	bool req;
+	bool req, awake;
 	int loops, ret = 0;
 
 	mutex_lock(&ssi->xfer_lock);
@@ -206,7 +207,9 @@ static int ssi_run(struct bbd_ssi *ssi)
 	if (!req && !ssi_tx_pending(ssi))
 		goto unlock;
 
-	pm_stay_awake(dev);
+	awake = !READ_ONCE(ssi->quiet);
+	if (awake)
+		pm_stay_awake(dev);
 	if (!ssi_hello(ssi)) {
 		dev_err_ratelimited(dev, "no MCU_RESP\n");
 		ret = -ETIMEDOUT;
@@ -238,7 +241,8 @@ relax:
 		ssi->errors++;
 		dev_err_ratelimited(dev, "transfer failed: %d\n", ret);
 	}
-	pm_relax(dev);
+	if (awake)
+		pm_relax(dev);
 unlock:
 	mutex_unlock(&ssi->xfer_lock);
 	if (!ret && READ_ONCE(ssi->powered) && ssi_tx_pending(ssi))
@@ -463,12 +467,36 @@ static int bbd_ssi_probe(struct spi_device *spi)
 	return 0;
 }
 
+/*
+ * The sensor hub child tells the hub the AP is suspending from its own
+ * suspend callback and waits for the answer. Reported as wakeup events,
+ * those two bursts abort every suspend attempt with -EBUSY. .prepare runs
+ * before any device suspends, so the bursts run quiet from here until this
+ * device suspends. Hub data after that wakes the AP again.
+ */
+static int bbd_ssi_prepare(struct device *dev)
+{
+	struct bbd_device *bbd = dev_get_drvdata(dev);
+
+	WRITE_ONCE(bbd->ssi->quiet, true);
+	return 0;
+}
+
+/* Also runs when the suspend aborted before reaching this device. */
+static void bbd_ssi_complete(struct device *dev)
+{
+	struct bbd_device *bbd = dev_get_drvdata(dev);
+
+	WRITE_ONCE(bbd->ssi->quiet, false);
+}
+
 static int bbd_ssi_suspend(struct device *dev)
 {
 	struct bbd_device *bbd = dev_get_drvdata(dev);
 
 	/* The sensor hub child suspended first: send what it queued. */
 	flush_work(&bbd->ssi->tx_work);
+	WRITE_ONCE(bbd->ssi->quiet, false);
 
 	/* The hub keeps sampling in suspend; HOST_REQ wakes the AP. */
 	if (device_may_wakeup(dev))
@@ -486,7 +514,11 @@ static int bbd_ssi_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(bbd_ssi_pm, bbd_ssi_suspend, bbd_ssi_resume);
+static const struct dev_pm_ops bbd_ssi_pm = {
+	.prepare = pm_sleep_ptr(bbd_ssi_prepare),
+	.complete = pm_sleep_ptr(bbd_ssi_complete),
+	SYSTEM_SLEEP_PM_OPS(bbd_ssi_suspend, bbd_ssi_resume)
+};
 
 static const struct of_device_id bbd_ssi_of_match[] = {
 	{ .compatible = "brcm,bcm4773" },
