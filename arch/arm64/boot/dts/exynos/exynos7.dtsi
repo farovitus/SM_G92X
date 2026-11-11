@@ -739,6 +739,82 @@
 			status = "disabled";
 		};
 
+		cmu_cam0: clock-controller@144d0000 {
+			compatible = "samsung,exynos7-clock-cam0";
+			reg = <0x144d0000 0xb04>;
+			#clock-cells = <1>;
+			clocks = <&fin_pll>,
+				 <&clock_top0 CLK_ACLK_CAM0_CSIS0_690>,
+				 <&clock_top0 CLK_ACLK_CAM0_BNSA_690>,
+				 <&clock_top0 CLK_ACLK_CAM0_TREX_532>,
+				 <&clock_top0 CLK_ACLK_CAM0_NOCP_133>,
+				 <&clock_top0 CLK_ACLK_CAM0_CSIS1_174>,
+				 <&clock_top0 CLK_ACLK_CAM0_BNSB_690>;
+			clock-names = "fin_pll", "aclk_cam0_csis0_690",
+				      "aclk_cam0_bnsa_690", "aclk_cam0_trex_532",
+				      "aclk_cam0_nocp_133", "aclk_cam0_csis1_174",
+				      "aclk_cam0_bnsb_690";
+			power-domains = <&pd_cam0>;
+			status = "disabled";
+		};
+
+		/*
+		 * Front camera path: CSIS1 -> FIMC-LITE B (FIMC-BNS B). The
+		 * receiver of each pair sits below its FIMC-LITE: CSIS0/1 at
+		 * 0x14000000/0x14010000, BNS A/B at 0x14020000/0x14030000.
+		 */
+		csis1: csis@14010000 {
+			compatible = "samsung,exynos7420-mipi-csi2";
+			reg = <0x14010000 0x1000>;
+			interrupts = <GIC_SPI 131 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&cmu_cam0 CLK_PCLK_CSIS1>,
+				 <&cmu_cam0 CLK_ACLK_CSIS1>,
+				 <&cmu_cam0 CLK_PHYCLK_RXBYTECLKHS0_S2A>;
+			clock-names = "pclk", "wrap", "phy";
+			phys = <&mipi_phy 2>;
+			phy-names = "csis";
+			power-domains = <&pd_cam0>;
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+				};
+
+				port@1 {
+					reg = <1>;
+
+					csis1_out: endpoint {
+						remote-endpoint = <&fimc_lite_b_in>;
+					};
+				};
+			};
+		};
+
+		fimc_lite_b: fimc-lite@14030000 {
+			compatible = "samsung,exynos7420-fimc-lite";
+			reg = <0x14030000 0x1000>;
+			interrupts = <GIC_SPI 134 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&cmu_cam0 CLK_ACLK_FIMC_BNS_B>,
+				 <&cmu_cam0 CLK_PCLK_FIMC_BNS_B>,
+				 <&cmu_cam0 CLK_ACLK_TREX_A_5X1_BNS_B>,
+				 <&cmu_cam0 CLK_PCLK_ASYNCAPB_FIMC_BNS_B>,
+				 <&cmu_cam0 CLK_CCLK_ASYNCAPB_FIMC_BNS_B>;
+			clock-names = "aclk", "pclk", "aclk_trex", "pclk_async",
+				      "cclk_async";
+			power-domains = <&pd_cam0>;
+			status = "disabled";
+
+			port {
+				fimc_lite_b_in: endpoint {
+					remote-endpoint = <&csis1_out>;
+				};
+			};
+		};
+
 		serial_0: serial@13630000 {
 			compatible = "samsung,exynos4210-uart";
 			reg = <0x13630000 0x100>;
@@ -1031,9 +1107,20 @@
 			reg = <0x02157000 0x1000>;
 		};
 
+		sysreg_system_controller: system-controller@10050000 {
+			compatible = "samsung,exynos7-sysreg", "syscon";
+			reg = <0x10050000 0x4000>;
+		};
+
 		pmu_system_controller: system-controller@105c0000 {
 			compatible = "samsung,exynos7-pmu", "syscon";
 			reg = <0x105c0000 0x10000>;
+
+			mipi_phy: mipi-phy {
+				compatible = "samsung,exynos7420-mipi-video-phy";
+				#phy-cells = <1>;
+				samsung,disp-sysreg = <&sysreg_system_controller>;
+			};
 		};
 
 		pd_disp: power-domain@105c4080 {
@@ -1087,15 +1174,18 @@
 		};
 
 		pd_cam0: power-domain@105c4040 {
-			compatible = "samsung,exynos5433-pd";
-			reg = <0x105c4040 0x20>;
+			compatible = "samsung,exynos7420-cam0-pd",
+				     "samsung,exynos5433-pd";
+			/* CONFIG/STATUS/OPTION, LPI_MASK_CAM0_BUSMASTER */
+			reg = <0x105c4040 0x20>, <0x120e0000 0x4>;
 			#power-domain-cells = <0>;
 			label = "CAM0";
 			power-domains = <&pd_cam1>;
 		};
 
 		pd_cam1: power-domain@105c4060 {
-			compatible = "samsung,exynos5433-pd";
+			compatible = "samsung,exynos7420-cam1-pd",
+				     "samsung,exynos5433-pd";
 			reg = <0x105c4060 0x20>;
 			#power-domain-cells = <0>;
 			label = "CAM1";
