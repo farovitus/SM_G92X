@@ -48,6 +48,7 @@ struct mipi_phy_device_desc {
 		u32 resetn_val;
 		unsigned int resetn_reg;
 		enum exynos_mipi_phy_regmap_id resetn_map;
+		bool resetn_pulse;
 	} phys[EXYNOS_MIPI_PHYS_NUM];
 };
 
@@ -213,6 +214,81 @@ static const struct mipi_phy_device_desc exynos5433_mipi_phy = {
 	},
 };
 
+#define EXYNOS7420_MIPI_PHY_CONTROL(n)		(0x070C + (n) * 4)
+#define EXYNOS7420_SYSREG_MIPI_PHY_RESETN	0x2930
+
+/*
+ * Exynos7420 has one PMU enable per D-PHY: CSIS0 shares the first one
+ * with DSIM0, CSIS1 has the third, CSIS2 the fourth. The resets are in
+ * the SoC SYSREG. CSIS0 has no reset of its own there; stock leaves the
+ * shared M4S4 PHY reset to the display. Stock pulses the CSIS1 and CSIS2
+ * resets low and high on every power-on, so the PHY restarts even when
+ * the boot loader left the reset released.
+ *
+ * CSIS0 and DSIM0 are not described as coupled: the DSIM driver of this
+ * SoC does not take the PHY, so a coupled CSIS0 power-off would see no
+ * DSIM0 user and switch the display PHY off under a running panel. The
+ * shared enable is set on power-on and left on.
+ */
+static const struct mipi_phy_device_desc exynos7420_mipi_phy = {
+	.num_regmaps = 2,
+	.regmap_names = {
+		"samsung,pmu-syscon",
+		"samsung,disp-sysreg",
+	},
+	.num_phys = 5,
+	.phys = {
+		{
+			/* EXYNOS_MIPI_PHY_ID_CSIS0 */
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_NONE,
+			.enable_val = EXYNOS4_PHY_ENABLE,
+			.enable_reg = EXYNOS7420_MIPI_PHY_CONTROL(0),
+			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = 0,
+			.resetn_reg = EXYNOS7420_SYSREG_MIPI_PHY_RESETN,
+			.resetn_map = EXYNOS_MIPI_REGMAP_DISP,
+		}, {
+			/* EXYNOS_MIPI_PHY_ID_DSIM0 */
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_NONE,
+			.enable_val = EXYNOS4_PHY_ENABLE,
+			.enable_reg = EXYNOS7420_MIPI_PHY_CONTROL(0),
+			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = BIT(0),
+			.resetn_reg = EXYNOS7420_SYSREG_MIPI_PHY_RESETN,
+			.resetn_map = EXYNOS_MIPI_REGMAP_DISP,
+		}, {
+			/* EXYNOS_MIPI_PHY_ID_CSIS1 */
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_NONE,
+			.enable_val = EXYNOS4_PHY_ENABLE,
+			.enable_reg = EXYNOS7420_MIPI_PHY_CONTROL(2),
+			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = BIT(8),
+			.resetn_reg = EXYNOS7420_SYSREG_MIPI_PHY_RESETN,
+			.resetn_map = EXYNOS_MIPI_REGMAP_DISP,
+			.resetn_pulse = true,
+		}, {
+			/* EXYNOS_MIPI_PHY_ID_DSIM1 */
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_NONE,
+			.enable_val = EXYNOS4_PHY_ENABLE,
+			.enable_reg = EXYNOS7420_MIPI_PHY_CONTROL(1),
+			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = BIT(4),
+			.resetn_reg = EXYNOS7420_SYSREG_MIPI_PHY_RESETN,
+			.resetn_map = EXYNOS_MIPI_REGMAP_DISP,
+		}, {
+			/* EXYNOS_MIPI_PHY_ID_CSIS2 */
+			.coupled_phy_id = EXYNOS_MIPI_PHY_ID_NONE,
+			.enable_val = EXYNOS4_PHY_ENABLE,
+			.enable_reg = EXYNOS7420_MIPI_PHY_CONTROL(3),
+			.enable_map = EXYNOS_MIPI_REGMAP_PMU,
+			.resetn_val = BIT(12),
+			.resetn_reg = EXYNOS7420_SYSREG_MIPI_PHY_RESETN,
+			.resetn_map = EXYNOS_MIPI_REGMAP_DISP,
+			.resetn_pulse = true,
+		},
+	},
+};
+
 struct exynos_mipi_video_phy {
 	struct regmap *regmaps[EXYNOS_MIPI_REGMAPS_NUM];
 	int num_phys;
@@ -238,6 +314,9 @@ static int __set_phy_state(const struct exynos_mipi_phy_desc *data,
 		regmap_update_bits(enable_map, data->enable_reg,
 				   data->enable_val, 0);
 	/* PHY reset */
+	if (on && data->resetn_pulse)
+		regmap_update_bits(resetn_map, data->resetn_reg,
+				   data->resetn_val, 0);
 	if (on)
 		regmap_update_bits(resetn_map, data->resetn_reg,
 				   data->resetn_val, data->resetn_val);
@@ -351,6 +430,9 @@ static const struct of_device_id exynos_mipi_video_phy_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos5433-mipi-video-phy",
 		.data = &exynos5433_mipi_phy,
+	}, {
+		.compatible = "samsung,exynos7420-mipi-video-phy",
+		.data = &exynos7420_mipi_phy,
 	},
 	{ /* sentinel */ },
 };
