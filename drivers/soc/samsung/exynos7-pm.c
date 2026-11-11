@@ -766,6 +766,15 @@ static struct exynos7_sfr exynos7_sleep_clk[] = {
 	{ 0x10e90a10, 0xffffffff, 0xffffffff },	/* ENABLE_SCLK_FSYS04 */
 	{ 0x156e0304, 0xffffffff, 0xffffffff },	/* MUX_ENABLE_FSYS11 */
 	{ 0x156e0800, 0xffffffff, 0xffffffff },	/* ENABLE_ACLK_FSYS1 */
+	/*
+	 * BLK_AUD stays powered here, but LPASS gates its bridge to the
+	 * top bus while idle and I2S/PCM may run from the codec's clock.
+	 * The block then cannot finish its power-down handshake and the
+	 * sleep sequence stalls. Samsung's AUD power-off opened the gate
+	 * and moved both muxes to the PLL first.
+	 */
+	{ 0x114c0800, BIT(28), BIT(28) },	/* ENABLE_ACLK_AUD: LH_ASYNC_SI_TOP */
+	{ 0x114c0200, BIT(16) | BIT(12), 0 },	/* MUX_SEL_AUD: PCM, I2S from PLL */
 	{ 0x10050038, 0x00000000, 0x00000000 },	/* APOLLO_EMA_CON */
 	{ 0x10050138, 0x00000000, 0x00000000 },	/* ATLAS_EMA_CON */
 	{ 0x10052908, 0x00000000, 0x00000000 },	/* CPU_EMA_REG1 */
