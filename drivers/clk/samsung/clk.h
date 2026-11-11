@@ -334,6 +334,13 @@ struct samsung_cmu_info {
 	/* list and number of clocks registers to set before suspend */
 	const struct samsung_clk_reg_dump *suspend_regs;
 	unsigned int nr_suspend_regs;
+	/*
+	 * Gate bits to set (OR) just before the CMU's power domain goes off.
+	 * When set, the CMU parent clocks also stay on until the domain is
+	 * off and are on again before it powers up.
+	 */
+	const struct samsung_clk_reg_dump *pd_off_gates;
+	unsigned int nr_pd_off_gates;
 	/* name of the parent clock needed for CMU register access */
 	const char *clk_name;
 };

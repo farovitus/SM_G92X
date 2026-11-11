@@ -12,6 +12,7 @@
 #include <linux/of_address.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 
@@ -34,6 +35,12 @@ struct exynos_arm64_cmu_data {
 	struct clk *clk;
 	struct clk **pclks;
 	int nr_pclks;
+
+	/* see samsung_cmu_info.pd_off_gates */
+	const struct samsung_clk_reg_dump *pd_off_gates;
+	unsigned int nr_pd_off_gates;
+	struct notifier_block pd_nb;
+	bool pd_clks_on;
 
 	struct samsung_clk_provider *ctx;
 };
@@ -181,6 +188,105 @@ void __init exynos_arm64_register_cmu(struct device *dev,
 	samsung_cmu_register_one(np, cmu);
 }
 
+/* Bus and parent clocks: on exactly while the power domain is on */
+static void exynos_arm64_cmu_pd_clks(struct exynos_arm64_cmu_data *data,
+				     bool enable)
+{
+	int i;
+
+	if (data->pd_clks_on == enable)
+		return;
+
+	if (enable)
+		clk_enable(data->clk);
+	for (i = 0; i < data->nr_pclks; i++) {
+		if (enable)
+			clk_enable(data->pclks[i]);
+		else
+			clk_disable(data->pclks[i]);
+	}
+	if (!enable)
+		clk_disable(data->clk);
+	data->pd_clks_on = enable;
+}
+
+/*
+ * Some blocks (Exynos7420 CAM0) only finish their power-down handshake with
+ * the bus clocks running and the local gates open; otherwise the domain
+ * times out half off. Like the vendor code, keep the CMU bus and parent
+ * clocks on for as long as the domain is on (also while the CMU is
+ * runtime suspended), open the gates just before it goes down, and turn
+ * the clocks back on before it powers up. Runtime resume then restores the
+ * saved gate state; the restored muxes select these parent clocks.
+ *
+ * Runs under the genpd lock, so it only uses clk_enable()/clk_disable()
+ * (spinlock); the clocks stay prepared from registration on.
+ */
+static int exynos_arm64_cmu_pd_notify(struct notifier_block *nb,
+				      unsigned long action, void *unused)
+{
+	struct exynos_arm64_cmu_data *data =
+		container_of(nb, struct exynos_arm64_cmu_data, pd_nb);
+	void __iomem *base = data->ctx->reg_base;
+	unsigned int i;
+
+	switch (action) {
+	case GENPD_NOTIFY_PRE_OFF:
+		for (i = 0; i < data->nr_pd_off_gates; i++) {
+			const struct samsung_clk_reg_dump *g = &data->pd_off_gates[i];
+
+			writel(readl(base + g->offset) | g->value,
+			       base + g->offset);
+		}
+		break;
+	case GENPD_NOTIFY_OFF:
+		exynos_arm64_cmu_pd_clks(data, false);
+		break;
+	case GENPD_NOTIFY_PRE_ON:
+		exynos_arm64_cmu_pd_clks(data, true);
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static int __init exynos_arm64_cmu_pd_init(struct device *dev,
+		struct exynos_arm64_cmu_data *data,
+		const struct samsung_cmu_info *cmu)
+{
+	int i, ret;
+
+	if (!cmu->nr_pd_off_gates)
+		return 0;
+	if (IS_ERR_OR_NULL(data->clk)) {
+		dev_err(dev, "pd_off_gates needs the bus clock\n");
+		return -EINVAL;
+	}
+
+	/* The domain is on here; the bus clock is already enabled */
+	for (i = 0; i < data->nr_pclks; i++) {
+		ret = clk_prepare_enable(data->pclks[i]);
+		if (ret) {
+			while (--i >= 0)
+				clk_disable_unprepare(data->pclks[i]);
+			return ret;
+		}
+	}
+
+	data->pd_off_gates = cmu->pd_off_gates;
+	data->nr_pd_off_gates = cmu->nr_pd_off_gates;
+	data->pd_clks_on = true;
+	data->pd_nb.notifier_call = exynos_arm64_cmu_pd_notify;
+	ret = dev_pm_genpd_add_notifier(dev, &data->pd_nb);
+	if (ret) {
+		for (i = 0; i < data->nr_pclks; i++)
+			clk_disable_unprepare(data->pclks[i]);
+		data->nr_pd_off_gates = 0;
+	}
+
+	return ret;
+}
+
 /**
  * exynos_arm64_register_cmu_pm - Register Exynos CMU domain with PM support
  *
@@ -232,6 +338,12 @@ int __init exynos_arm64_register_cmu_pm(struct platform_device *pdev,
 
 	data->ctx = samsung_clk_init(dev, reg_base, cmu->nr_clk_ids);
 
+	ret = exynos_arm64_cmu_pd_init(dev, data, cmu);
+	if (ret) {
+		dev_err(dev, "power domain notifier failed: %d\n", ret);
+		return ret;
+	}
+
 	/*
 	 * Enable runtime PM here to allow the clock core using runtime PM
 	 * for the registered clocks. Additionally, we increase the runtime
@@ -267,7 +379,9 @@ int exynos_arm64_cmu_suspend(struct device *dev)
 	for (i = 0; i < data->nr_pclks; i++)
 		clk_disable_unprepare(data->pclks[i]);
 
-	clk_disable_unprepare(data->clk);
+	/* With pd_off_gates the bus clock goes off with the domain */
+	if (!data->nr_pd_off_gates)
+		clk_disable_unprepare(data->clk);
 
 	return 0;
 }
@@ -277,7 +391,8 @@ int exynos_arm64_cmu_resume(struct device *dev)
 	struct exynos_arm64_cmu_data *data = dev_get_drvdata(dev);
 	int i;
 
-	clk_prepare_enable(data->clk);
+	if (!data->nr_pd_off_gates)
+		clk_prepare_enable(data->clk);
 
 	for (i = 0; i < data->nr_pclks; i++)
 		clk_prepare_enable(data->pclks[i]);
