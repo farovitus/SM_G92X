@@ -43,8 +43,10 @@ extern void pmu_raw_writel(u32 val, u32 offset);
 extern u32 pmu_raw_readl(u32 offset);
 
 #if defined(CONFIG_ARM64) && defined(CONFIG_SUSPEND)
+extern bool exynos7_pm_sleeping;
 void exynos7_pm_init(void);
 #else
+#define exynos7_pm_sleeping false
 static inline void exynos7_pm_init(void) {}
 #endif
 #endif /* __EXYNOS_PMU_H */

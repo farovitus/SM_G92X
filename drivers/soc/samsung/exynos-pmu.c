@@ -81,6 +81,11 @@ void exynos_sys_powerdown_conf(enum sys_powerdown mode)
  * so a plain WFI never powers a core down without its context saved.
  * Each core only writes its own configuration register, indexed by
  * physical core: Aff0 + 4 * Aff1.
+ *
+ * System sleep sets the field instead. The boot core can arrive there
+ * with it already clear, and the firmware's sleep call then never comes
+ * back: the SoC sleeps but does not resume. Samsung's kernel cleared it
+ * only for cpuidle.
  */
 #define EXYNOS7_CPU_CONFIGURATION(n)	(0x2000 + (n) * 0x80)
 #define EXYNOS7_LOCAL_PWR_CFG		0xf
@@ -96,7 +101,10 @@ static int exynos7_cpu_pm_notify(struct notifier_block *nb,
 
 	switch (action) {
 	case CPU_PM_ENTER:
-		pmu_raw_writel(val & ~EXYNOS7_LOCAL_PWR_CFG, offset);
+		if (exynos7_pm_sleeping)
+			pmu_raw_writel(val | EXYNOS7_LOCAL_PWR_CFG, offset);
+		else
+			pmu_raw_writel(val & ~EXYNOS7_LOCAL_PWR_CFG, offset);
 		break;
 	case CPU_PM_ENTER_FAILED:
 	case CPU_PM_EXIT:
