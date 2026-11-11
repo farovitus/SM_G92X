@@ -14,11 +14,14 @@ description: |-
   The NXP i.MX7 and i.MX8 families contain SoCs that include a MIPI CSI-2
   receiver IP core named CSIS. The IP core originates from Samsung, and may be
   compatible with some of the Exynos4 and S5P SoCs. i.MX7 SoCs use CSIS version
-  3.3, and i.MX8 SoCs use CSIS version 3.6.3.
+  3.3, i.MX8 SoCs use CSIS version 3.6.3, and the Samsung Exynos7420 uses
+  version 3.4.
 
-  While the CSI-2 receiver is separate from the MIPI D-PHY IP core, the PHY is
-  completely wrapped by the CSIS and doesn't expose a control interface of its
-  own. This binding thus covers both IP cores.
+  On i.MX, the CSI-2 receiver is separate from the MIPI D-PHY IP core, but the
+  PHY is completely wrapped by the CSIS and doesn't expose a control interface
+  of its own. This binding thus covers both IP cores. On Exynos7420 the D-PHY
+  is enabled and reset through the PMU and SYSREG, and is referenced through
+  the phys property.
 
 properties:
   compatible:
@@ -26,6 +29,7 @@ properties:
       - enum:
           - fsl,imx7-mipi-csi2
           - fsl,imx8mm-mipi-csi2
+          - samsung,exynos7420-mipi-csi2
       - items:
           - enum:
               - fsl,imx8mp-mipi-csi2
@@ -55,6 +59,12 @@ properties:
 
   power-domains:
     maxItems: 1
+
+  phys:
+    maxItems: 1
+
+  phy-names:
+    const: csis
 
   phy-supply:
     description: The MIPI D-PHY digital power supply
@@ -119,10 +129,36 @@ allOf:
           contains:
             const: fsl,imx7-mipi-csi2
     then:
+      properties:
+        phys: false
+        phy-names: false
       required:
         - phy-supply
         - resets
-    else:
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos7420-mipi-csi2
+    then:
+      properties:
+        clocks:
+          maxItems: 3
+        clock-names:
+          maxItems: 3
+        phy-supply: false
+        resets: false
+      required:
+        - phys
+        - phy-names
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: fsl,imx8mm-mipi-csi2
+    then:
       properties:
         clocks:
           minItems: 4
@@ -130,6 +166,8 @@ allOf:
           minItems: 4
         phy-supply: false
         resets: false
+        phys: false
+        phy-names: false
 
 examples:
   - |
