@@ -34,6 +34,7 @@ properties:
       - samsung,exynos7-clock-fsys1
       - samsung,exynos7-clock-mscl
       - samsung,exynos7-clock-aud
+      - samsung,exynos7-clock-cam0
 
   clocks:
     minItems: 1
@@ -45,6 +46,9 @@ properties:
 
   "#clock-cells":
     const: 1
+
+  power-domains:
+    maxItems: 1
 
   reg:
     maxItems: 1
@@ -241,6 +245,30 @@ allOf:
       required:
         - clock-names
         - clocks
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: samsung,exynos7-clock-cam0
+    then:
+      properties:
+        clocks:
+          minItems: 7
+          maxItems: 7
+        clock-names:
+          items:
+            - const: fin_pll
+            - const: aclk_cam0_csis0_690
+            - const: aclk_cam0_bnsa_690
+            - const: aclk_cam0_trex_532
+            - const: aclk_cam0_nocp_133
+            - const: aclk_cam0_csis1_174
+            - const: aclk_cam0_bnsb_690
+      required:
+        - clock-names
+        - clocks
+        - power-domains
 
 additionalProperties: false
 
