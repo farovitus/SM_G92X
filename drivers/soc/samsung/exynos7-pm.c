@@ -25,7 +25,6 @@
  * early wake, and only the sequencer is restored.
  */
 
-#include <linux/cpu_pm.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/moduleparam.h>
@@ -936,9 +935,6 @@ static void __iomem *exynos7_sysram_ns;
 /* Bring-up: marks the ramoops console, then branches to cpu_resume. */
 extern void exynos7_pm_resume_entry(void);
 
-/* Tells the cpu_pm notifier that this is system sleep, not cpuidle. */
-bool exynos7_pm_sleeping;
-
 /* The firmware's return value when it came back without losing context. */
 static int exynos7_pm_psci_ret;
 
@@ -977,15 +973,7 @@ static int exynos7_pm_enter(suspend_state_t state)
 	if (ret)
 		goto restore;
 
-	exynos7_pm_sleeping = true;
-	ret = cpu_pm_enter();
-	if (ret)
-		goto restore;
-
-	ret = cpu_cluster_pm_enter();
-	if (ret)
-		goto exit_cpu;
-
+	/* syscore_suspend() has already run cpu_pm_enter() and the cluster one. */
 	exynos7_pm_psci_ret = 0;
 	pr_info("exynos7-pm: entering sleep%s\n",
 		sleep_watchdog ? " (watchdog armed)" : "");
@@ -1018,11 +1006,7 @@ static int exynos7_pm_enter(suspend_state_t state)
 			ret, exynos7_pm_psci_ret);
 	}
 
-	cpu_cluster_pm_exit();
-exit_cpu:
-	cpu_pm_exit();
 restore:
-	exynos7_pm_sleeping = false;
 	if (exynos7_pm_finish_sleep()) {
 		exynos7_pm_restore_sfrs(exynos7_sleep_rcg,
 					ARRAY_SIZE(exynos7_sleep_rcg));

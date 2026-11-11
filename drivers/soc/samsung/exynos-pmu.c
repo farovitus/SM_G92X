@@ -82,10 +82,10 @@ void exynos_sys_powerdown_conf(enum sys_powerdown mode)
  * Each core only writes its own configuration register, indexed by
  * physical core: Aff0 + 4 * Aff1.
  *
- * System sleep sets the field instead. The boot core can arrive there
- * with it already clear, and the firmware's sleep call then never comes
- * back: the SoC sleeps but does not resume. Samsung's kernel cleared it
- * only for cpuidle.
+ * System sleep sets the field instead: the syscore cpu_pm_enter() before
+ * the firmware's sleep call would otherwise clear it on the boot core,
+ * and the sleep call then never comes back: the SoC sleeps but does not
+ * resume. Samsung's kernel cleared it only for cpuidle.
  */
 #define EXYNOS7_CPU_CONFIGURATION(n)	(0x2000 + (n) * 0x80)
 #define EXYNOS7_LOCAL_PWR_CFG		0xf
@@ -101,7 +101,7 @@ static int exynos7_cpu_pm_notify(struct notifier_block *nb,
 
 	switch (action) {
 	case CPU_PM_ENTER:
-		if (exynos7_pm_sleeping)
+		if (system_state == SYSTEM_SUSPEND)
 			pmu_raw_writel(val | EXYNOS7_LOCAL_PWR_CFG, offset);
 		else
 			pmu_raw_writel(val & ~EXYNOS7_LOCAL_PWR_CFG, offset);
