@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config VIDEO_EXYNOS7_FLITE
+	tristate "Samsung Exynos7420 FIMC-LITE raw capture"
+	depends on V4L_PLATFORM_DRIVERS
+	depends on VIDEO_DEV
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	depends on OF
+	select MEDIA_CONTROLLER
+	select V4L2_FWNODE
+	select VIDEO_V4L2_SUBDEV_API
+	select VIDEOBUF2_DMA_CONTIG
+	help
+	  Video4Linux2 capture driver for the FIMC-LITE (FIMC-BNS) blocks
+	  of the Exynos7420 SoC. It writes the raw Bayer stream of a MIPI
+	  CSIS receiver to memory.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called exynos7-flite.
