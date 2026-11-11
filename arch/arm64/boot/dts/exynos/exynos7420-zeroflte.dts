@@ -981,6 +981,48 @@
 };
 
 /*
+ * CMU_CAM0 feeds the CSIS0 -> FIMC-BNS A (rear) and CSIS1 -> FIMC-BNS B
+ * (front) capture paths. Its user muxes come up on OSCCLK with the power
+ * domain; move them to the CMU_TOP0 bus clocks and the D-PHY byte clocks
+ * (stock does the same when the ISP powers on, before any PHY runs), and
+ * set the APB dividers to the stock sensor-on rates. The CMU_TOP0 parents
+ * stay as S-Boot leaves them.
+ */
+&cmu_cam0 {
+	assigned-clocks = <&cmu_cam0 CLK_MOUT_USER_ACLK_CAM0_CSIS0_690>,
+			  <&cmu_cam0 CLK_MOUT_USER_ACLK_CAM0_BNSA_690>,
+			  <&cmu_cam0 CLK_MOUT_USER_ACLK_CAM0_TREX_532>,
+			  <&cmu_cam0 CLK_MOUT_USER_ACLK_CAM0_NOCP_133>,
+			  <&cmu_cam0 CLK_MOUT_USER_ACLK_CAM0_CSIS1_174>,
+			  <&cmu_cam0 CLK_MOUT_USER_ACLK_CAM0_BNSB_690>,
+			  <&cmu_cam0 CLK_MOUT_USER_PHYCLK_RXBYTECLKHS0_S2A>,
+			  <&cmu_cam0 CLK_MOUT_USER_PHYCLK_RXBYTECLKHS0_S4>,
+			  <&cmu_cam0 CLK_MOUT_USER_PHYCLK_RXBYTECLKHS1_S4>,
+			  <&cmu_cam0 CLK_MOUT_USER_PHYCLK_RXBYTECLKHS2_S4>,
+			  <&cmu_cam0 CLK_MOUT_USER_PHYCLK_RXBYTECLKHS3_S4>,
+			  <&cmu_cam0 CLK_DOUT_PCLK_CAM0_BNSA_345>,
+			  <&cmu_cam0 CLK_DOUT_PCLK_CAM0_BNSB_345>,
+			  <&cmu_cam0 CLK_DOUT_PCLK_CAM0_TREX_266>,
+			  <&cmu_cam0 CLK_DOUT_PCLK_CAM0_TREX_133>;
+	assigned-clock-parents = <&clock_top0 CLK_ACLK_CAM0_CSIS0_690>,
+				 <&clock_top0 CLK_ACLK_CAM0_BNSA_690>,
+				 <&clock_top0 CLK_ACLK_CAM0_TREX_532>,
+				 <&clock_top0 CLK_ACLK_CAM0_NOCP_133>,
+				 <&clock_top0 CLK_ACLK_CAM0_CSIS1_174>,
+				 <&clock_top0 CLK_ACLK_CAM0_BNSB_690>,
+				 <&cmu_cam0 CLK_PHY_RXBYTECLKHS0_S2A>,
+				 <&cmu_cam0 CLK_PHY_RXBYTECLKHS0_S4>,
+				 <&cmu_cam0 CLK_PHY_RXBYTECLKHS1_S4>,
+				 <&cmu_cam0 CLK_PHY_RXBYTECLKHS2_S4>,
+				 <&cmu_cam0 CLK_PHY_RXBYTECLKHS3_S4>;
+	assigned-clock-rates = <0>, <0>, <0>, <0>, <0>, <0>,
+			       <0>, <0>, <0>, <0>, <0>,
+			       <330000000>, <330000000>, <266000000>,
+			       <133000000>;
+	status = "okay";
+};
+
+/*
  * The safe DRAM envelope from the CPU clock: stock's cpufreq bus tables
  * never ran MIF under 543 MHz with an A57 at 1 GHz or more or an A53 at
  * 700 MHz or more, and the deep levels under fast CPUs hang the SoC
