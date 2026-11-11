@@ -14,9 +14,17 @@
 #include <linux/mfd/max77843-private.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/pm_wakeup.h>
 #include <linux/workqueue.h>
 
 #define DELAY_MS_DEFAULT		15000	/* unit: millisecond */
+
+/*
+ * Time a USB host gets to enumerate us after a data port is detected. The
+ * gadget holds the system awake from enumeration on; this only bridges the
+ * gap, so a port whose host never enumerates still lets the system sleep.
+ */
+#define MAX77843_MUIC_USB_ENUM_MS	5000
 
 enum max77843_muic_status {
 	MAX77843_MUIC_STATUS1 = 0,
@@ -34,6 +42,7 @@ struct max77843_muic_info {
 	struct mutex mutex;
 	struct work_struct irq_work;
 	struct delayed_work wq_detcable;
+	struct wakeup_source *ws;
 
 	u8 status[MAX77843_MUIC_STATUS_NUM];
 	int prev_cable_type;
@@ -712,6 +721,20 @@ static void max77843_muic_irq_work(struct work_struct *work)
 		info->irq_chg = false;
 	}
 
+	/*
+	 * A cable event can wake a suspended system. Give a USB host time to
+	 * enumerate the gadget, which needs the system up, and keep it up
+	 * while charger detection still runs; otherwise let it sleep. Leave
+	 * the source held while another event waits for this work.
+	 */
+	if (info->prev_chg_type == MAX77843_MUIC_CHG_USB ||
+	    info->prev_chg_type == MAX77843_MUIC_CHG_DOWNSTREAM ||
+	    (info->status[MAX77843_MUIC_STATUS2] &
+	     MAX77843_MUIC_STATUS2_CHGDETRUN_MASK))
+		__pm_wakeup_event(info->ws, MAX77843_MUIC_USB_ENUM_MS);
+	else if (!work_pending(&info->irq_work))
+		__pm_relax(info->ws);
+
 	mutex_unlock(&info->mutex);
 }
 
@@ -751,6 +774,8 @@ static irqreturn_t max77843_muic_irq_handler(int irq, void *data)
 		break;
 	}
 
+	/* Stay up until the work has read the cable. */
+	__pm_stay_awake(info->ws);
 	schedule_work(&info->irq_work);
 
 	return IRQ_HANDLED;
@@ -936,6 +961,12 @@ static int max77843_muic_probe(struct platform_device *pdev)
 	}
 	dev_info(info->dev, "MUIC device ID : 0x%x\n", id);
 
+	info->ws = wakeup_source_register(info->dev, "max77843-muic");
+	if (!info->ws) {
+		ret = -ENOMEM;
+		goto err_muic_irq;
+	}
+
 	/* Support virtual irq domain for max77843 MUIC device */
 	INIT_WORK(&info->irq_work, max77843_muic_irq_work);
 
@@ -987,6 +1018,7 @@ static int max77843_muic_probe(struct platform_device *pdev)
 	return 0;
 
 err_muic_irq:
+	wakeup_source_unregister(info->ws);
 	regmap_del_irq_chip(max77843->irq, max77843->irq_data_muic);
 	i2c_unregister_device(max77843->i2c_muic);
 
@@ -1004,6 +1036,7 @@ static int max77843_muic_remove(struct platform_device *pdev)
 	cancel_work_sync(&info->irq_work);
 	regmap_del_irq_chip(max77843->irq, max77843->irq_data_muic);
 	i2c_unregister_device(max77843->i2c_muic);
+	wakeup_source_unregister(info->ws);
 
 	return 0;
 }
