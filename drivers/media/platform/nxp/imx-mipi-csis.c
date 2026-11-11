@@ -18,10 +18,12 @@
 #include <linux/errno.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
@@ -53,6 +55,7 @@
 /* CSIS common control */
 #define MIPI_CSIS_CMN_CTRL			0x04
 #define MIPI_CSIS_CMN_CTRL_UPDATE_SHADOW	BIT(16)
+#define MIPI_CSIS_CMN_CTRL_UPDATE_SHADOW_ALL	(0xf << 16)
 #define MIPI_CSIS_CMN_CTRL_INTER_MODE		BIT(10)
 #define MIPI_CSIS_CMN_CTRL_UPDATE_SHADOW_CTRL	BIT(2)
 #define MIPI_CSIS_CMN_CTRL_RESET		BIT(1)
@@ -69,6 +72,7 @@
 #define MIPI_CSIS_CLK_CTRL_CLKGATE_TRAIL_CH0(x)	((x) << 16)
 #define MIPI_CSIS_CLK_CTRL_CLKGATE_EN_MSK	(0xf << 4)
 #define MIPI_CSIS_CLK_CTRL_WCLK_SRC		BIT(0)
+#define MIPI_CSIS_CLK_CTRL_WCLK_SRC_ALL		(0xf << 0)
 
 /* CSIS Interrupt mask */
 #define MIPI_CSIS_INT_MSK			0x10
@@ -300,6 +304,7 @@ static const char * const mipi_csis_clk_id[] = {
 
 enum mipi_csis_version {
 	MIPI_CSIS_V3_3,
+	MIPI_CSIS_V3_4,
 	MIPI_CSIS_V3_6_3,
 };
 
@@ -314,6 +319,7 @@ struct mipi_csis_device {
 	struct clk_bulk_data *clks;
 	struct reset_control *mrst;
 	struct regulator *mipi_phy_regulator;
+	struct phy *phy;
 	const struct mipi_csis_info *info;
 
 	struct v4l2_subdev sd;
@@ -521,17 +527,45 @@ static inline void mipi_csis_write(struct mipi_csis_device *csis, u32 reg,
 
 static void mipi_csis_enable_interrupts(struct mipi_csis_device *csis, bool on)
 {
+	/*
+	 * The v3.4 core of Exynos7420 has no debug interrupt block; its
+	 * vendor driver also leaves the non-image data interrupts masked.
+	 */
+	if (csis->info->version == MIPI_CSIS_V3_4) {
+		mipi_csis_write(csis, MIPI_CSIS_INT_MSK, on ? 0x0fffffff : 0);
+		return;
+	}
+
 	mipi_csis_write(csis, MIPI_CSIS_INT_MSK, on ? 0xffffffff : 0);
 	mipi_csis_write(csis, MIPI_CSIS_DBG_INTR_MSK, on ? 0xffffffff : 0);
 }
 
-static void mipi_csis_sw_reset(struct mipi_csis_device *csis)
+static int mipi_csis_sw_reset(struct mipi_csis_device *csis)
 {
 	u32 val = mipi_csis_read(csis, MIPI_CSIS_CMN_CTRL);
+	int ret;
 
 	mipi_csis_write(csis, MIPI_CSIS_CMN_CTRL,
 			val | MIPI_CSIS_CMN_CTRL_RESET);
-	usleep_range(10, 20);
+
+	if (csis->info->version != MIPI_CSIS_V3_4) {
+		usleep_range(10, 20);
+		return 0;
+	}
+
+	/*
+	 * The v3.4 core clears the reset bit when the reset is done and
+	 * drops any register written before that, so wait for it as the
+	 * vendor driver does (100 us).
+	 */
+	ret = read_poll_timeout_atomic(mipi_csis_read, val,
+				       !(val & MIPI_CSIS_CMN_CTRL_RESET),
+				       10, 100, false, csis,
+				       MIPI_CSIS_CMN_CTRL);
+	if (ret)
+		dev_err(csis->dev, "sw reset timed out (0x%08x)\n", val);
+
+	return ret;
 }
 
 static void mipi_csis_system_enable(struct mipi_csis_device *csis, int on)
@@ -664,6 +698,24 @@ static void mipi_csis_set_params(struct mipi_csis_device *csis,
 	    | (0 << MIPI_CSIS_ISP_SYNC_VSYNC_EINTV_OFFSET);
 	mipi_csis_write(csis, MIPI_CSIS_ISP_SYNC_CH(0), val);
 
+	if (csis->info->version == MIPI_CSIS_V3_4) {
+		/*
+		 * Exynos7420: the wrapper clock feeds every channel, dynamic
+		 * clock gating stays off, and the D-PHY is set up through the
+		 * PMU and SYSREG instead of the BCTRL registers. Settings are
+		 * latched through the per-channel shadow update bits.
+		 */
+		val = mipi_csis_read(csis, MIPI_CSIS_CLK_CTRL);
+		val |= MIPI_CSIS_CLK_CTRL_WCLK_SRC_ALL;
+		val &= ~MIPI_CSIS_CLK_CTRL_CLKGATE_EN_MSK;
+		mipi_csis_write(csis, MIPI_CSIS_CLK_CTRL, val);
+
+		val = mipi_csis_read(csis, MIPI_CSIS_CMN_CTRL);
+		mipi_csis_write(csis, MIPI_CSIS_CMN_CTRL,
+				val | MIPI_CSIS_CMN_CTRL_UPDATE_SHADOW_ALL);
+		return;
+	}
+
 	val = mipi_csis_read(csis, MIPI_CSIS_CLK_CTRL);
 	val |= MIPI_CSIS_CLK_CTRL_WCLK_SRC;
 	val |= MIPI_CSIS_CLK_CTRL_CLKGATE_TRAIL_CH0(15);
@@ -717,6 +769,9 @@ static int mipi_csis_clk_get(struct mipi_csis_device *csis)
 		return ret;
 
 	/* Set clock rate */
+	if (!csis->clk_frequency)
+		return 0;
+
 	ret = clk_set_rate(csis->clks[MIPI_CSIS_CLK_WRAP].clk,
 			   csis->clk_frequency);
 	if (ret < 0)
@@ -726,14 +781,21 @@ static int mipi_csis_clk_get(struct mipi_csis_device *csis)
 	return ret;
 }
 
-static void mipi_csis_start_stream(struct mipi_csis_device *csis,
-				   const struct v4l2_mbus_framefmt *format,
-				   const struct csis_pix_format *csis_fmt)
+static int mipi_csis_start_stream(struct mipi_csis_device *csis,
+				  const struct v4l2_mbus_framefmt *format,
+				  const struct csis_pix_format *csis_fmt)
 {
-	mipi_csis_sw_reset(csis);
+	int ret;
+
+	ret = mipi_csis_sw_reset(csis);
+	if (ret)
+		return ret;
+
 	mipi_csis_set_params(csis, format, csis_fmt);
 	mipi_csis_system_enable(csis, true);
 	mipi_csis_enable_interrupts(csis, true);
+
+	return 0;
 }
 
 static void mipi_csis_stop_stream(struct mipi_csis_device *csis)
@@ -751,7 +813,8 @@ static irqreturn_t mipi_csis_irq_handler(int irq, void *dev_id)
 	u32 dbg_status;
 
 	status = mipi_csis_read(csis, MIPI_CSIS_INT_SRC);
-	dbg_status = mipi_csis_read(csis, MIPI_CSIS_DBG_INTR_SRC);
+	dbg_status = csis->info->version == MIPI_CSIS_V3_4 ? 0 :
+		     mipi_csis_read(csis, MIPI_CSIS_DBG_INTR_SRC);
 
 	spin_lock_irqsave(&csis->slock, flags);
 
@@ -768,7 +831,8 @@ static irqreturn_t mipi_csis_irq_handler(int irq, void *dev_id)
 	spin_unlock_irqrestore(&csis->slock, flags);
 
 	mipi_csis_write(csis, MIPI_CSIS_INT_SRC, status);
-	mipi_csis_write(csis, MIPI_CSIS_DBG_INTR_SRC, dbg_status);
+	if (csis->info->version != MIPI_CSIS_V3_4)
+		mipi_csis_write(csis, MIPI_CSIS_DBG_INTR_SRC, dbg_status);
 
 	return IRQ_HANDLED;
 }
@@ -779,6 +843,9 @@ static irqreturn_t mipi_csis_irq_handler(int irq, void *dev_id)
 
 static int mipi_csis_phy_enable(struct mipi_csis_device *csis)
 {
+	if (csis->info->version == MIPI_CSIS_V3_4)
+		return phy_power_on(csis->phy);
+
 	if (csis->info->version != MIPI_CSIS_V3_3)
 		return 0;
 
@@ -787,6 +854,9 @@ static int mipi_csis_phy_enable(struct mipi_csis_device *csis)
 
 static int mipi_csis_phy_disable(struct mipi_csis_device *csis)
 {
+	if (csis->info->version == MIPI_CSIS_V3_4)
+		return phy_power_off(csis->phy);
+
 	if (csis->info->version != MIPI_CSIS_V3_3)
 		return 0;
 
@@ -805,6 +875,12 @@ static void mipi_csis_phy_reset(struct mipi_csis_device *csis)
 
 static int mipi_csis_phy_init(struct mipi_csis_device *csis)
 {
+	if (csis->info->version == MIPI_CSIS_V3_4) {
+		/* Exynos: a separate D-PHY, enabled through the PMU */
+		csis->phy = devm_phy_get(csis->dev, "csis");
+		return PTR_ERR_OR_ZERO(csis->phy);
+	}
+
 	if (csis->info->version != MIPI_CSIS_V3_3)
 		return 0;
 
@@ -967,7 +1043,9 @@ static int mipi_csis_s_stream(struct v4l2_subdev *sd, int enable)
 	if (ret < 0)
 		goto err_unlock;
 
-	mipi_csis_start_stream(csis, format, csis_fmt);
+	ret = mipi_csis_start_stream(csis, format, csis_fmt);
+	if (ret < 0)
+		goto err_stop;
 
 	ret = v4l2_subdev_call(csis->src_sd, video, s_stream, 1);
 	if (ret < 0)
@@ -1387,7 +1465,8 @@ static int mipi_csis_parse_dt(struct mipi_csis_device *csis)
 
 	if (of_property_read_u32(node, "clock-frequency",
 				 &csis->clk_frequency))
-		csis->clk_frequency = DEFAULT_SCLK_CSIS_FREQ;
+		csis->clk_frequency = csis->info->version == MIPI_CSIS_V3_4 ?
+				      0 : DEFAULT_SCLK_CSIS_FREQ;
 
 	return 0;
 }
@@ -1510,6 +1589,12 @@ static const struct of_device_id mipi_csis_of_match[] = {
 		.compatible = "fsl,imx7-mipi-csi2",
 		.data = &(const struct mipi_csis_info){
 			.version = MIPI_CSIS_V3_3,
+			.num_clocks = 3,
+		},
+	}, {
+		.compatible = "samsung,exynos7420-mipi-csi2",
+		.data = &(const struct mipi_csis_info){
+			.version = MIPI_CSIS_V3_4,
 			.num_clocks = 3,
 		},
 	}, {
