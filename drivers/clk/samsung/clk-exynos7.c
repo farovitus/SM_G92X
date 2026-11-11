@@ -99,16 +99,15 @@ PNAME(mout_sclk_bus0_pll_mif_p)	= { "mout_topc_bus0_pll",
 	"ffac_topc_bus0_pll_div2", "mout_topc_bus1_pll", "mout_topc_cc_pll" };
 PNAME(mout_aclk_mif_pll_p)	= { "sclk_bus0_pll_mif", "mout_topc_mif_pll" };
 
+/*
+ * CC, BUS0, BUS1 and MFC PLL already run again when the kernel resumes
+ * from sleep; the firmware's wake path restarts them. Writing LOCK/CON0
+ * restarts the lock under the buses that run from them, and the resume
+ * hung here now and then. Samsung's kernel never restored them; only the
+ * audio PLL is restored.
+ */
 static const unsigned long topc_clk_regs[] __initconst = {
-	CC_PLL_LOCK,
-	BUS0_PLL_LOCK,
-	BUS1_DPLL_LOCK,
-	MFC_PLL_LOCK,
 	AUD_PLL_LOCK,
-	CC_PLL_CON0,
-	BUS0_PLL_CON0,
-	BUS1_DPLL_CON0,
-	MFC_PLL_CON0,
 	AUD_PLL_CON0,
 	MUX_SEL_TOPC0,
 	MUX_SEL_TOPC1,
@@ -2157,10 +2156,11 @@ static const struct exynos_cpuclk_cfg_data exynos7_apolloclk_d[] __initconst = {
 	{ 0 },
 };
 
+/*
+ * The cluster PLLs are not restored after sleep either: the firmware has
+ * them running again, and APOLLO_PLL clocks the core doing the resume.
+ */
 static const unsigned long atlas_clk_regs[] __initconst = {
-	ATLAS_PLL_LOCK,
-	ATLAS_PLL_CON0,
-	ATLAS_PLL_CON1,
 	MUX_SEL_ATLAS0,
 	MUX_SEL_ATLAS1,
 	MUX_SEL_ATLAS2,
@@ -2215,9 +2215,6 @@ CLK_OF_DECLARE(exynos7_clk_atlas, "samsung,exynos7-clock-atlas",
 		exynos7_clk_atlas_init);
 
 static const unsigned long apollo_clk_regs[] __initconst = {
-	APOLLO_PLL_LOCK,
-	APOLLO_PLL_CON0,
-	APOLLO_PLL_CON1,
 	MUX_SEL_APOLLO0,
 	MUX_SEL_APOLLO1,
 	MUX_SEL_APOLLO2,
