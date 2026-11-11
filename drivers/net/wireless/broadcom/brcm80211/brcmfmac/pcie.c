@@ -2623,7 +2623,10 @@ static int brcmf_pcie_pm_enter_D3(struct device *dev)
 
 	brcmf_dbg(PCIE, "Enter\n");
 
+	/* No bus left: the probe after the last resume failed. */
 	bus = dev_get_drvdata(dev);
+	if (!bus)
+		return 0;
 	devinfo = bus->bus_priv.pcie->devinfo;
 
 	brcmf_pcie_fwcon_timer(devinfo, false);
@@ -2663,6 +2666,8 @@ static int brcmf_pcie_pm_leave_D3(struct device *dev)
 	brcmf_dbg(PCIE, "Enter\n");
 
 	bus = dev_get_drvdata(dev);
+	if (!bus)
+		return 0;
 	devinfo = bus->bus_priv.pcie->devinfo;
 	brcmf_dbg(PCIE, "Enter, dev=%p, bus=%p\n", dev, bus);
 
