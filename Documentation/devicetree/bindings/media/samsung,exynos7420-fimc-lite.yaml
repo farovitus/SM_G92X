@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/samsung,exynos7420-fimc-lite.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Exynos7420 FIMC-LITE raw capture
+
+maintainers:
+  - FAROVITUS <farovitus@gmail.com>
+
+description:
+  The FIMC-LITE (FIMC-BNS) blocks of the Exynos7420 write the pixel stream
+  of a MIPI CSIS receiver to memory. Each block has one input port linked
+  to a CSIS output endpoint.
+
+properties:
+  compatible:
+    const: samsung,exynos7420-fimc-lite
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    minItems: 1
+    maxItems: 6
+
+  clock-names:
+    minItems: 1
+    maxItems: 6
+
+  power-domains:
+    maxItems: 1
+
+  memory-region:
+    maxItems: 1
+
+  port:
+    $ref: /schemas/graph.yaml#/properties/port
+    description: Input port, linked to the CSIS output endpoint.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - power-domains
+  - port
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/exynos7-clk.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    fimc-lite@14030000 {
+        compatible = "samsung,exynos7420-fimc-lite";
+        reg = <0x14030000 0x1000>;
+        interrupts = <GIC_SPI 134 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&clock_cam0 CLK_ACLK_FIMC_BNS_B>,
+                 <&clock_cam0 CLK_PCLK_FIMC_BNS_B>;
+        clock-names = "aclk", "pclk";
+        power-domains = <&pd_cam0>;
+
+        port {
+            fimc_lite_b_in: endpoint {
+                remote-endpoint = <&csis1_out>;
+            };
+        };
+    };
+...
