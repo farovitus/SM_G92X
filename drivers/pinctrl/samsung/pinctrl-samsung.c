@@ -1354,9 +1354,14 @@ static const struct of_device_id samsung_pinctrl_dt_match[] = {
 	{},
 };
 
+/*
+ * Save and restore in the noirq phase: a PCIe host drives PERST# and the
+ * endpoint enable from its noirq callbacks, and needs its pins configured
+ * and out of pad retention by then. Device links order the consumers.
+ */
 static const struct dev_pm_ops samsung_pinctrl_pm_ops = {
-	SET_LATE_SYSTEM_SLEEP_PM_OPS(samsung_pinctrl_suspend,
-				     samsung_pinctrl_resume)
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(samsung_pinctrl_suspend,
+				      samsung_pinctrl_resume)
 };
 
 static struct platform_driver samsung_pinctrl_driver = {
