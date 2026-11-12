@@ -386,7 +386,14 @@ static const struct samsung_pin_bank_data exynos7_pin_banks9[] __initconst = {
  * PMU pad retention groups of the Exynos7420 (offsets as on the Exynos5433).
  * Samsung's kernel released all of them after a system power-down; audio
  * pads are left out, as there.
+ *
+ * Every pin controller shares this data and one counter, so retention is
+ * released only once the last of them has restored its banks. Released any
+ * earlier, the pads of the controllers not yet restored drop to their reset
+ * state (input) for a moment: the modem's power enable among them.
  */
+static atomic_t exynos7_retention_refcnt;
+
 static const u32 exynos7_retention_regs[] = {
 	0x3068,	/* BUS0_TOP */
 	0x30c8,	/* MMC2 */
@@ -409,6 +416,7 @@ static const struct samsung_retention_data exynos7_retention_data __initconst = 
 	.regs	 = exynos7_retention_regs,
 	.nr_regs = ARRAY_SIZE(exynos7_retention_regs),
 	.value	 = EXYNOS_WAKEUP_FROM_LOWPWR,
+	.refcnt	 = &exynos7_retention_refcnt,
 	.init	 = exynos_retention_init,
 };
 
@@ -428,6 +436,7 @@ static const struct samsung_pin_ctrl exynos7_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos7_retention_data,
 	}, {
 		/* pin-controller instance 2 NFC data */
 		.pin_banks	= exynos7_pin_banks2,
@@ -435,6 +444,7 @@ static const struct samsung_pin_ctrl exynos7_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos7_retention_data,
 	}, {
 		/* pin-controller instance 3 TOUCH data */
 		.pin_banks	= exynos7_pin_banks3,
@@ -442,6 +452,7 @@ static const struct samsung_pin_ctrl exynos7_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos7_retention_data,
 	}, {
 		/* pin-controller instance 4 FF data */
 		.pin_banks	= exynos7_pin_banks4,
@@ -449,6 +460,7 @@ static const struct samsung_pin_ctrl exynos7_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos7_retention_data,
 	}, {
 		/* pin-controller instance 5 ESE data */
 		.pin_banks	= exynos7_pin_banks5,
@@ -456,6 +468,7 @@ static const struct samsung_pin_ctrl exynos7_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos7_retention_data,
 	}, {
 		/* pin-controller instance 6 FSYS0 data */
 		.pin_banks	= exynos7_pin_banks6,
@@ -463,6 +476,7 @@ static const struct samsung_pin_ctrl exynos7_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos7_retention_data,
 	}, {
 		/* pin-controller instance 7 FSYS1 data */
 		.pin_banks	= exynos7_pin_banks7,
@@ -470,6 +484,7 @@ static const struct samsung_pin_ctrl exynos7_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos7_retention_data,
 	}, {
 		/* pin-controller instance 8 BUS1 data */
 		.pin_banks	= exynos7_pin_banks8,
@@ -477,6 +492,7 @@ static const struct samsung_pin_ctrl exynos7_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos7_retention_data,
 	}, {
 		/* pin-controller instance 9 AUD data */
 		.pin_banks	= exynos7_pin_banks9,
@@ -484,6 +500,7 @@ static const struct samsung_pin_ctrl exynos7_pin_ctrl[] __initconst = {
 		.eint_gpio_init = exynos_eint_gpio_init,
 		.suspend	= exynos_pinctrl_suspend,
 		.resume		= exynos_pinctrl_resume,
+		.retention_data	= &exynos7_retention_data,
 	},
 };
 
