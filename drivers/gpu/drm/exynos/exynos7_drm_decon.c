@@ -1900,7 +1900,14 @@ static void exynos7_decon_stop_output(struct decon_context *ctx)
 
 	val = readl(ctx->regs + VIDCON0);
 	ctx->sleep_stopped = false;
-	if (!(val & VIDCON0_DECON_STOP_STATUS))
+	/*
+	 * Restarted after an earlier sleep with the screen off, the output
+	 * is enabled but idle until a frame is triggered: STOP_STATUS is
+	 * still clear. It must still be stopped and saved, or the next deep
+	 * sleep resets DECON with nothing to restore.
+	 */
+	if (!(val & (VIDCON0_ENVID | VIDCON0_ENVID_F |
+		     VIDCON0_DECON_STOP_STATUS)))
 		return;
 
 	ctx->sleep_trigcon = readl(ctx->regs + TRIGCON);
