@@ -237,6 +237,17 @@ int ssp_enable_sensor(struct ssp_data *data, enum ssp_sensor_type type,
 
 		data->sensor_enable |= BIT(type);
 		data->check_status[type] = SSP_RUNNING_SENSOR_STATE;
+
+		/*
+		 * After a system sleep the hub behind the BCM4773 bridge
+		 * accepts a sensor added here but sends no data for it until
+		 * it hears RESUME again; the RESUME from ssp_resume() does not
+		 * count, as it comes before the add. Repeat it after each add;
+		 * an extra one while awake does no harm.
+		 */
+		if (!data->irq &&
+		    data->last_resume_state == SSP_MSG2SSP_AP_STATUS_RESUME)
+			ssp_command(data, SSP_MSG2SSP_AP_STATUS_RESUME, 0);
 		break;
 	case SSP_RUNNING_SENSOR_STATE:
 		ret = ssp_send_instruction(data,
