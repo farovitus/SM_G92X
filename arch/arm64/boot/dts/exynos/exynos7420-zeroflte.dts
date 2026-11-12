@@ -1997,12 +1997,25 @@
 };
 
 &pinctrl_bus0 {
-	/* As stock: full drive, SCLK/MOSI pulled up, MISO pulled down. */
+	/*
+	 * As stock: full drive, SCLK/MOSI pulled up, MISO pulled down. The
+	 * sleep states are stock's too (SCLK, CS and MOSI held high, MISO an
+	 * input): without them the pins fall to output-low in sleep.
+	 */
 	gnss_spi: gnss-spi-pins {
 		samsung,pins = "gpd6-2", "gpd6-5";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
 		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT1>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_UP>;
+	};
+
+	/* Chip select, driven by spi_1's cs-gpios: only its sleep state. */
+	gnss_spi_cs: gnss-spi-cs-pins {
+		samsung,pins = "gpd6-3";
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT1>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_UP>;
 	};
 
 	gnss_spi_miso: gnss-spi-miso-pins {
@@ -2010,20 +2023,41 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
 		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV4>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_INPUT>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_DOWN>;
 	};
 };
 
 &pinctrl_bus1 {
+	/*
+	 * GPS_HUB_EN keeps its level in sleep, as stock: in the default
+	 * output-low sleep state the hub loses the RAM patch lhd loaded and
+	 * stops answering after the first deep sleep.
+	 */
 	gnss_ctrl: gnss-ctrl-pins {
-		samsung,pins = "gpf4-5", "gpf4-7";
+		samsung,pins = "gpf4-7";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
 	};
 
+	/* SSP_MCU_REQ: low with a pull-down in sleep, as stock. */
+	gnss_mcu_req: gnss-mcu-req-pins {
+		samsung,pins = "gpf4-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT0>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_DOWN>;
+	};
+
+	/* SSP_MCU_RESP: an input with a pull-down in sleep, as stock. */
 	gnss_mcu_resp: gnss-mcu-resp-pins {
 		samsung,pins = "gpf4-4";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_INPUT>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_DOWN>;
 	};
 };
 
@@ -2055,8 +2089,8 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 		pinctrl-names = "default";
-		pinctrl-0 = <&gnss_spi &gnss_spi_miso &gnss_host_req &gnss_ctrl
-			     &gnss_mcu_resp>;
+		pinctrl-0 = <&gnss_spi &gnss_spi_cs &gnss_spi_miso &gnss_host_req
+			     &gnss_ctrl &gnss_mcu_req &gnss_mcu_resp>;
 
 		gnss@0 {
 			compatible = "brcm,bcm4773";
