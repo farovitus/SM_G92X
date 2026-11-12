@@ -207,6 +207,8 @@ struct exynos5_i2c {
 
 	/* Bus number the secure firmware restores the pins of, or -1 */
 	int			secure_pins_bus;
+	/* Pins need restoring before the next transfer */
+	bool			restore_pins;
 };
 
 /**
@@ -790,11 +792,41 @@ static int exynos5_i2c_xfer_msg(struct exynos5_i2c *i2c,
 	return ret;
 }
 
+/*
+ * On the Exynos 7420 Galaxy S6 the secure world owns the pin controller of
+ * the touchscreen bus (gpj1), so Linux can neither read nor restore it, and
+ * deep sleep resets its mux. Samsung's firmware remuxes the pins of a bus
+ * on request; its kernel made the call when a transfer timed out.
+ */
+#define EXYNOS_SMC_HSI2C_RESTORE_PINS	0x83000012
+
+static void exynos5_i2c_restore_secure_pins(struct exynos5_i2c *i2c)
+{
+	struct arm_smccc_res res;
+
+	if (!IS_ENABLED(CONFIG_HAVE_ARM_SMCCC) || i2c->secure_pins_bus < 0)
+		return;
+
+	arm_smccc_smc(EXYNOS_SMC_HSI2C_RESTORE_PINS, i2c->secure_pins_bus,
+		      0, 0, 0, 0, 0, 0, &res);
+	if (res.a0 != (unsigned long)i2c->secure_pins_bus)
+		dev_warn(i2c->dev, "secure firmware did not restore pins of bus %d: %ld\n",
+			 i2c->secure_pins_bus, (long)res.a0);
+	else
+		dev_dbg(i2c->dev, "secure firmware restored pins of bus %d\n",
+			i2c->secure_pins_bus);
+}
+
 static int exynos5_i2c_xfer(struct i2c_adapter *adap,
 			struct i2c_msg *msgs, int num)
 {
 	struct exynos5_i2c *i2c = adap->algo_data;
 	int i, ret;
+
+	if (i2c->restore_pins) {
+		i2c->restore_pins = false;
+		exynos5_i2c_restore_secure_pins(i2c);
+	}
 
 	ret = clk_enable(i2c->pclk);
 	if (ret)
@@ -826,31 +858,6 @@ static const struct i2c_algorithm exynos5_i2c_algorithm = {
 	.master_xfer		= exynos5_i2c_xfer,
 	.functionality		= exynos5_i2c_func,
 };
-
-/*
- * On the Exynos 7420 Galaxy S6 the secure world owns the pin controller of
- * the touchscreen bus (gpj1), so Linux can neither read nor restore it, and
- * deep sleep resets its mux. Samsung's firmware remuxes the pins of a bus
- * on request; its kernel made the call when a transfer timed out.
- */
-#define EXYNOS_SMC_HSI2C_RESTORE_PINS	0x83000012
-
-static void exynos5_i2c_restore_secure_pins(struct exynos5_i2c *i2c)
-{
-	struct arm_smccc_res res;
-
-	if (!IS_ENABLED(CONFIG_HAVE_ARM_SMCCC) || i2c->secure_pins_bus < 0)
-		return;
-
-	arm_smccc_smc(EXYNOS_SMC_HSI2C_RESTORE_PINS, i2c->secure_pins_bus,
-		      0, 0, 0, 0, 0, 0, &res);
-	if (res.a0 != (unsigned long)i2c->secure_pins_bus)
-		dev_warn(i2c->dev, "secure firmware did not restore pins of bus %d: %ld\n",
-			 i2c->secure_pins_bus, (long)res.a0);
-	else
-		dev_dbg(i2c->dev, "secure firmware restored pins of bus %d\n",
-			i2c->secure_pins_bus);
-}
 
 static int exynos5_i2c_probe(struct platform_device *pdev)
 {
@@ -991,7 +998,11 @@ static int exynos5_i2c_resume_noirq(struct device *dev)
 	exynos5_i2c_init(i2c);
 	clk_disable(i2c->clk);
 	clk_disable(i2c->pclk);
-	exynos5_i2c_restore_secure_pins(i2c);
+	/*
+	 * The firmware call takes about half a second; make it before the
+	 * first transfer instead of holding up every wake with it.
+	 */
+	i2c->restore_pins = i2c->secure_pins_bus >= 0;
 	i2c_mark_adapter_resumed(&i2c->adap);
 
 	return 0;
