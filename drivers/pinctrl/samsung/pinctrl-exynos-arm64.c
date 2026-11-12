@@ -384,8 +384,9 @@ static const struct samsung_pin_bank_data exynos7_pin_banks9[] __initconst = {
 
 /*
  * PMU pad retention groups of the Exynos7420 (offsets as on the Exynos5433).
- * Samsung's kernel released all of them after a system power-down; audio
- * pads are left out, as there.
+ * Samsung's kernel released all of them after a system power-down, audio
+ * included: left latched, the I2S pads to the codec carry nothing and the
+ * loudspeaker stays silent after the first deep sleep.
  *
  * Every pin controller shares this data and one counter, so retention is
  * released only once the last of them has restored its banks. Released any
@@ -408,6 +409,7 @@ static const u32 exynos7_retention_regs[] = {
 	0x3228,	/* LLI */
 	EXYNOS5433_PAD_RETENTION_UFS_OPTION,
 	EXYNOS5433_PAD_RETENTION_FSYSGENIO_OPTION,
+	EXYNOS5433_PAD_RETENTION_AUD_OPTION,
 	0x32c8,	/* BOOTLDO_0 */
 	0x32e8,	/* BOOTLDO_1 */
 };
