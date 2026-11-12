@@ -459,13 +459,14 @@ static void exynos7_pm_watchdog(bool arm)
 }
 
 /*
- * Bring-up: power these block domains off right before the sleep call and
- * back on after it. Bit n is the domain at PMU 0x4000 + n * 0x20 (AUD 0,
- * CAM0 2, CAM1 3, DISP 4, G3D 8, ISP0 10, ISP1 12, MFC 13, MSCL 14, VPP
- * 15). The power-off runs
- * children first (ISP0, CAM0, ISP1, CAM1).
+ * Power these block domains off right before the sleep call and back on
+ * after it. pd_ignore_unused and domains without runtime-PM consumers
+ * leave them on; Samsung's kernel had them off at sleep. Bit n is the
+ * domain at PMU 0x4000 + n * 0x20 (AUD 0, CAM0 2, CAM1 3, DISP 4, G3D 8,
+ * ISP0 10, ISP1 12, MFC 13, MSCL 14, VPP 15); the default is all of them.
+ * The power-off runs children first (ISP0, CAM0, ISP1, CAM1).
  */
-static uint pd_off_mask;
+static uint pd_off_mask = 0xf51d;
 module_param(pd_off_mask, uint, 0644);
 
 static const u16 exynos7_pd_off_order[] = {
@@ -1068,12 +1069,6 @@ void exynos7_pm_init(void)
 	exynos7_pm_clear_stopctrl();
 	writel(0, exynos7_apollo_sram);
 
-	/*
-	 * Deep sleep is offered but not the default until it is proven on
-	 * the board: "echo deep > /sys/power/mem_sleep" selects it. A
-	 * mem_sleep_default= argument still takes precedence.
-	 */
-	if (mem_sleep_default == PM_SUSPEND_MAX)
-		mem_sleep_default = PM_SUSPEND_TO_IDLE;
+	/* Deep sleep is the default unless mem_sleep_default= says otherwise. */
 	suspend_set_ops(&exynos7_pm_ops);
 }
