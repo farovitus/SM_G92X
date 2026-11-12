@@ -642,6 +642,20 @@ static void stmfts_power_off(void *data)
 						sdata->regulators);
 }
 
+/*
+ * The controller can hang in a state where it still answers on I2C but
+ * raises no interrupt, so commands time out and touches are lost. Only
+ * removing its supplies clears that; the stock driver recovers the same
+ * way and waits 100 ms for the IC to discharge.
+ */
+static int stmfts_power_cycle(struct stmfts_data *sdata)
+{
+	stmfts_power_off(sdata);
+	msleep(100);
+
+	return stmfts_power_on(sdata);
+}
+
 /* This function is void because I don't want to prevent using the touch key
  * only because the LEDs don't get registered
  */
@@ -749,6 +763,15 @@ static int stmfts_probe(struct i2c_client *client)
 	dev_dbg(&client->dev, "initializing ST-Microelectronics FTS...\n");
 
 	err = stmfts_power_on(sdata);
+	if (err == -ETIMEDOUT) {
+		/*
+		 * A warm reboot keeps a hung controller powered. The failed
+		 * power-on dropped the supplies; give it a clean start.
+		 */
+		dev_warn(&client->dev, "controller does not answer, retrying\n");
+		msleep(100);
+		err = stmfts_power_on(sdata);
+	}
 	if (err)
 		return err;
 
@@ -806,7 +829,14 @@ static int stmfts_runtime_resume(struct device *dev)
 	struct stmfts_data *sdata = dev_get_drvdata(dev);
 	int ret;
 
-	ret = i2c_smbus_write_byte(sdata->client, STMFTS_SLEEP_OUT);
+	/* Wait for the sleep-out event: a hung controller sends none. */
+	ret = stmfts_command(sdata, STMFTS_SLEEP_OUT);
+	if (ret == -ETIMEDOUT) {
+		dev_warn(dev, "controller does not answer, power cycling it\n");
+		ret = stmfts_power_cycle(sdata);
+		if (!ret)
+			ret = stmfts_command(sdata, STMFTS_SLEEP_OUT);
+	}
 	if (ret)
 		dev_err(dev, "failed to resume device: %d\n", ret);
 
