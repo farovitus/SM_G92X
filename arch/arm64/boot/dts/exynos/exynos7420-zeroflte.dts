@@ -1590,6 +1590,8 @@
  * (3.10: dsim gpios = <&gpr3 0 0x1>); there is no enable line. The
  * supplies (S2MPB02 LDO16 VCC_3.0V_LCD, VCC_DISPLAY_1.8V) stay as S-Boot
  * set them and are not described here, so Linux never switches them.
+ * After deep sleep the driver rebuilds the link from S-Boot's setup; the
+ * D-PHY is taken for its reset.
  * If a test hangs the display, set status = "disabled" (or boot with
  * exynos7420_dsim_cmd.enable=0) and the link is left alone.
  */
@@ -1599,6 +1601,8 @@
 		reg = <0x13900000 0x1000>;
 		clocks = <&cmu_disp CLK_PCLK_DSIM0>;
 		clock-names = "pclk";
+		phys = <&mipi_phy 1>;
+		phy-names = "dsim";
 		status = "okay";
 		#address-cells = <1>;
 		#size-cells = <0>;
