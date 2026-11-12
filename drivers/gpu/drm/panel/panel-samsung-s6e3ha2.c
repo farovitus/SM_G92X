@@ -15,6 +15,7 @@
 #include <linux/of.h>
 #include <linux/mutex.h>
 #include <linux/regulator/consumer.h>
+#include <linux/suspend.h>
 #include <linux/workqueue.h>
 
 #include <drm/drm_mipi_dsi.h>
@@ -728,6 +729,9 @@ struct s6e3ha2 {
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *enable_gpio;
 	bool boot_on;		/* left running by the bootloader */
+	bool dark;		/* last level was 0: the display is off */
+	bool display_off;	/* re-initialised dark: on at the next level */
+	bool sleep_reinit;	/* put to sleep for deep sleep */
 
 	const struct s6e3ha2_panel_desc *desc;
 
@@ -1233,14 +1237,24 @@ static int s6e3ha2_set_brightness(struct backlight_device *bl_dev)
 	if (bl_dev->props.power > FB_BLANK_NORMAL)
 		return -EPERM;
 
-	if (ctx->desc->levels)
-		return s6e3ha2_set_cd(ctx, brightness);
+	ctx->dark = !brightness;
+	if (ctx->desc->levels) {
+		s6e3ha2_call_write_func(ret, s6e3ha2_set_cd(ctx, brightness));
+	} else {
+		s6e3ha2_call_write_func(ret, s6e3ha2_test_key_on_f0(ctx));
+		s6e3ha2_call_write_func(ret,
+					s6e3ha2_update_gamma(ctx, brightness));
+		s6e3ha2_call_write_func(ret, s6e3ha2_aor_control(ctx));
+		s6e3ha2_call_write_func(ret, s6e3ha2_set_vint(ctx));
+		s6e3ha2_call_write_func(ret, s6e3ha2_test_key_off_f0(ctx));
+	}
 
-	s6e3ha2_call_write_func(ret, s6e3ha2_test_key_on_f0(ctx));
-	s6e3ha2_call_write_func(ret, s6e3ha2_update_gamma(ctx, brightness));
-	s6e3ha2_call_write_func(ret, s6e3ha2_aor_control(ctx));
-	s6e3ha2_call_write_func(ret, s6e3ha2_set_vint(ctx));
-	s6e3ha2_call_write_func(ret, s6e3ha2_test_key_off_f0(ctx));
+	/* Re-initialised while dark: light it with its first level. */
+	if (brightness && ctx->display_off) {
+		s6e3ha2_call_write_func(ret, mipi_dsi_dcs_set_display_on(
+					to_mipi_dsi_device(ctx->dev)));
+		ctx->display_off = false;
+	}
 
 	return 0;
 }
@@ -1339,9 +1353,9 @@ err:
 	return ret;
 }
 
-static int s6e3ha2_enable(struct drm_panel *panel)
+/* Everything after the sleep-out and interface setup, up to display on. */
+static int s6e3ha2_setup(struct s6e3ha2 *ctx)
 {
-	struct s6e3ha2 *ctx = container_of(panel, struct s6e3ha2, panel);
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
 	int ret;
 
@@ -1397,11 +1411,105 @@ static int s6e3ha2_enable(struct drm_panel *panel)
 	s6e3ha2_call_write_func(ret, s6e3ha2_test(ctx));
 	s6e3ha2_call_write_func(ret, s6e3ha2_test_key_off_f0(ctx));
 
+	return 0;
+}
+
+static int s6e3ha2_enable(struct drm_panel *panel)
+{
+	struct s6e3ha2 *ctx = container_of(panel, struct s6e3ha2, panel);
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
+	int ret;
+
+	s6e3ha2_call_write_func(ret, s6e3ha2_setup(ctx));
 	s6e3ha2_call_write_func(ret, mipi_dsi_dcs_set_display_on(dsi));
+	ctx->display_off = false;
 	ctx->bl_dev->props.power = FB_BLANK_UNBLANK;
 
 	return 0;
 }
+
+/*
+ * The panel keeps power and reset through sleep (see the DT sleep pins)
+ * but not its running state. Put it to sleep first and bring it up
+ * again afterwards as Samsung's driver did around LCD off and on: sleep
+ * out with the interface setup, 120 ms, the common settings and the
+ * level, display on. No reset pulse: the link is already rebuilt by then,
+ * and a reset under it left data lane 0 out of stop state, so every
+ * command after it timed out. When the display was off (the lights HAL wrote 0),
+ * display on waits for the next level, so the panel does not light with
+ * no frame. s2idle keeps the panel running and does not come here.
+ */
+static int s6e3ha2_sys_suspend(struct device *dev)
+{
+	struct s6e3ha2 *ctx = dev_get_drvdata(dev);
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
+	int ret;
+
+	if (pm_suspend_target_state != PM_SUSPEND_MEM ||
+	    ctx->bl_dev->props.power != FB_BLANK_UNBLANK)
+		return 0;
+
+	mutex_lock(&ctx->bl_dev->update_lock);
+	s6e3ha2_fade_stop(ctx);
+	ret = mipi_dsi_dcs_set_display_off(dsi);
+	if (!ret)
+		ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
+	ctx->sleep_reinit = true;
+	mutex_unlock(&ctx->bl_dev->update_lock);
+
+	if (ret)
+		dev_warn(dev, "sleep in failed: %d\n", ret);
+	else
+		msleep(120);
+
+	return 0;
+}
+
+static int s6e3ha2_sleep_reinit(struct s6e3ha2 *ctx)
+{
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
+	int ret;
+
+	/* the level sent by the setup must not light it early */
+	ctx->display_off = false;
+	s6e3ha2_call_write_func(ret, s6e3ha2_panel_init(ctx));
+	msleep(120);
+	s6e3ha2_call_write_func(ret, s6e3ha2_setup(ctx));
+
+	if (ctx->dark) {
+		ctx->display_off = true;
+		return 0;
+	}
+	s6e3ha2_call_write_func(ret, mipi_dsi_dcs_set_display_on(dsi));
+	ctx->display_off = false;
+
+	return 0;
+}
+
+static int s6e3ha2_sys_resume(struct device *dev)
+{
+	struct s6e3ha2 *ctx = dev_get_drvdata(dev);
+	int ret;
+
+	if (!ctx->sleep_reinit)
+		return 0;
+	ctx->sleep_reinit = false;
+
+	mutex_lock(&ctx->bl_dev->update_lock);
+	ret = s6e3ha2_sleep_reinit(ctx);
+	mutex_unlock(&ctx->bl_dev->update_lock);
+
+	if (ret)
+		dev_err(dev, "not re-initialised after sleep: %d\n", ret);
+	else
+		dev_info(dev, "re-initialised after sleep, display %s\n",
+			 ctx->display_off ? "on at the next level" : "on");
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(s6e3ha2_pm_ops, s6e3ha2_sys_suspend,
+				s6e3ha2_sys_resume);
 
 static const struct drm_display_mode s6e3ha2_mode = {
 	.clock = 222372,
@@ -1634,6 +1742,7 @@ static struct mipi_dsi_driver s6e3ha2_driver = {
 	.remove = s6e3ha2_remove,
 	.driver = {
 		.name = "panel-samsung-s6e3ha2",
+		.pm = pm_sleep_ptr(&s6e3ha2_pm_ops),
 		.of_match_table = s6e3ha2_of_match,
 	},
 };
