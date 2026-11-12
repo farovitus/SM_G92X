@@ -10,6 +10,7 @@
 #include "debug.h"
 #include "fwil.h"
 #include "fwil_types.h"
+#include "feature.h"
 #include "cfg80211.h"
 #include "pno.h"
 
@@ -428,19 +429,26 @@ static int brcmf_pno_config_sched_scans(struct brcmf_if *ifp)
 	if (err < 0)
 		goto clean;
 
-	gscan_cfg->version = cpu_to_le16(BRCMF_GSCAN_CFG_VERSION);
-	gscan_cfg->retry_threshold = GSCAN_RETRY_THRESHOLD;
-	gscan_cfg->buffer_threshold = GSCAN_BATCH_NO_THR_SET;
-	gscan_cfg->flags = BRCMF_GSCAN_CFG_ALL_BUCKETS_IN_1ST_SCAN;
+	/*
+	 * Without gscan the firmware rejects pfn_gscan_cfg. Only one request
+	 * is allowed then (see brcmf_pno_wiphy_params), and pfn_set and
+	 * pfn_cfg already carry its period and channels.
+	 */
+	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_GSCAN)) {
+		gscan_cfg->version = cpu_to_le16(BRCMF_GSCAN_CFG_VERSION);
+		gscan_cfg->retry_threshold = GSCAN_RETRY_THRESHOLD;
+		gscan_cfg->buffer_threshold = GSCAN_BATCH_NO_THR_SET;
+		gscan_cfg->flags = BRCMF_GSCAN_CFG_ALL_BUCKETS_IN_1ST_SCAN;
 
-	gscan_cfg->count_of_channel_buckets = n_buckets;
-	memcpy(gscan_cfg->bucket, buckets,
-	       array_size(n_buckets, sizeof(*buckets)));
+		gscan_cfg->count_of_channel_buckets = n_buckets;
+		memcpy(gscan_cfg->bucket, buckets,
+		       array_size(n_buckets, sizeof(*buckets)));
 
-	err = brcmf_fil_iovar_data_set(ifp, "pfn_gscan_cfg", gscan_cfg, gsz);
-
-	if (err < 0)
-		goto clean;
+		err = brcmf_fil_iovar_data_set(ifp, "pfn_gscan_cfg", gscan_cfg,
+					       gsz);
+		if (err < 0)
+			goto clean;
+	}
 
 	/* configure random mac */
 	err = brcmf_pno_set_random(ifp, pi);
