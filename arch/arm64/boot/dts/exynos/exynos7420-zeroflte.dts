@@ -1251,8 +1251,13 @@
 &hsi2c_7 {
 	/* PCLK_HSI2C7 lives in the disabled CMU_PERIC1; S-Boot leaves it on. */
 	clocks = <&hsi2c7_clk>;
+	/*
+	 * The gpj1 pins sit on the secure-owned pinctrl_touch. Deep sleep
+	 * resets their mux; the secure firmware restores it for bus 7.
+	 */
 	/delete-property/ pinctrl-names;
 	/delete-property/ pinctrl-0;
+	samsung,secure-pins-bus = <7>;
 	clock-frequency = <400000>;
 	status = "okay";
 

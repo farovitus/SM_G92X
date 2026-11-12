@@ -5,6 +5,7 @@
  * Copyright (C) 2013 Samsung Electronics Co., Ltd.
 */
 
+#include <linux/arm-smccc.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 
@@ -203,6 +204,9 @@ struct exynos5_i2c {
 
 	/* Version of HS-I2C Hardware */
 	const struct exynos_hsi2c_variant *variant;
+
+	/* Bus number the secure firmware restores the pins of, or -1 */
+	int			secure_pins_bus;
 };
 
 /**
@@ -823,10 +827,36 @@ static const struct i2c_algorithm exynos5_i2c_algorithm = {
 	.functionality		= exynos5_i2c_func,
 };
 
+/*
+ * On the Exynos 7420 Galaxy S6 the secure world owns the pin controller of
+ * the touchscreen bus (gpj1), so Linux can neither read nor restore it, and
+ * deep sleep resets its mux. Samsung's firmware remuxes the pins of a bus
+ * on request; its kernel made the call when a transfer timed out.
+ */
+#define EXYNOS_SMC_HSI2C_RESTORE_PINS	0x83000012
+
+static void exynos5_i2c_restore_secure_pins(struct exynos5_i2c *i2c)
+{
+	struct arm_smccc_res res;
+
+	if (!IS_ENABLED(CONFIG_HAVE_ARM_SMCCC) || i2c->secure_pins_bus < 0)
+		return;
+
+	arm_smccc_smc(EXYNOS_SMC_HSI2C_RESTORE_PINS, i2c->secure_pins_bus,
+		      0, 0, 0, 0, 0, 0, &res);
+	if (res.a0 != (unsigned long)i2c->secure_pins_bus)
+		dev_warn(i2c->dev, "secure firmware did not restore pins of bus %d: %ld\n",
+			 i2c->secure_pins_bus, (long)res.a0);
+	else
+		dev_dbg(i2c->dev, "secure firmware restored pins of bus %d\n",
+			i2c->secure_pins_bus);
+}
+
 static int exynos5_i2c_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
 	struct exynos5_i2c *i2c;
+	u32 bus;
 	int ret;
 
 	i2c = devm_kzalloc(&pdev->dev, sizeof(struct exynos5_i2c), GFP_KERNEL);
@@ -835,6 +865,10 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
 
 	if (of_property_read_u32(np, "clock-frequency", &i2c->op_clock))
 		i2c->op_clock = I2C_MAX_STANDARD_MODE_FREQ;
+
+	i2c->secure_pins_bus = -1;
+	if (!of_property_read_u32(np, "samsung,secure-pins-bus", &bus))
+		i2c->secure_pins_bus = bus;
 
 	strscpy(i2c->adap.name, "exynos5-i2c", sizeof(i2c->adap.name));
 	i2c->adap.owner   = THIS_MODULE;
@@ -957,6 +991,7 @@ static int exynos5_i2c_resume_noirq(struct device *dev)
 	exynos5_i2c_init(i2c);
 	clk_disable(i2c->clk);
 	clk_disable(i2c->pclk);
+	exynos5_i2c_restore_secure_pins(i2c);
 	i2c_mark_adapter_resumed(&i2c->adap);
 
 	return 0;
