@@ -1146,6 +1146,7 @@
 	 * running through system sleep.
 	 */
 	samsung,bootloader-display;
+	samsung,disp-sysreg = <&sysreg_system_controller>;
 	memory-region = <&boot_fb>;
 
 	/*

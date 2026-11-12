@@ -14,10 +14,12 @@
 #include <linux/interconnect.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
+#include <linux/mfd/syscon.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/regmap.h>
 #include <linux/sizes.h>
 #include <linux/workqueue.h>
 
@@ -43,6 +45,47 @@
 #define MIN_FB_WIDTH_FOR_16WORD_BURST 128
 
 #define WINDOWS_NR	2
+
+/* SYSREG_DISP: DECON-to-DSIM path setup, lost when DISP powers off */
+#define DISP_CFG			0x2910
+#define DISP_CFG_UNMASK_GLOBAL		BIT(4)
+
+/* S-Boot's command-mode setup the driver keeps but never programs */
+#define DECON_VIDTCON5			0x624
+#define DECON_VIDTCON6			0x638
+#define DECON_ENHANCER_MIC_CTRL		0x6d0
+#define DECON_MIC_CON0			0x2404
+#define DECON_MIC_ENC_PARAM0		0x2410
+#define DECON_MIC_ENC_PARAM1		0x2414
+#define DECON_MIC_ENC_PARAM2		0x2418
+#define DECON_MIC_ENC_PARAM3		0x241c
+
+#define DECON_WIN_SLEEP_REGS(w)						\
+	WINCON(w), VIDW_BUF_START(w), VIDW_BUF_START1(w),		\
+	VIDW_BUF_START2(w), VIDW_WHOLE_X(w), VIDW_WHOLE_Y(w),		\
+	VIDW_OFFSET_X(w), VIDW_OFFSET_Y(w), VIDOSD_A(w), VIDOSD_B(w),	\
+	VIDOSD_C(w), VIDOSD_D(w), VIDOSD_E(w), BLENDE(w)
+
+/*
+ * What a bootloader-set display keeps through sleep while DECON is
+ * stopped. Deep sleep powers the DISP block off and resets all of it:
+ * S-Boot's output, timing and MIC setup, which the driver relies on and
+ * never writes, and the window state of the last commit. Saved when the
+ * output stops for sleep or the CRTC turns off, restored in this order
+ * with VIDCON0 last; TRIGCON goes back when the output restarts, or with
+ * the next frame trigger.
+ */
+static const u16 decon_sleep_regs[] = {
+	DECON_CMU, VIDOUTCON0, VIDCON3, VIDCON4, VCLKCON0, VCLKCON1, VCLKCON2,
+	VIDCON1(0), VIDTCON0, VIDTCON1, VIDTCON2, VIDTCON3, VIDTCON4,
+	DECON_VIDTCON5, DECON_VIDTCON6, LINECNT_OP_THRESHOLD, CRCCTRL,
+	DECON_ENHANCER_MIC_CTRL, DECON_MIC_CON0, DECON_MIC_ENC_PARAM0,
+	DECON_MIC_ENC_PARAM1, DECON_MIC_ENC_PARAM2, DECON_MIC_ENC_PARAM3,
+	VIDINTCON0, WINCHMAP0, BLENDCON,
+	DECON_WIN_SLEEP_REGS(0), DECON_WIN_SLEEP_REGS(1),
+	WKEYCON0_BASE(1), WKEYCON1_BASE(1),
+	SHADOWCON, VIDCON0,
+};
 
 /* a command-mode panel holds its frame: release the bus after this */
 #define DECON_BW_IDLE_MS	100
@@ -162,6 +205,9 @@ struct decon_context {
 	bool				bootloader_display;
 	u32				sleep_trigcon;
 	bool				sleep_stopped;
+	u32				sleep_regs[ARRAY_SIZE(decon_sleep_regs)];
+	bool				sleep_saved;
+	struct regmap			*sysreg;
 	wait_queue_head_t		wait_vsync_queue;
 	atomic_t			wait_vsync_event;
 
@@ -1356,6 +1402,9 @@ static void decon_iommu_takeover(struct decon_context *ctx)
 	ctx->iommu_ready = true;
 }
 
+static void exynos7_decon_save(struct decon_context *ctx);
+static void exynos7_decon_restore(struct decon_context *ctx);
+
 static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
@@ -1366,6 +1415,10 @@ static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
 		DRM_DEV_ERROR(ctx->dev, "failed to enable DECON device.\n");
 		return;
 	}
+
+	/* the display was off through deep sleep: put S-Boot's setup back */
+	if (ctx->bootloader_display && ctx->i80_if)
+		exynos7_decon_restore(ctx);
 
 	/*
 	 * Once only: later resumes enable translation from the SysMMU's own
@@ -1432,6 +1485,8 @@ static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
 
 	if (ctx->i80_if)
 		decon_stop_windows(ctx);
+	if (ctx->bootloader_display && ctx->i80_if)
+		exynos7_decon_save(ctx);
 
 	pm_runtime_put_sync(ctx->dev);
 
@@ -1653,6 +1708,11 @@ static int decon_probe(struct platform_device *pdev)
 	of_node_put(i80_if_timings);
 	ctx->bootloader_display = of_property_read_bool(dev->of_node,
 						"samsung,bootloader-display");
+	ctx->sysreg = syscon_regmap_lookup_by_phandle_optional(dev->of_node,
+						"samsung,disp-sysreg");
+	if (IS_ERR(ctx->sysreg))
+		return dev_err_probe(dev, PTR_ERR(ctx->sysreg),
+				     "cannot get the display sysreg\n");
 
 	if (ctx->i80_if)
 		decon_get_boot_fb(ctx);
@@ -1861,8 +1921,47 @@ static void exynos7_decon_stop_output(struct decon_context *ctx)
 	if (ret)
 		dev_warn(ctx->dev, "did not stop: VIDCON0 %#x\n", val);
 	ctx->sleep_stopped = true;
+	exynos7_decon_save(ctx);
 	dev_dbg(ctx->dev, "output stopped for sleep (TRIGCON %#x)\n",
 		 ctx->sleep_trigcon);
+}
+
+static void exynos7_decon_save(struct decon_context *ctx)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(decon_sleep_regs); i++)
+		ctx->sleep_regs[i] = readl(ctx->regs + decon_sleep_regs[i]);
+	ctx->sleep_saved = true;
+}
+
+/*
+ * After deep sleep DECON is at its reset values (VIDOUTCON0, set up for
+ * the DSIM, reads back otherwise): put back the path to the DSIM and the
+ * rest of the saved state, and latch it. Runs when the output restarts
+ * after sleep and when the CRTC turns on again.
+ */
+static void exynos7_decon_restore(struct decon_context *ctx)
+{
+	unsigned int i;
+
+	if (!ctx->sleep_saved)
+		return;
+	for (i = 0; i < ARRAY_SIZE(decon_sleep_regs); i++)
+		if (decon_sleep_regs[i] == VIDOUTCON0)
+			break;
+	if (readl(ctx->regs + VIDOUTCON0) == ctx->sleep_regs[i])
+		return;
+
+	if (ctx->sysreg)
+		regmap_update_bits(ctx->sysreg, DISP_CFG,
+				   DISP_CFG_UNMASK_GLOBAL,
+				   DISP_CFG_UNMASK_GLOBAL);
+	for (i = 0; i < ARRAY_SIZE(decon_sleep_regs); i++)
+		writel(ctx->sleep_regs[i], ctx->regs + decon_sleep_regs[i]);
+	writel(DECON_UPDATE_STANDALONE_F, ctx->regs + DECON_UPDATE);
+	ctx->clk_gate = -1;	/* VCLKCON0 as saved; set it again */
+	dev_info(ctx->dev, "state restored after sleep\n");
 }
 
 static void exynos7_decon_start_output(struct decon_context *ctx)
@@ -1870,6 +1969,7 @@ static void exynos7_decon_start_output(struct decon_context *ctx)
 	if (!ctx->sleep_stopped)
 		return;
 
+	exynos7_decon_restore(ctx);
 	writel(readl(ctx->regs + VIDCON0) | VIDCON0_ENVID | VIDCON0_ENVID_F,
 	       ctx->regs + VIDCON0);
 	writel(ctx->sleep_trigcon, ctx->regs + TRIGCON);
