@@ -193,7 +193,7 @@ struct modem_link_pm {
 	void (*request_hold)(struct modem_link_pm *pm);
 	void (*release_hold)(struct modem_link_pm *pm);
 	bool (*link_active)(struct modem_link_pm *pm);
-
+	bool (*link_mounted)(struct modem_link_pm *pm);
 };
 
 #define wdog_to_pm(wdog)	container_of(wdog, struct modem_link_pm, wdog)

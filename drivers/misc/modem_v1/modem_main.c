@@ -457,6 +457,22 @@ static void modem_shutdown(struct platform_device *pdev)
 static int modem_suspend(struct device *dev)
 {
 	struct modem_ctl *mc = dev_get_drvdata(dev);
+	struct link_device *ld = mc->iod ? get_current_link(mc->iod) : NULL;
+	struct modem_link_pm *pm = ld ? &ld->pm : NULL;
+
+	/*
+	 * The link-PM wakeup source keeps the system up while the link is
+	 * mounted, but a suspend that does not check wakeup counts goes ahead
+	 * anyway. Lowering PDA_ACTIVE then makes the CP release a link whose
+	 * LLI is about to lose power: the unmount never completes, and the
+	 * link-PM watchdog crash path touches the dead LLI (SError).
+	 */
+	if (pm && pm->link_mounted && pm->link_mounted(pm)) {
+		dev_info_ratelimited(dev, "%s link mounted (%s), not suspending\n",
+				     pm->link_name,
+				     pm_state2str(pm->fsm.state));
+		return -EBUSY;
+	}
 
 	gpiod_set_value(mc->gpio_pda_active, 0);
 	mif_info("%s: %s\n", FUNC, mc->name);

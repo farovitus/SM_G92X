@@ -730,6 +730,23 @@ static bool link_active(struct modem_link_pm *pm)
 	return ret;
 }
 
+/*
+ * The link is mounted from the first CP wakeup until the LLI reports the
+ * unmount. Its clocks run all that time and deep sleep would power the LLI
+ * off under it, so the system must not suspend before UNMOUNTED.
+ */
+static bool link_mounted(struct modem_link_pm *pm)
+{
+	bool ret;
+	unsigned long flags;
+
+	spin_lock_irqsave(&pm->lock, flags);
+	ret = pm->active && pm->fsm.state != PM_STATE_UNMOUNTED;
+	spin_unlock_irqrestore(&pm->lock, flags);
+
+	return ret;
+}
+
 static void start_link_pm(struct modem_link_pm *pm, enum pm_event event)
 {
 	enum pm_state state;
@@ -897,6 +914,7 @@ int init_link_device_pm(struct link_device *ld,
 	pm->request_hold = request_hold;
 	pm->release_hold = release_hold;
 	pm->link_active = link_active;
+	pm->link_mounted = link_mounted;
 
 	return 0;
 
