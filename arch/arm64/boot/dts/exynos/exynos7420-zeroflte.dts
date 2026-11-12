@@ -1403,6 +1403,17 @@
 };
 
 &pinctrl_bus1 {
+	/*
+	 * DISPLAY_1.6V_EN, the panel rail enable S-Boot sets: held through
+	 * sleep like the panel reset. Stock drove it low there because it
+	 * switched the panel off with the screen.
+	 */
+	panel_pwr_sleep: panel-pwr-sleep-pins {
+		samsung,pins = "gpf4-3";
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+
 	bt_en_pin: bt-en-pins {
 		samsung,pins = "gpf4-1";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
@@ -1497,6 +1508,17 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
+
+	/*
+	 * Panel reset: held through sleep. Left to the power-down default,
+	 * the panel came back from a deep sleep reset, under a display that
+	 * stays set up.
+	 */
+	panel_rst_sleep: panel-rst-sleep-pins {
+		samsung,pins = "gpr3-0";
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
 };
 
 /* Bluetooth UART (BCM4358) */
@@ -1588,7 +1610,8 @@
  * (gamma, AOR, ELVSS, VINT) through it. With the zeroflte compatible
  * the value is the luminance in cd/m2, 2 to 360, set from the stock S6
  * tables. Panel reset is gpr3-0, active low
- * (3.10: dsim gpios = <&gpr3 0 0x1>); there is no enable line. The
+ * (3.10: dsim gpios = <&gpr3 0 0x1>); S-Boot also sets the panel
+ * rail enable gpf4-3 (DISPLAY_1.6V_EN). Both keep their level in sleep. The
  * supplies (S2MPB02 LDO16 VCC_3.0V_LCD, VCC_DISPLAY_1.8V) stay as S-Boot
  * set them and are not described here, so Linux never switches them.
  * After deep sleep the driver rebuilds the link from S-Boot's setup; the
@@ -1612,6 +1635,8 @@
 			compatible = "samsung,s6e3ha2-zeroflte", "samsung,s6e3ha2";
 			reg = <0>;
 			reset-gpios = <&gpr3 0 GPIO_ACTIVE_LOW>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&panel_rst_sleep &panel_pwr_sleep>;
 		};
 	};
 
