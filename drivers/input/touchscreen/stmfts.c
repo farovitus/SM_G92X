@@ -353,10 +353,25 @@ static int stmfts_enable_int_reg(struct stmfts_data *sdata)
 	return ret < 0 ? ret : 0;
 }
 
+static int stmfts_power_on(struct stmfts_data *sdata);
+
 static int stmfts_input_open(struct input_dev *dev)
 {
 	struct stmfts_data *sdata = input_get_drvdata(dev);
 	int err;
+
+	/* System resume leaves a closed controller off; power it on now. */
+	if (!sdata->powered) {
+		err = stmfts_power_on(sdata);
+		if (err == -ETIMEDOUT) {
+			dev_warn(&sdata->client->dev,
+				 "controller does not answer, retrying\n");
+			msleep(100);
+			err = stmfts_power_on(sdata);
+		}
+		if (err)
+			return err;
+	}
 
 	err = pm_runtime_resume_and_get(&sdata->client->dev);
 	if (err)
@@ -857,8 +872,17 @@ static int stmfts_resume(struct device *dev)
 	struct stmfts_data *sdata = dev_get_drvdata(dev);
 	int err;
 
+	/*
+	 * Powering on takes over half a second of reset, tuning and
+	 * calibration, and every wake would wait for it. With the input
+	 * closed (Android inhibits it while the screen is off) nothing
+	 * needs the controller: input_open powers it on when it reopens.
+	 */
+	if (!sdata->running)
+		return 0;
+
 	err = stmfts_power_on(sdata);
-	if (err || !sdata->running)
+	if (err)
 		return err;
 
 	/*
