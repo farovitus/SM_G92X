@@ -101,7 +101,6 @@
 					regulator-name = "tsp_io";
 					regulator-min-microvolt = <1850000>;
 					regulator-max-microvolt = <1850000>;
-					regulator-always-on;
 					regulator-boot-on;
 				};
 
@@ -180,7 +179,6 @@
 					regulator-name = "tsp_avdd";
 					regulator-min-microvolt = <3300000>;
 					regulator-max-microvolt = <3300000>;
-					regulator-always-on;
 				};
 			};
 		};
