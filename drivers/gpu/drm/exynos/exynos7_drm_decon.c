@@ -173,6 +173,18 @@ module_param_named(te_novbl, decon_te_novbl, uint, 0444);
 module_param_named(te_overwrite, decon_te_overwrite, uint, 0444);
 
 /*
+ * Flips that no TE or frame done completed in time, so the TE watchdog
+ * did (flip_late), and of those the ones sent before DECON was seen done
+ * with the old state (flip_forced). Such a flip otherwise leaves its CRTC
+ * out-fence unsignalled for good: SurfaceFlinger then never presents
+ * again, and on Android 15 its screenshots wait on that fence and stall
+ * system_server until its watchdog kills it.
+ */
+static unsigned int decon_flip_late, decon_flip_forced;
+module_param_named(flip_late, decon_flip_late, uint, 0444);
+module_param_named(flip_forced, decon_flip_forced, uint, 0444);
+
+/*
  * TE-sent transfers by trigger-to-frame-done time, in 2 ms steps (the last
  * bucket: 18 ms or more). A transfer longer than the TE period makes the
  * next frame miss its TE; a full-screen frame takes 14-16 ms.
@@ -184,6 +196,8 @@ module_param_array_named(xfer_ms, decon_xfer_ms, uint, NULL, 0444);
 #define DECON_TE_TIMEOUT_MS	50
 /* after this many such frames in a row, frames go out on commit again */
 #define DECON_TE_MISS_MAX	3
+/* watchdog runs a pending flip waits for DECON to drop the old state */
+#define DECON_FLIP_WAIT_MAX	10
 
 /* Identity map size when S-Boot scans below the /chosen framebuffer */
 #define BOOT_FB_FALLBACK_SIZE	SZ_64M
@@ -241,6 +255,7 @@ struct decon_context {
 	int				clk_gate;	/* VCLKCON0 setting applied */
 	/* i80: completes once DECON scans the committed state, under te_lock */
 	struct drm_pending_vblank_event	*flip_event;
+	unsigned int			flip_waits;	/* watchdog runs on it */
 	wait_queue_head_t		te_wq;
 	struct delayed_work		te_watchdog;
 };
@@ -1070,6 +1085,7 @@ decon_te_flush(struct decon_context *ctx, struct drm_pending_vblank_event *event
 	if (event) {
 		old = ctx->flip_event;
 		ctx->flip_event = event;
+		ctx->flip_waits = 0;
 	}
 	ctx->trig_pending = true;
 	decon_te_irq_get(ctx);
@@ -1080,16 +1096,43 @@ decon_te_flush(struct decon_context *ctx, struct drm_pending_vblank_event *event
 	return old;
 }
 
-/* A frame that got no TE in time is sent anyway, so the display never stalls. */
+/*
+ * A frame that got no TE in time is sent anyway, so the display never
+ * stalls. A flip left pending once its frame is out (no frame done, or
+ * DECON still latching when it came, and the TE interrupt off) is
+ * completed here as soon as DECON is done with the old state, and after
+ * DECON_FLIP_WAIT_MAX runs regardless: its out-fence must signal.
+ */
 static void decon_te_watchdog(struct work_struct *work)
 {
 	struct decon_context *ctx = container_of(to_delayed_work(work),
 						 struct decon_context,
 						 te_watchdog);
+	struct drm_pending_vblank_event *flip = NULL;
 	unsigned long flags;
-	bool sent = false, off = false;
+	bool sent = false, off = false, again = false, forced = false;
+	u32 upd = 0, vc1 = 0;
+	bool busy = false, irq_on = false, vbl = false, sync = false;
 
 	spin_lock_irqsave(&ctx->te_lock, flags);
+	if (!ctx->trig_pending && ctx->flip_event) {
+		flip = decon_take_latched_flip(ctx);
+		if (!flip && ++ctx->flip_waits >= DECON_FLIP_WAIT_MAX) {
+			flip = ctx->flip_event;
+			ctx->flip_event = NULL;
+			forced = true;
+		}
+		if (flip) {
+			upd = readl(ctx->regs + DECON_UPDATE);
+			vc1 = readl(ctx->regs + VIDCON1(0));
+			busy = ctx->xfer_busy;
+			irq_on = ctx->te_irq_on;
+			vbl = ctx->vblank_on;
+			sync = ctx->te_sync;
+		} else {
+			again = true;
+		}
+	}
 	if (ctx->trig_pending) {
 		/* a lost frame-done must not hold the display either */
 		decon_te_send(ctx);
@@ -1105,8 +1148,24 @@ static void decon_te_watchdog(struct work_struct *work)
 			}
 			off = true;
 		}
+		/* its flip completes at frame done; check on it */
+		again = !!ctx->flip_event;
 	}
 	spin_unlock_irqrestore(&ctx->te_lock, flags);
+
+	if (flip) {
+		WRITE_ONCE(decon_flip_late, decon_flip_late + 1);
+		if (forced)
+			WRITE_ONCE(decon_flip_forced, decon_flip_forced + 1);
+		dev_warn_ratelimited(ctx->dev,
+				     "flip completed by watchdog%s: te_sync %d xfer_busy %d te_irq %d vblank %d UPDATE %#x VIDCON1 %#x\n",
+				     forced ? " before latch" : "", sync, busy,
+				     irq_on, vbl, upd, vc1);
+		decon_send_flip(ctx, flip);
+	}
+	if (again)
+		mod_delayed_work(system_highpri_wq, &ctx->te_watchdog,
+				 msecs_to_jiffies(DECON_TE_TIMEOUT_MS));
 
 	if (sent) {
 		dev_warn_ratelimited(ctx->dev, "no TE for %u ms, frame sent without it\n",
@@ -1185,7 +1244,8 @@ static irqreturn_t decon_te_irq_handler(int irq, void *dev_id)
 	vblank = ctx->te_sync && ctx->vblank_on;
 	if (ctx->te_sync && !vblank)
 		decon_te_novbl++;
-	if (ctx->te_sync && !ctx->trig_pending && !vblank) {
+	/* a flip still waiting for the latch is checked again next TE */
+	if (ctx->te_sync && !ctx->trig_pending && !vblank && !ctx->flip_event) {
 		disable_irq_nosync(irq);
 		ctx->te_irq_on = false;
 	}
@@ -1271,9 +1331,10 @@ static void decon_te_stop(struct decon_context *ctx)
 {
 	unsigned long flags;
 
+	/* also armed for flips without TE */
+	cancel_delayed_work_sync(&ctx->te_watchdog);
 	if (ctx->te_irq <= 0)
 		return;
-	cancel_delayed_work_sync(&ctx->te_watchdog);
 	spin_lock_irqsave(&ctx->te_lock, flags);
 	ctx->te_sync = false;
 	WRITE_ONCE(decon_te_active, false);
@@ -1323,7 +1384,10 @@ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
 			spin_lock_irqsave(&ctx->te_lock, flags);
 			old = ctx->flip_event;
 			ctx->flip_event = event;
+			ctx->flip_waits = 0;
 			spin_unlock_irqrestore(&ctx->te_lock, flags);
+			mod_delayed_work(system_highpri_wq, &ctx->te_watchdog,
+					 msecs_to_jiffies(DECON_TE_TIMEOUT_MS));
 		}
 		/* only after a flip_done timeout: do not leak it */
 		if (WARN_ON_ONCE(old))
