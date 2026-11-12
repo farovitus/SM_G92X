@@ -718,6 +718,12 @@ struct s6e3ha2_panel_desc {
 	unsigned int num_levels;
 	unsigned int default_cd;
 	unsigned int max_cd;	/* top of the normal range */
+	/*
+	 * Galaxy S6: Samsung's own values where they differ from the TM2
+	 * ones, above all the panel's MIC decoder on (F9 29): S-Boot sends
+	 * the frames MIC-compressed, so the TM2 F9 09 showed them pixelated.
+	 */
+	bool s6_seq;
 };
 
 struct s6e3ha2 {
@@ -801,13 +807,22 @@ static int s6e3ha2_test_key_off_fc(struct s6e3ha2 *ctx)
 static int s6e3ha2_single_dsi_set(struct s6e3ha2 *ctx)
 {
 	s6e3ha2_dcs_write_seq_static(ctx, 0xf2, 0x67);
-	s6e3ha2_dcs_write_seq_static(ctx, 0xf9, 0x09);
+	if (ctx->desc->s6_seq)
+		s6e3ha2_dcs_write_seq_static(ctx, 0xf9, 0x29);
+	else
+		s6e3ha2_dcs_write_seq_static(ctx, 0xf9, 0x09);
 	return 0;
 }
 
 static int s6e3ha2_freq_calibration(struct s6e3ha2 *ctx)
 {
 	s6e3ha2_dcs_write_seq_static(ctx, 0xfd, 0x1c);
+	if (ctx->desc->s6_seq) {
+		/* the S6 oscillator setting, without the TM2 calibration */
+		s6e3ha2_dcs_write_seq_static(ctx, 0xfe, 0xa0);
+		s6e3ha2_dcs_write_seq_static(ctx, 0xfe, 0x20);
+		return 0;
+	}
 	if (ctx->desc->type == HF2_TYPE)
 		s6e3ha2_dcs_write_seq_static(ctx, 0xf2, 0x67, 0x40, 0xc5);
 	s6e3ha2_dcs_write_seq_static(ctx, 0xfe, 0x20, 0x39);
@@ -864,8 +879,12 @@ static int s6e3ha2_test(struct s6e3ha2 *ctx)
 
 static int s6e3ha2_touch_hsync_on1(struct s6e3ha2 *ctx)
 {
-	s6e3ha2_dcs_write_seq_static(ctx, 0xbd, 0x33, 0x11, 0x02,
-					0x16, 0x02, 0x16);
+	if (ctx->desc->s6_seq)
+		s6e3ha2_dcs_write_seq_static(ctx, 0xbd, 0x11, 0x11, 0x02,
+						0x16, 0x02, 0x16);
+	else
+		s6e3ha2_dcs_write_seq_static(ctx, 0xbd, 0x33, 0x11, 0x02,
+						0x16, 0x02, 0x16);
 	return 0;
 }
 
@@ -889,7 +908,10 @@ static int s6e3ha2_poc_setting(struct s6e3ha2 *ctx)
 
 static int s6e3ha2_pcd_set_off(struct s6e3ha2 *ctx)
 {
-	s6e3ha2_dcs_write_seq_static(ctx, 0xcc, 0x40, 0x51);
+	if (ctx->desc->s6_seq)
+		s6e3ha2_dcs_write_seq_static(ctx, 0xcc, 0x4c);
+	else
+		s6e3ha2_dcs_write_seq_static(ctx, 0xcc, 0x40, 0x51);
 	return 0;
 }
 
@@ -1374,7 +1396,8 @@ static int s6e3ha2_setup(struct s6e3ha2 *ctx)
 	/* pcd setting off for TB */
 	s6e3ha2_call_write_func(ret, s6e3ha2_pcd_set_off(ctx));
 	s6e3ha2_call_write_func(ret, s6e3ha2_err_fg_set(ctx));
-	s6e3ha2_call_write_func(ret, s6e3ha2_te_start_setting(ctx));
+	if (!ctx->desc->s6_seq)
+		s6e3ha2_call_write_func(ret, s6e3ha2_te_start_setting(ctx));
 
 	/* brightness setting */
 	s6e3ha2_call_write_func(ret, s6e3ha2_set_brightness(ctx->bl_dev));
@@ -1536,6 +1559,7 @@ static const struct s6e3ha2_panel_desc samsung_s6e3ha2_zeroflte = {
 	.num_levels = ARRAY_SIZE(s6e3ha2_zeroflte_levels),
 	.default_cd = 183,	/* stock UI default, 134 of 255 */
 	.max_cd = 360,		/* the levels above it are opt-in */
+	.s6_seq = true,
 };
 
 static const struct drm_display_mode s6e3hf2_mode = {
