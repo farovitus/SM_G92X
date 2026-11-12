@@ -26,6 +26,8 @@
 #include <video/of_display_timing.h>
 #include <video/of_videomode.h>
 
+#include <drm/drm_atomic.h>
+#include <drm/drm_atomic_helper.h>
 #include <drm/drm_blend.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
@@ -1558,7 +1560,45 @@ static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
 	decon_release_bandwidth(ctx);
 }
 
+/*
+ * DECON cannot fetch a window narrower than 128 bytes a line (32 pixels
+ * at 32 bpp), the limit the 3.10 driver enforced. Such a window starts a
+ * frame that never ends: DECON stays ACTIVE at line 0, no frame done
+ * comes, and the display is frozen until DECON is reset. Android 15's
+ * composer handed it a 1-pixel strip of a side layer in Settings. A
+ * rejected test commit makes the composer use the GPU for that layer.
+ */
+#define DECON_WIN_MIN_BYTES	128
+
+static unsigned int decon_win_narrow;
+module_param_named(win_narrow, decon_win_narrow, uint, 0444);
+
+static int decon_atomic_check(struct exynos_drm_crtc *crtc,
+			      struct drm_crtc_state *state)
+{
+	const struct drm_plane_state *ps;
+	struct drm_plane *plane;
+
+	drm_atomic_crtc_state_for_each_plane_state(plane, ps, state) {
+		const struct exynos_drm_plane_state *s =
+			container_of_const(ps, struct exynos_drm_plane_state,
+					   base);
+
+		if (!ps->fb ||
+		    s->crtc.w * ps->fb->format->cpp[0] >= DECON_WIN_MIN_BYTES)
+			continue;
+		WRITE_ONCE(decon_win_narrow, decon_win_narrow + 1);
+		DRM_DEV_DEBUG_KMS(crtc->base.dev->dev,
+				  "[PLANE:%d] %u pixels wide, below %u bytes\n",
+				  plane->base.id, s->crtc.w,
+				  DECON_WIN_MIN_BYTES);
+		return -EINVAL;
+	}
+	return 0;
+}
+
 static const struct exynos_drm_crtc_ops decon_crtc_ops = {
+	.atomic_check = decon_atomic_check,
 	.atomic_enable = decon_atomic_enable,
 	.atomic_disable = decon_atomic_disable,
 	.enable_vblank = decon_enable_vblank,
