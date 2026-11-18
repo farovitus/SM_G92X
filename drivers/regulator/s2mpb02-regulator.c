@@ -11,18 +11,44 @@
 
 #include <linux/i2c.h>
 #include <linux/kernel.h>
+#include <linux/leds.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
+#include <linux/mutex.h>
 #include <linux/regmap.h>
 #include <linux/regulator/driver.h>
+#include <soc/samsung/camera_class.h>
 
 #define S2MPB02_REG_ID			0x00
 #define S2MPB02_REG_B1CTRL1		0x0b
 #define S2MPB02_REG_B1CTRL2		0x0c
 #define S2MPB02_REG_B2CTRL1		0x0d
 #define S2MPB02_REG_B2CTRL2		0x0e
+#define S2MPB02_REG_FLED_CTRL1		0x12
+#define S2MPB02_REG_FLED_CTRL2		0x13
+#define S2MPB02_REG_FLED_CUR1		0x14
+#define S2MPB02_REG_FLED_TIME1		0x15
+#define S2MPB02_REG_FLED_IRD2		0x1b
 #define S2MPB02_REG_L1CTRL		0x1e
 #define S2MPB02_REG_L18CTRL		0x2f
+
+#define S2MPB02_FLED_EN_MASK		GENMASK(7, 6)
+#define S2MPB02_FLED_OFF		0x00
+#define S2MPB02_FLED_FLASH_ON		0x80
+#define S2MPB02_FLED_TORCH_ON		0xc0
+#define S2MPB02_FLED_LV_EN_MASK		BIT(3)
+#define S2MPB02_FLED_FLASH_CUR_MASK	GENMASK(7, 4)
+#define S2MPB02_FLED_TORCH_CUR_MASK	GENMASK(3, 0)
+#define S2MPB02_FLED_FLASH_CUR_SHIFT	4
+#define S2MPB02_FLED_TORCH_CUR_SHIFT	0
+#define S2MPB02_FLED_FLASH_TIME_MASK	GENMASK(7, 4)
+#define S2MPB02_FLED_TORCH_TIME_MASK	GENMASK(3, 0)
+#define S2MPB02_FLED_FLASH_TIME_250MS	0x30
+#define S2MPB02_FLED_TORCH_TIME_MAX	0x0f
+#define S2MPB02_FLED_IRD2_ACT_DISCH	BIT(1)
+#define S2MPB02_FLED_MAX_STEP		15
+#define S2MPB02_FLED_DEF_TORCH		6	/* 120 mA */
+#define S2MPB02_FLED_DEF_FLASH		8	/* 800 mA */
 
 #define S2MPB02_LDO_VSEL_MASK		GENMASK(6, 0)
 #define S2MPB02_LDO_ENABLE_MASK		BIT(7)
@@ -43,6 +69,7 @@ static bool s2mpb02_readable_reg(struct device *dev, unsigned int reg)
 {
 	return reg == S2MPB02_REG_ID ||
 	       (reg >= S2MPB02_REG_B1CTRL1 && reg <= S2MPB02_REG_B2CTRL2) ||
+	       (reg >= S2MPB02_REG_FLED_CTRL1 && reg <= S2MPB02_REG_FLED_IRD2) ||
 	       (reg >= S2MPB02_REG_L1CTRL && reg <= S2MPB02_REG_L18CTRL);
 }
 
@@ -129,6 +156,258 @@ static const struct regulator_desc s2mpb02_regulators[] = {
 	S2MPB02_BUCK(2, 20),
 };
 
+struct s2mpb02_fled {
+	struct regmap *regmap;
+	struct mutex lock;
+	struct led_classdev torch_cdev;
+	struct led_classdev flash_cdev;
+	struct device *cam_dev;
+	u8 torch_level;
+	u8 flash_level;
+};
+
+static struct class *s2mpb02_cam_class;
+static DEFINE_MUTEX(s2mpb02_cam_class_lock);
+
+struct class *samsung_camera_class(void)
+{
+	struct class *cls;
+
+	mutex_lock(&s2mpb02_cam_class_lock);
+	if (!s2mpb02_cam_class) {
+		cls = class_create("camera");
+		if (!IS_ERR(cls))
+			s2mpb02_cam_class = cls;
+	}
+	cls = s2mpb02_cam_class;
+	mutex_unlock(&s2mpb02_cam_class_lock);
+
+	return cls;
+}
+EXPORT_SYMBOL_GPL(samsung_camera_class);
+
+static int s2mpb02_fled_apply(struct s2mpb02_fled *fled, u8 flash_lvl,
+			      u8 torch_lvl)
+{
+	int ret;
+
+	mutex_lock(&fled->lock);
+
+	flash_lvl = min_t(u8, flash_lvl, S2MPB02_FLED_MAX_STEP);
+	torch_lvl = min_t(u8, torch_lvl, S2MPB02_FLED_MAX_STEP);
+
+	/* Transition through OFF before engaging flash to reset one-shot timer. */
+	ret = regmap_update_bits(fled->regmap, S2MPB02_REG_FLED_CTRL1,
+				 S2MPB02_FLED_EN_MASK | S2MPB02_FLED_LV_EN_MASK,
+				 S2MPB02_FLED_OFF);
+	if (ret)
+		goto out;
+
+	if (flash_lvl) {
+		ret = regmap_update_bits(fled->regmap, S2MPB02_REG_FLED_CUR1,
+					 S2MPB02_FLED_FLASH_CUR_MASK,
+					 flash_lvl << S2MPB02_FLED_FLASH_CUR_SHIFT);
+		ret = ret ?: regmap_update_bits(fled->regmap,
+						S2MPB02_REG_FLED_TIME1,
+						S2MPB02_FLED_FLASH_TIME_MASK,
+						S2MPB02_FLED_FLASH_TIME_250MS);
+		ret = ret ?: regmap_update_bits(fled->regmap,
+						S2MPB02_REG_FLED_CTRL1,
+						S2MPB02_FLED_EN_MASK |
+						S2MPB02_FLED_LV_EN_MASK,
+						S2MPB02_FLED_FLASH_ON);
+	} else if (torch_lvl) {
+		ret = regmap_update_bits(fled->regmap, S2MPB02_REG_FLED_CUR1,
+					 S2MPB02_FLED_TORCH_CUR_MASK,
+					 torch_lvl << S2MPB02_FLED_TORCH_CUR_SHIFT);
+		ret = ret ?: regmap_update_bits(fled->regmap,
+						S2MPB02_REG_FLED_TIME1,
+						S2MPB02_FLED_TORCH_TIME_MASK,
+						S2MPB02_FLED_TORCH_TIME_MAX);
+		ret = ret ?: regmap_update_bits(fled->regmap,
+						S2MPB02_REG_FLED_CTRL1,
+						S2MPB02_FLED_EN_MASK |
+						S2MPB02_FLED_LV_EN_MASK,
+						S2MPB02_FLED_TORCH_ON);
+	} else {
+		ret = regmap_update_bits(fled->regmap, S2MPB02_REG_FLED_IRD2,
+					 S2MPB02_FLED_IRD2_ACT_DISCH,
+					 S2MPB02_FLED_IRD2_ACT_DISCH);
+	}
+
+	if (!ret) {
+		fled->flash_level = flash_lvl;
+		fled->torch_level = flash_lvl ? 0 : torch_lvl;
+	}
+
+out:
+	mutex_unlock(&fled->lock);
+	return ret;
+}
+
+static int s2mpb02_torch_cdev_set(struct led_classdev *cdev,
+				 enum led_brightness brightness)
+{
+	struct s2mpb02_fled *fled =
+		container_of(cdev, struct s2mpb02_fled, torch_cdev);
+
+	return s2mpb02_fled_apply(fled, 0, min_t(u8, brightness, S2MPB02_FLED_MAX_STEP));
+}
+
+static int s2mpb02_flash_cdev_set(struct led_classdev *cdev,
+				 enum led_brightness brightness)
+{
+	struct s2mpb02_fled *fled =
+		container_of(cdev, struct s2mpb02_fled, flash_cdev);
+
+	return s2mpb02_fled_apply(fled, min_t(u8, brightness, S2MPB02_FLED_MAX_STEP), 0);
+}
+
+static ssize_t rear_torch_flash_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct s2mpb02_fled *fled = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", fled->torch_level);
+}
+
+static ssize_t rear_torch_flash_store(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
+{
+	struct s2mpb02_fled *fled = dev_get_drvdata(dev);
+	unsigned int val;
+	u8 lvl;
+	int ret;
+
+	ret = kstrtouint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if (val == 0)
+		lvl = 0;
+	else if (val == 1)
+		lvl = S2MPB02_FLED_DEF_TORCH;
+	else if (val == 100)
+		lvl = 12; /* 240 mA factory bright torch */
+	else if (val >= 1001 && val <= 1010)
+		lvl = val - 1000;
+	else
+		lvl = min_t(u8, val, S2MPB02_FLED_MAX_STEP);
+
+	ret = s2mpb02_fled_apply(fled, 0, lvl);
+	return ret ? ret : count;
+}
+
+static ssize_t rear_flash_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct s2mpb02_fled *fled = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", fled->flash_level);
+}
+
+static ssize_t rear_flash_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct s2mpb02_fled *fled = dev_get_drvdata(dev);
+	unsigned int val;
+	u8 lvl;
+	int ret;
+
+	ret = kstrtouint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if (val == 0)
+		lvl = 0;
+	else if (val == 1)
+		lvl = S2MPB02_FLED_DEF_FLASH;
+	else if (val == 100)
+		lvl = S2MPB02_FLED_MAX_STEP;
+	else
+		lvl = min_t(u8, val, S2MPB02_FLED_MAX_STEP);
+
+	ret = s2mpb02_fled_apply(fled, lvl, 0);
+	return ret ? ret : count;
+}
+
+static DEVICE_ATTR(rear_torch_flash, 0664, rear_torch_flash_show,
+		   rear_torch_flash_store);
+static DEVICE_ATTR(rear_flash, 0664, rear_flash_show, rear_flash_store);
+
+static struct attribute *s2mpb02_flash_attrs[] = {
+	&dev_attr_rear_torch_flash.attr,
+	&dev_attr_rear_flash.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(s2mpb02_flash);
+
+static void s2mpb02_fled_cleanup(void *data)
+{
+	struct s2mpb02_fled *fled = data;
+
+	s2mpb02_fled_apply(fled, 0, 0);
+	if (!IS_ERR_OR_NULL(fled->cam_dev))
+		device_unregister(fled->cam_dev);
+}
+
+static int s2mpb02_fled_probe(struct device *dev, struct regmap *regmap)
+{
+	struct s2mpb02_fled *fled;
+	struct class *cam_cls;
+	int ret;
+
+	fled = devm_kzalloc(dev, sizeof(*fled), GFP_KERNEL);
+	if (!fled)
+		return -ENOMEM;
+
+	fled->regmap = regmap;
+	mutex_init(&fled->lock);
+
+	ret = regmap_update_bits(regmap, S2MPB02_REG_FLED_IRD2,
+				 S2MPB02_FLED_IRD2_ACT_DISCH,
+				 S2MPB02_FLED_IRD2_ACT_DISCH);
+	if (ret)
+		return ret;
+
+	ret = s2mpb02_fled_apply(fled, 0, 0);
+	if (ret)
+		return ret;
+
+	if (IS_ENABLED(CONFIG_LEDS_CLASS)) {
+		fled->torch_cdev.name = "torch-sec1";
+		fled->torch_cdev.max_brightness = S2MPB02_FLED_MAX_STEP;
+		fled->torch_cdev.brightness_set_blocking = s2mpb02_torch_cdev_set;
+		ret = devm_led_classdev_register(dev, &fled->torch_cdev);
+		if (ret)
+			dev_warn(dev, "failed to register torch-sec1: %d\n", ret);
+
+		fled->flash_cdev.name = "flash-sec1";
+		fled->flash_cdev.max_brightness = S2MPB02_FLED_MAX_STEP;
+		fled->flash_cdev.brightness_set_blocking = s2mpb02_flash_cdev_set;
+		ret = devm_led_classdev_register(dev, &fled->flash_cdev);
+		if (ret)
+			dev_warn(dev, "failed to register flash-sec1: %d\n", ret);
+	}
+
+	cam_cls = samsung_camera_class();
+	if (cam_cls) {
+		fled->cam_dev = device_create_with_groups(cam_cls, NULL, 0,
+							  fled,
+							  s2mpb02_flash_groups,
+							  "flash");
+		if (IS_ERR(fled->cam_dev)) {
+			dev_warn(dev, "failed to create camera/flash sysfs: %ld\n",
+				 PTR_ERR(fled->cam_dev));
+			fled->cam_dev = NULL;
+		}
+	}
+
+	return devm_add_action_or_reset(dev, s2mpb02_fled_cleanup, fled);
+}
+
 static int s2mpb02_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
@@ -160,6 +439,10 @@ static int s2mpb02_probe(struct i2c_client *client)
 					     "failed to register %s\n",
 					     s2mpb02_regulators[i].name);
 	}
+
+	ret = s2mpb02_fled_probe(dev, regmap);
+	if (ret)
+		dev_warn(dev, "FLED init failed: %d\n", ret);
 
 	return 0;
 }

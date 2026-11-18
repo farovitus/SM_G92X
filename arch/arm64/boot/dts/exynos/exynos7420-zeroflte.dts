@@ -131,6 +131,18 @@
 			reg = <0x0 0xfe800000 0x0 0x1800000>;
 			no-map;
 		};
+
+		/*
+		 * Reusable CMA pool for FIMC-LITE RAW capture buffers:
+		 * returned to movable system RAM whenever cameras are idle,
+		 * while isolating 16MP multi-frame allocations from DECON.
+		 */
+		cam_cma: cam-cma {
+			compatible = "shared-dma-pool";
+			reusable;
+			size = <0x0 0xa000000>;
+			alignment = <0x0 0x400000>;
+		};
 	};
 
 	/*
@@ -981,12 +993,37 @@
 };
 
 /*
+ * S-Boot leaves CAM_PLL and ISP_PLL unconfigured, so bring both PLLs up on
+ * CMU_TOP0 and route CSIS0 / FIMC-BNS A / FIMC-BNS B off CAM_PLL (660 MHz,
+ * matching the 330 MHz PCLK_CAM0_BNS* divider targets below).
+ */
+&clock_top0 {
+	assigned-clocks = <&clock_top0 CLK_MOUT_CAM_PLL>,
+			  <&clock_top0 CLK_MOUT_ISP_PLL>,
+			  <&clock_top0 CLK_MOUT_ACLK_CAM0_CSIS0_690>,
+			  <&clock_top0 CLK_MOUT_ACLK_CAM0_BNSA_690>,
+			  <&clock_top0 CLK_MOUT_ACLK_CAM0_BNSB_690>,
+			  <&clock_top0 CLK_FOUT_CAM_PLL>,
+			  <&clock_top0 CLK_FOUT_ISP_PLL>,
+			  <&clock_top0 CLK_DOUT_ACLK_CAM0_CSIS0_690>,
+			  <&clock_top0 CLK_DOUT_ACLK_CAM0_BNSA_690>,
+			  <&clock_top0 CLK_DOUT_ACLK_CAM0_BNSB_690>;
+	assigned-clock-parents = <&clock_top0 CLK_FOUT_CAM_PLL>,
+				 <&clock_top0 CLK_FOUT_ISP_PLL>,
+				 <&clock_top0 CLK_MOUT_CAM_PLL>,
+				 <&clock_top0 CLK_MOUT_CAM_PLL>,
+				 <&clock_top0 CLK_MOUT_CAM_PLL>;
+	assigned-clock-rates = <0>, <0>, <0>, <0>, <0>,
+			       <660000000>, <552000000>,
+			       <660000000>, <660000000>, <660000000>;
+};
+
+/*
  * CMU_CAM0 feeds the CSIS0 -> FIMC-BNS A (rear) and CSIS1 -> FIMC-BNS B
  * (front) capture paths. Its user muxes come up on OSCCLK with the power
  * domain; move them to the CMU_TOP0 bus clocks and the D-PHY byte clocks
  * (stock does the same when the ISP powers on, before any PHY runs), and
- * set the APB dividers to the stock sensor-on rates. The CMU_TOP0 parents
- * stay as S-Boot leaves them.
+ * set the APB dividers to the stock sensor-on rates.
  */
 &cmu_cam0 {
 	assigned-clocks = <&cmu_cam0 CLK_MOUT_USER_ACLK_CAM0_CSIS0_690>,
@@ -2635,6 +2672,18 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
+
+	cam_i2c2_pins: cam-i2c2-pins {
+		samsung,pins = "gpc2-4", "gpc2-5";
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	/* HSI2C11 shares the AF/OIS bus on PCB; hold Hi-Z while cam_i2c2 bit-bangs. */
+	ois_hsi2c_idle: ois-hsi2c-idle-pins {
+		samsung,pins = "gpb0-2", "gpb0-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
 };
 
 / {
@@ -2659,6 +2708,32 @@
 		i2c-gpio,delay-us = <2>;
 		#address-cells = <1>;
 		#size-cells = <0>;
+	};
+
+	cam_i2c2: i2c-cam2 {
+		compatible = "i2c-gpio";
+		sda-gpios = <&gpc2 4 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&gpc2 5 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_i2c2_pins &ois_hsi2c_idle>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		rear_af: af@c {
+			compatible = "asahi-kasei,ak7345";
+			reg = <0x0c>;
+			vdd-supply = <&cam_vddaf>;
+			vio-supply = <&cam_vddio>;
+		};
+
+		rear_ois: ois@24 {
+			compatible = "invensense,idg2030";
+			reg = <0x24>;
+			vddio-supply = <&cam_vddio>;
+			ois-vdd-supply = <&cam_ois_vdd>;
+			ois-vm-supply = <&cam_ois_vm>;
+		};
 	};
 };
 
@@ -2727,5 +2802,93 @@
 		pinctrl-1 = <&cam_mclk01_on>;
 		reset-gpios = <&gpc0 7 GPIO_ACTIVE_LOW>;
 		sensor-reset-gpios = <&gpc0 5 GPIO_ACTIVE_LOW>;
+		lens-focus = <&rear_af>;
+		orientation = <1>;
+		rotation = <0>;
+
+		port {
+			companion_out: endpoint {
+				remote-endpoint = <&csis0_in>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <676000000 584800000>;
+			};
+		};
 	};
+};
+
+&csis0 {
+	status = "okay";
+
+	ports {
+		port@0 {
+			csis0_in: endpoint {
+				remote-endpoint = <&companion_out>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+	};
+};
+
+&soc {
+	sysmmu_cam0: iommu@140e0000 {
+		reg = <0x140e0000 0x1000>;
+		/* Shared by BNS A and BNS B; left disabled for IOMMU, bypassed by flite. */
+		status = "disabled";
+	};
+};
+
+&fimc_lite_a {
+	memory-region = <&cam_cma>;
+	samsung,sysmmu = <&sysmmu_cam0>;
+	status = "okay";
+};
+
+&cam_i2c1 {
+	status = "okay";
+
+	s5k4e6: camera@35 {
+		compatible = "samsung,s5k4e6";
+		reg = <0x35>;
+		vt-vdda-supply = <&vt_vdda>;
+		vt-vddio-supply = <&vt_vddio>;
+		vt-vddd-supply = <&vt_vddd>;
+		clocks = <&clock_top0 CLK_SCLK_ISP_SENSOR2>;
+		clock-names = "mclk";
+		assigned-clocks = <&clock_top0 CLK_MOUT_SCLK_ISP_SENSOR2>;
+		assigned-clock-parents = <&fin_pll>;
+		pinctrl-names = "default", "active";
+		pinctrl-0 = <&cam_mclk2_off>;
+		pinctrl-1 = <&cam_mclk2_on>;
+		reset-gpios = <&gpc0 4 GPIO_ACTIVE_LOW>;
+		standby-gpios = <&gpc0 6 GPIO_ACTIVE_HIGH>;
+		orientation = <0>;
+		rotation = <0>;
+
+		port {
+			s5k4e6_out: endpoint {
+				remote-endpoint = <&csis1_in>;
+				data-lanes = <1 2>;
+				link-frequencies = /bits/ 64 <504000000>;
+			};
+		};
+	};
+};
+
+&csis1 {
+	status = "okay";
+
+	ports {
+		port@0 {
+			csis1_in: endpoint {
+				remote-endpoint = <&s5k4e6_out>;
+				data-lanes = <1 2>;
+			};
+		};
+	};
+};
+
+&fimc_lite_b {
+	memory-region = <&cam_cma>;
+	samsung,sysmmu = <&sysmmu_cam0>;
+	status = "okay";
 };

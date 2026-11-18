@@ -649,7 +649,25 @@ static const struct samsung_cmu_info top0_cmu_info __initconst = {
 
 static void __init exynos7_clk_top0_init(struct device_node *np)
 {
-	samsung_cmu_register_one(np, &top0_cmu_info);
+	struct samsung_clk_provider *ctx;
+	unsigned int id;
+
+	ctx = samsung_cmu_register_one(np, &top0_cmu_info);
+	for (id = CLK_FOUT_ISP_PLL; id <= CLK_FOUT_CAM_PLL; id++) {
+		struct clk_hw *hw = ctx->clk_data.hws[id];
+		struct clk *clk;
+
+		if (IS_ERR_OR_NULL(hw) || clk_hw_get_rate(hw) == 24000000)
+			continue;
+
+		/*
+		 * Keep DT-configured CAM/ISP PLLs locked across pd-cam0
+		 * transitions so LPI handshakes always have running clocks.
+		 */
+		clk = clk_hw_get_clk(hw, clk_hw_get_name(hw));
+		if (!IS_ERR(clk))
+			clk_prepare_enable(clk);
+	}
 }
 
 CLK_OF_DECLARE(exynos7_clk_top0, "samsung,exynos7-clock-top0",

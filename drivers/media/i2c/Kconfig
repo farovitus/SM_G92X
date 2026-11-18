@@ -5,9 +5,12 @@
 
 config VIDEO_S5C73C2
 	tristate "Samsung S5C73C2 camera companion"
-	depends on I2C && SPI && OF
+	depends on I2C && SPI && OF && VIDEO_DEV
 	select CRC32
 	select FW_LOADER
+	select MEDIA_CONTROLLER
+	select V4L2_FWNODE
+	select VIDEO_V4L2_SUBDEV_API
 	help
 	  Firmware loader for the Samsung S5C73C2 ("73C2") companion chip
 	  that sits between the rear sensor and the MIPI CSI-2 receiver on
@@ -614,6 +617,16 @@ config VIDEO_S5K5BAF
 	  This is a V4L2 sensor driver for Samsung S5K5BAF 2M
 	  camera sensor with an embedded SoC image signal processor.
 
+config VIDEO_S5K4E6
+	tristate "Samsung S5K4E6 sensor support"
+	depends on OF && GPIOLIB
+	help
+	  This is a Video4Linux2 sensor driver for the Samsung S5K4E6
+	  5MP MIPI CSI-2 front camera sensor.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called s5k4e6.
+
 config VIDEO_S5K6A3
 	tristate "Samsung S5K6A3 sensor support"
 	help
@@ -645,16 +658,25 @@ config VIDEO_AD5820
 	  It is used for example in Nokia N900 (RX-51).
 
 config VIDEO_AK7375
-	tristate "AK7375 lens voice coil support"
+	tristate "AK7375 / AK7345 lens voice coil support"
 	depends on I2C && VIDEO_DEV
 	select MEDIA_CONTROLLER
 	select VIDEO_V4L2_SUBDEV_API
 	select V4L2_ASYNC
 	help
-	  This is a driver for the AK7375 camera lens voice coil.
-	  AK7375 is a 12 bit DAC with 120mA output current sink
-	  capability. This is designed for linear control of
-	  voice coil motors, controlled via I2C serial interface.
+	  This is a driver for the AK7375/AK7345 camera lens voice coil.
+	  AK7375 is a 12 bit DAC and AK7345 is a 9 bit DAC with 120mA
+	  output current sink capability. This is designed for linear
+	  control of voice coil motors, controlled via I2C serial
+	  interface.
+
+config VIDEO_IDG2030
+	tristate "InvenSense IDG2030 OIS companion support"
+	depends on I2C && REGULATOR_S2MPB02
+	help
+	  This is a lightweight driver for the InvenSense IDG2030 optical
+	  image stabilization (OIS) IC found on Samsung Galaxy S6 rear
+	  camera modules.
 
 config VIDEO_DW9714
 	tristate "DW9714 lens voice coil support"

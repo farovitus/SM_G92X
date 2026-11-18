@@ -372,12 +372,18 @@ CONFIG_GKI_HIDDEN_DMA_CONFIGS=y
 # CONFIG_SCSI_UFSHCD_PCI is not set
 # CONFIG_SND_PCI is not set
 
-# Camera: the rear module's 73C2 companion, which needs its firmware before
-# any image passes, and the raw capture host path: CSIS (the i.MX CSIS
-# driver, which covers the Exynos7420 CSIS v3.4) -> FIMC-LITE to memory.
+# Camera: the rear module's 73C2 companion, the front S5K4E6 sensor,
+# and the raw capture host path: CSIS (the i.MX CSIS driver, which covers
+# the Exynos7420 CSIS v3.4) -> FIMC-LITE to memory.
 # The filter keeps the rest of the media tree out.
 CONFIG_MEDIA_SUPPORT=m
 CONFIG_MEDIA_SUPPORT_FILTER=y
+CONFIG_MEDIA_CAMERA_SUPPORT=y
+CONFIG_VIDEO_CAMERA_SENSOR=y
 CONFIG_VIDEO_S5C73C2=m
+CONFIG_VIDEO_S5K4E6=m
+CONFIG_VIDEO_AK7375=m
+CONFIG_VIDEO_IDG2030=m
 CONFIG_VIDEO_IMX_MIPI_CSIS=m
 CONFIG_VIDEO_EXYNOS7_FLITE=m
+CONFIG_CMA_SIZE_MBYTES=32

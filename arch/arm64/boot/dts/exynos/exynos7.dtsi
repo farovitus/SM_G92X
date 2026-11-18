@@ -759,6 +759,61 @@
 		};
 
 		/*
+		 * Rear camera path: CSIS0 -> FIMC-LITE A (FIMC-BNS A).
+		 */
+		csis0: csis@14000000 {
+			compatible = "samsung,exynos7420-mipi-csi2";
+			reg = <0x14000000 0x1000>;
+			interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&cmu_cam0 CLK_PCLK_CSIS0>,
+				 <&cmu_cam0 CLK_ACLK_CSIS0>,
+				 <&cmu_cam0 CLK_PHYCLK_RXBYTECLKHS0_S4>;
+			clock-names = "pclk", "wrap", "phy";
+			phys = <&mipi_phy 0>;
+			phy-names = "csis";
+			power-domains = <&pd_cam0>;
+			status = "disabled";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+				};
+
+				port@1 {
+					reg = <1>;
+
+					csis0_out: endpoint {
+						remote-endpoint = <&fimc_lite_a_in>;
+					};
+				};
+			};
+		};
+
+		fimc_lite_a: fimc-lite@14020000 {
+			compatible = "samsung,exynos7420-fimc-lite";
+			reg = <0x14020000 0x1000>;
+			interrupts = <GIC_SPI 133 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&cmu_cam0 CLK_ACLK_FIMC_BNS_A>,
+				 <&cmu_cam0 CLK_PCLK_FIMC_BNS_A>,
+				 <&cmu_cam0 CLK_ACLK_TREX_A_5X1_BNS_A>,
+				 <&cmu_cam0 CLK_PCLK_ASYNCAPB_FIMC_BNS_A>,
+				 <&cmu_cam0 CLK_CCLK_ASYNCAPB_FIMC_BNS_A>;
+			clock-names = "aclk", "pclk", "aclk_trex", "pclk_async",
+				      "cclk_async";
+			power-domains = <&pd_cam0>;
+			status = "disabled";
+
+			port {
+				fimc_lite_a_in: endpoint {
+					remote-endpoint = <&csis0_out>;
+				};
+			};
+		};
+
+		/*
 		 * Front camera path: CSIS1 -> FIMC-LITE B (FIMC-BNS B). The
 		 * receiver of each pair sits below its FIMC-LITE: CSIS0/1 at
 		 * 0x14000000/0x14010000, BNS A/B at 0x14020000/0x14030000.

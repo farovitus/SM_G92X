@@ -21,6 +21,7 @@
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -128,6 +129,7 @@ struct flite_buffer {
 struct flite {
 	struct device *dev;
 	void __iomem *regs;
+	void __iomem *sysmmu;
 	struct clk_bulk_data *clks;
 	int num_clks;
 
@@ -276,6 +278,21 @@ static void flite_hw_start(struct flite *fl)
 
 	flite_update(fl, FLITE_REG_CISTATUS2, FLITE_CISTATUS2_LASTCAPEND, 0);
 	flite_update(fl, FLITE_REG_CIIMGCPT, 0, FLITE_CIIMGCPT_IMGCPTEN);
+}
+
+static void flite_bypass_sysmmu(struct flite *fl)
+{
+	if (!fl->sysmmu)
+		return;
+
+	/*
+	 * SysMMU_CAM0 is shared by BNS A and BNS B and comes out of reset in
+	 * enabled/blocked state (CTRL=0x3) whenever pd-cam0 powers on. Put it
+	 * into pass-through before touching FIMC-LITE DMA or reset.
+	 */
+	writel(0, fl->sysmmu + 0x00);
+	writel(0, fl->sysmmu + 0x04);
+	wmb();
 }
 
 static void flite_hw_stop(struct flite *fl)
@@ -502,6 +519,8 @@ static int flite_start_streaming(struct vb2_queue *vq, unsigned int count)
 	ret = pm_runtime_resume_and_get(fl->dev);
 	if (ret)
 		goto err_return;
+
+	flite_bypass_sysmmu(fl);
 
 	ret = video_device_pipeline_start(&fl->vdev, &fl->pipe);
 	if (ret)
@@ -851,6 +870,7 @@ static int flite_runtime_resume(struct device *dev)
 static int flite_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct device_node *sysmmu_np;
 	struct flite *fl;
 	int irq, ret;
 
@@ -868,6 +888,18 @@ static int flite_probe(struct platform_device *pdev)
 	fl->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(fl->regs))
 		return PTR_ERR(fl->regs);
+
+	sysmmu_np = of_parse_phandle(dev->of_node, "samsung,sysmmu", 0);
+	if (sysmmu_np) {
+		struct resource res;
+
+		if (of_address_to_resource(sysmmu_np, 0, &res) == 0)
+			fl->sysmmu = devm_ioremap(dev, res.start,
+						  resource_size(&res));
+		of_node_put(sysmmu_np);
+		if (!fl->sysmmu)
+			return -ENOMEM;
+	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)

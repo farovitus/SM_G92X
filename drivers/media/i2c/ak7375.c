@@ -6,34 +6,50 @@
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/regulator/consumer.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 
-#define AK7375_MAX_FOCUS_POS	4095
-/*
- * This sets the minimum granularity for the focus positions.
- * A value of 1 gives maximum accuracy for a desired focus position
- */
-#define AK7375_FOCUS_STEPS	1
-/*
- * This acts as the minimum granularity of lens movement.
- * Keep this value power of 2, so the control steps can be
- * uniformly adjusted for gradual lens movement, with desired
- * number of control steps.
- */
-#define AK7375_CTRL_STEPS	64
 #define AK7375_CTRL_DELAY_US	1000
 /*
  * The vcm may take up 10 ms (tDELAY) to power on and start taking
  * I2C messages. Based on AK7371 datasheet.
  */
-#define AK7375_POWER_DELAY_US	10000
-
 #define AK7375_REG_POSITION	0x0
 #define AK7375_REG_CONT		0x2
 #define AK7375_MODE_ACTIVE	0x0
 #define AK7375_MODE_STANDBY	0x40
+
+struct ak73xx_chipdef {
+	u16 max_focus_pos;
+	u8 shift_pos;
+	u8 ctrl_steps;
+	u32 power_delay_us;
+	bool split_pos_writes;
+};
+
+static const struct ak73xx_chipdef ak7375_chipdef = {
+	.max_focus_pos = 4095,
+	.shift_pos = 4,
+	/*
+	 * This acts as the minimum granularity of lens movement.
+	 * Keep this value power of 2, so the control steps can be
+	 * uniformly adjusted for gradual lens movement, with desired
+	 * number of control steps.
+	 */
+	.ctrl_steps = 64,
+	.power_delay_us = 10000,
+	.split_pos_writes = false,
+};
+
+static const struct ak73xx_chipdef ak7345_chipdef = {
+	.max_focus_pos = 511,
+	.shift_pos = 7,
+	.ctrl_steps = 32,
+	.power_delay_us = 20000,
+	.split_pos_writes = true,
+};
 
 static const char * const ak7375_supply_names[] = {
 	"vdd",
@@ -45,6 +61,7 @@ struct ak7375_device {
 	struct v4l2_ctrl_handler ctrls_vcm;
 	struct v4l2_subdev sd;
 	struct v4l2_ctrl *focus;
+	const struct ak73xx_chipdef *chip;
 	struct regulator_bulk_data supplies[ARRAY_SIZE(ak7375_supply_names)];
 
 	/* active or standby mode */
@@ -83,13 +100,28 @@ static int ak7375_i2c_write(struct ak7375_device *ak7375,
 	return 0;
 }
 
+static int ak7375_write_pos(struct ak7375_device *dev_vcm, u16 pos)
+{
+	u16 encoded = pos << dev_vcm->chip->shift_pos;
+
+	if (dev_vcm->chip->split_pos_writes) {
+		int ret = ak7375_i2c_write(dev_vcm, AK7375_REG_POSITION,
+					   (encoded >> 8) & 0xff, 1);
+		if (ret)
+			return ret;
+		return ak7375_i2c_write(dev_vcm, AK7375_REG_POSITION + 1,
+					encoded & 0xff, 1);
+	}
+
+	return ak7375_i2c_write(dev_vcm, AK7375_REG_POSITION, encoded, 2);
+}
+
 static int ak7375_set_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct ak7375_device *dev_vcm = to_ak7375_vcm(ctrl);
 
 	if (ctrl->id == V4L2_CID_FOCUS_ABSOLUTE)
-		return ak7375_i2c_write(dev_vcm, AK7375_REG_POSITION,
-					ctrl->val << 4, 2);
+		return ak7375_write_pos(dev_vcm, ctrl->val);
 
 	return -EINVAL;
 }
@@ -131,8 +163,11 @@ static int ak7375_init_controls(struct ak7375_device *dev_vcm)
 
 	v4l2_ctrl_handler_init(hdl, 1);
 
+	/*
+	 * Focus steps of 1 give maximum accuracy for a desired focus position.
+	 */
 	dev_vcm->focus = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_FOCUS_ABSOLUTE,
-		0, AK7375_MAX_FOCUS_POS, AK7375_FOCUS_STEPS, 0);
+		0, dev_vcm->chip->max_focus_pos, 1, 0);
 
 	if (hdl->error)
 		dev_err(dev_vcm->sd.dev, "%s fail error: 0x%x\n",
@@ -152,6 +187,10 @@ static int ak7375_probe(struct i2c_client *client)
 				  GFP_KERNEL);
 	if (!ak7375_dev)
 		return -ENOMEM;
+
+	ak7375_dev->chip = device_get_match_data(&client->dev);
+	if (!ak7375_dev->chip)
+		ak7375_dev->chip = &ak7375_chipdef;
 
 	for (i = 0; i < ARRAY_SIZE(ak7375_supply_names); i++)
 		ak7375_dev->supplies[i].supply = ak7375_supply_names[i];
@@ -206,22 +245,22 @@ static void ak7375_remove(struct i2c_client *client)
 
 /*
  * This function sets the vcm position, so it consumes least current
- * The lens position is gradually moved in units of AK7375_CTRL_STEPS,
+ * The lens position is gradually moved in units of ctrl_steps,
  * to make the movements smoothly.
  */
 static int __maybe_unused ak7375_vcm_suspend(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ak7375_device *ak7375_dev = sd_to_ak7375_vcm(sd);
+	u8 steps = ak7375_dev->chip->ctrl_steps;
 	int ret, val;
 
 	if (!ak7375_dev->active)
 		return 0;
 
-	for (val = ak7375_dev->focus->val & ~(AK7375_CTRL_STEPS - 1);
-	     val >= 0; val -= AK7375_CTRL_STEPS) {
-		ret = ak7375_i2c_write(ak7375_dev, AK7375_REG_POSITION,
-				       val << 4, 2);
+	for (val = ak7375_dev->focus->val & ~(steps - 1);
+	     val >= 0; val -= steps) {
+		ret = ak7375_write_pos(ak7375_dev, val);
 		if (ret)
 			dev_err_once(dev, "%s I2C failure: %d\n",
 				     __func__, ret);
@@ -246,13 +285,14 @@ static int __maybe_unused ak7375_vcm_suspend(struct device *dev)
 /*
  * This function sets the vcm position to the value set by the user
  * through v4l2_ctrl_ops s_ctrl handler
- * The lens position is gradually moved in units of AK7375_CTRL_STEPS,
+ * The lens position is gradually moved in units of ctrl_steps,
  * to make the movements smoothly.
  */
 static int __maybe_unused ak7375_vcm_resume(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ak7375_device *ak7375_dev = sd_to_ak7375_vcm(sd);
+	u8 steps = ak7375_dev->chip->ctrl_steps;
 	int ret, val;
 
 	if (ak7375_dev->active)
@@ -264,20 +304,22 @@ static int __maybe_unused ak7375_vcm_resume(struct device *dev)
 		return ret;
 
 	/* Wait for vcm to become ready */
-	usleep_range(AK7375_POWER_DELAY_US, AK7375_POWER_DELAY_US + 500);
+	usleep_range(ak7375_dev->chip->power_delay_us,
+		     ak7375_dev->chip->power_delay_us + 500);
 
 	ret = ak7375_i2c_write(ak7375_dev, AK7375_REG_CONT,
 		AK7375_MODE_ACTIVE, 1);
 	if (ret) {
 		dev_err(dev, "%s I2C failure: %d\n", __func__, ret);
+		regulator_bulk_disable(ARRAY_SIZE(ak7375_supply_names),
+				       ak7375_dev->supplies);
 		return ret;
 	}
 
-	for (val = ak7375_dev->focus->val % AK7375_CTRL_STEPS;
+	for (val = ak7375_dev->focus->val % steps;
 	     val <= ak7375_dev->focus->val;
-	     val += AK7375_CTRL_STEPS) {
-		ret = ak7375_i2c_write(ak7375_dev, AK7375_REG_POSITION,
-				       val << 4, 2);
+	     val += steps) {
+		ret = ak7375_write_pos(ak7375_dev, val);
 		if (ret)
 			dev_err_ratelimited(dev, "%s I2C failure: %d\n",
 						__func__, ret);
@@ -285,12 +327,15 @@ static int __maybe_unused ak7375_vcm_resume(struct device *dev)
 	}
 
 	ak7375_dev->active = true;
+	dev_info_once(dev, "AK73xx VCM active (max=%u)\n",
+		      ak7375_dev->chip->max_focus_pos);
 
 	return 0;
 }
 
 static const struct of_device_id ak7375_of_table[] = {
-	{ .compatible = "asahi-kasei,ak7375" },
+	{ .compatible = "asahi-kasei,ak7375", .data = &ak7375_chipdef },
+	{ .compatible = "asahi-kasei,ak7345", .data = &ak7345_chipdef },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, ak7375_of_table);
